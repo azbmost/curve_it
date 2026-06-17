@@ -110,6 +110,20 @@ python3 curve_it.py input.pdb curve.xyz --interp-mode n --interp-n 400
 python3 curve_it.py input.pdb curve.xyz --interp-mode p --interp-p 5
 ```
 
+## Curve Interpolation
+
+Interpolation under **Curve parameters** changes the curve that Curve It actually uses for the run. It is not only for total curvature and writhe reporting.
+
+When interpolation is enabled, the input curve is first resampled or densified, then that interpolated curve is used for:
+
+- fitting/curving the PDB coordinates
+- computing curve length
+- computing total curvature and writhe when applicable
+- viewing the curve in the GUI
+- writing the optional `<curve>_interpolated.<ext>` helper file in GUI mode
+
+Use `--interp-mode n` when you want exactly `--interp-n` evenly arc-length-spaced points. Use `--interp-mode p` when you want to insert `--interp-p` points between each adjacent pair of original curve points.
+
 ## Curve File Format
 
 Curve files can be plain whitespace-separated coordinates:
@@ -126,7 +140,7 @@ They can also be standard XYZ-like files with an atom count/comment header and a
 
 - The curved PDB is written to `-o/--output-pdb`, or to `<input>_curved.pdb` if no output path is given.
 - If a user-supplied curve is rescaled, a sibling `<curve>_rescaled.xyz` file is written.
-- If interpolation is enabled in the GUI, a sibling `<curve>_interpolated.xyz` file is written.
+- If interpolation is enabled in the GUI, a sibling `<curve>_interpolated.xyz` file is written; this interpolated curve is also the curve used to fit the output PDB.
 
 ## Protein PDB Support
 
