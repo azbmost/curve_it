@@ -125,6 +125,7 @@ import argparse
 import contextlib
 import io
 import os
+import shlex
 import sys
 import textwrap
 from typing import List, Tuple, Dict, Optional, Any
@@ -2360,6 +2361,47 @@ def launch_gui() -> None:
         def flush(self) -> None:
             return None
 
+    def format_cli_command(
+        input_pdb: str,
+        input_curve: Optional[str],
+        output_pdb: str,
+        scale_mode: str,
+        path_type: str,
+        helix_phase: float,
+        twist: float,
+        scale_anchor: str,
+        path_start: float,
+        interp_mode: str,
+        interp_n: int,
+        interp_p: int,
+    ) -> str:
+        """Return a copyable CLI equivalent for the current GUI run."""
+        cmd = [
+            "python3",
+            "curve_it.py",
+            input_pdb,
+        ]
+        if input_curve:
+            cmd.append(input_curve)
+        cmd.extend([
+            "--scale-mode", scale_mode,
+            "--path-type", path_type,
+            "--helix_phase", f"{helix_phase:.12g}",
+            "--twist", f"{twist:.12g}",
+            "--scale-anchor", scale_anchor,
+            "--path-start", f"{path_start:.12g}",
+            "--interp-mode", interp_mode,
+            "--interp-n", str(interp_n),
+            "--interp-p", str(interp_p),
+            "-o", output_pdb,
+        ])
+        quoted = [shlex.quote(str(part)) for part in cmd]
+        if len(" ".join(quoted)) <= 100:
+            return " ".join(quoted)
+        first = " ".join(quoted[:3])
+        rest = " \\\n    ".join(quoted[3:])
+        return f"{first} \\\n    {rest}"
+
     tk.Button(log_frame, text="Clear", command=clear_log).grid(
         row=1, column=2, sticky="e", padx=4, pady=(0, 4)
     )
@@ -2453,9 +2495,36 @@ def launch_gui() -> None:
                 return
 
         try:
+            interp_n_meta = int(interp_n_var.get().strip())
+        except ValueError:
+            interp_n_meta = 0
+        try:
+            interp_p_meta = int(interp_p_var.get().strip())
+        except ValueError:
+            interp_p_meta = 0
+        cli_command = format_cli_command(
+            input_pdb=helix_pdb_path or helix_path_var.get().strip(),
+            input_curve=curve_xyz_path,
+            output_pdb=out_path,
+            scale_mode=smode_arg,
+            path_type=ptype,
+            helix_phase=hphase,
+            twist=twist_deg,
+            scale_anchor=anch_arg,
+            path_start=pstart,
+            interp_mode=interp_mode_var.get(),
+            interp_n=interp_n_meta,
+            interp_p=interp_p_meta,
+        )
+
+        try:
             clear_log()
             status_var.set("Running embedding...")
             append_log(f"[INFO] Starting {APP_NAME} {APP_VERSION} GUI run.\n")
+            append_log("[INFO] CLI equivalent:\n")
+            append_log(f"{cli_command}\n")
+            if curve_xyz_path is None:
+                append_log("[INFO] CLI note: no curve file argument means the default planar ring curve is used.\n")
             root.update_idletasks()
 
             log_writer = TkLogWriter()
@@ -2471,14 +2540,6 @@ def launch_gui() -> None:
                     path_start=pstart,
                 )
 
-                try:
-                    interp_n_meta = int(interp_n_var.get().strip())
-                except ValueError:
-                    interp_n_meta = 0
-                try:
-                    interp_p_meta = int(interp_p_var.get().strip())
-                except ValueError:
-                    interp_p_meta = 0
                 remark_lines = build_generation_remarks(
                     helix_pdb_path=helix_pdb_path,
                     curve_xyz_path=curve_xyz_path,

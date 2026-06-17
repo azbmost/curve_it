@@ -12,6 +12,7 @@
 - Added provenance `REMARK 900` lines at the start of generated PDB files.
 - Added light-blue `?` help buttons with pop-up explanations and examples for GUI arguments.
 - Added a scrollable run log window at the bottom of the GUI.
+- Added the current run's CLI-equivalent command to the GUI run log.
 - Reorganized GUI fields to reduce vertical space and narrowed short input fields.
 - Bolded GUI section titles for emphasis.
 - Added GitHub-ready repository files: `README.md`, `LICENSE`, `requirements.txt`, `.gitignore`, and this changelog.
