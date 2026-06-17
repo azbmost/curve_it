@@ -14,6 +14,7 @@
 - Added a scrollable run log window at the bottom of the GUI.
 - Added the current run's CLI-equivalent command to the GUI run log.
 - Added a GUI `Convert XYZ...` tool for coordinate XYZ <-> molecular XYZ conversion.
+- Replaced the converter's Yes/No prompt with explicit conversion-direction buttons.
 - Improved molecular XYZ curve parsing by explicitly skipping atom-count and comment header lines.
 - Reorganized GUI fields to reduce vertical space and narrowed short input fields.
 - Restored compact always-visible GUI hints for curve and mapping parameters.

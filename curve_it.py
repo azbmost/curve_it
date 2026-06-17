@@ -2128,14 +2128,59 @@ def launch_gui() -> None:
             ext = ".xyz"
         return os.path.join(d, f"{stem}_{suffix}{ext}")
 
-    def convert_xyz_file_dialog() -> None:
-        direction = messagebox.askyesnocancel(
-            "Convert XYZ",
-            "Choose conversion direction:\n\n"
-            "Yes: coordinate XYZ/txt -> molecular XYZ\n"
-            "No: molecular XYZ -> coordinate XYZ/txt\n"
-            "Cancel: do nothing",
+    def choose_xyz_conversion_direction() -> Optional[bool]:
+        """Return True for plain->molecular, False for molecular->plain."""
+        choice: Dict[str, Optional[bool]] = {"value": None}
+
+        dialog = tk.Toplevel(root)
+        dialog.title("Convert XYZ")
+        dialog.transient(root)
+        dialog.resizable(False, False)
+
+        tk.Label(
+            dialog,
+            text="Choose conversion direction",
+            font=section_font,
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=2, sticky="we", padx=12, pady=(12, 6))
+
+        tk.Label(
+            dialog,
+            text="Coordinate XYZ/txt: x y z rows\nMolecular XYZ: atom count, comment line, then element x y z rows",
+            justify="left",
+            anchor="w",
+        ).grid(row=1, column=0, columnspan=2, sticky="we", padx=12, pady=(0, 10))
+
+        def pick(value: bool) -> None:
+            choice["value"] = value
+            dialog.destroy()
+
+        tk.Button(
+            dialog,
+            text="Coordinate XYZ -> Molecular XYZ",
+            width=34,
+            command=lambda: pick(True),
+        ).grid(row=2, column=0, columnspan=2, sticky="we", padx=12, pady=3)
+
+        tk.Button(
+            dialog,
+            text="Molecular XYZ -> Coordinate XYZ",
+            width=34,
+            command=lambda: pick(False),
+        ).grid(row=3, column=0, columnspan=2, sticky="we", padx=12, pady=3)
+
+        tk.Button(dialog, text="Cancel", width=12, command=dialog.destroy).grid(
+            row=4, column=1, sticky="e", padx=12, pady=(8, 12)
         )
+
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.grab_set()
+        dialog.wait_window()
+        return choice["value"]
+
+    def convert_xyz_file_dialog() -> None:
+        direction = choose_xyz_conversion_direction()
         if direction is None:
             return
 
