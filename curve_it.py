@@ -134,7 +134,7 @@ import numpy as np
 
 APP_NAME = "curve_it"
 APP_VERSION = "V2.4"
-APP_TITLE = "re_helix is AZBMOST Package Module #3 - Fit PDB along Any Curve"
+APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
 # Optional import of curve interpolation helper.

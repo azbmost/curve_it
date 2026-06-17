@@ -6,7 +6,7 @@
 - Moved helper modules into `curve_it_lib/` and updated imports accordingly, while preserving existing helper version suffixes such as `V2`.
 - Added `-v` and `--version` support reporting `curve_it V2.4`.
 - Added protein-aware grouping: nucleic acid residues use phosphate/sugar/base groups, while protein and other residues use whole-residue rigid groups.
-- Updated the GUI title to `re_helix is AZBMOST Package Module #3 - Fit PDB along Any Curve`.
+- Updated the GUI title to `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`.
 - Added optional GUI icon loading from `assets/icon.png`; the script continues normally if the icon is absent.
 - Added a knot-style project icon at `assets/icon.png`.
 - Added provenance `REMARK 900` lines at the start of generated PDB files.

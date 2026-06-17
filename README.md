@@ -3,7 +3,7 @@
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
 Version: `V2.4`  
-GUI title: `re_helix is AZBMOST Package Module #3 - Fit PDB along Any Curve`
+GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
 
