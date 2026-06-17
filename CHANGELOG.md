@@ -10,6 +10,10 @@
 - Added optional GUI icon loading from `assets/icon.png`; the script continues normally if the icon is absent.
 - Added a knot-style project icon at `assets/icon.png`.
 - Added provenance `REMARK 900` lines at the start of generated PDB files.
+- Added light-blue `?` help buttons with pop-up explanations and examples for GUI arguments.
+- Added a scrollable run log window at the bottom of the GUI.
+- Reorganized GUI fields to reduce vertical space and narrowed short input fields.
+- Bolded GUI section titles for emphasis.
 - Added GitHub-ready repository files: `README.md`, `LICENSE`, `requirements.txt`, `.gitignore`, and this changelog.
 
 ## V2.3 and earlier
