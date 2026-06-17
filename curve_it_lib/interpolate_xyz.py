@@ -48,6 +48,31 @@ from typing import List, Optional
 import numpy as np
 
 
+def first_token_is_integer(line: str) -> bool:
+    """Return True if the first token in a line is an integer atom count."""
+    parts = line.split()
+    if not parts:
+        return False
+    try:
+        int(parts[0])
+        return len(parts) == 1
+    except ValueError:
+        return False
+
+
+def parse_xyz_coordinate_line(line: str) -> Optional[List[float]]:
+    """Return the first three numeric tokens in a coordinate line, if present."""
+    floats: List[float] = []
+    for tok in line.split():
+        try:
+            floats.append(float(tok))
+        except ValueError:
+            continue
+        if len(floats) == 3:
+            return floats
+    return None
+
+
 def read_xyz_curve_from_text(xyz_text: str) -> np.ndarray:
     """Read a 3D polyline from a generic XYZ-like text string.
 
@@ -57,23 +82,32 @@ def read_xyz_curve_from_text(xyz_text: str) -> np.ndarray:
     - Or a simple whitespace separated 'x y z' per line (with optional comments
       starting with # or !).
 
-    Strategy: on each line, collect all tokens that can be parsed as floats;
-    if there are at least three, use the first three as x,y,z.
+    Strategy:
+    - If the first non-empty line is an atom count, treat the file as molecular
+      XYZ and skip the atom-count and comment header lines.
+    - Otherwise, on each non-comment line, collect numeric tokens and use the
+      first three as x,y,z.
     """
+    raw_lines = xyz_text.splitlines()
+    nonempty_indices = [i for i, line in enumerate(raw_lines) if line.strip()]
+    if not nonempty_indices:
+        raise ValueError("XYZ file does not contain readable lines.")
+
+    start_index = nonempty_indices[0]
+    if first_token_is_integer(raw_lines[start_index]):
+        atom_count = int(raw_lines[start_index].strip())
+        data_lines = raw_lines[start_index + 2:start_index + 2 + atom_count]
+    else:
+        data_lines = raw_lines[start_index:]
+
     pts: List[List[float]] = []
-    for line in xyz_text.splitlines():
+    for line in data_lines:
         line = line.strip()
         if not line or line.startswith("#") or line.startswith("!"):
             continue
-        parts = line.split()
-        floats: List[float] = []
-        for tok in parts:
-            try:
-                floats.append(float(tok))
-            except ValueError:
-                continue
-        if len(floats) >= 3:
-            pts.append(floats[:3])
+        point = parse_xyz_coordinate_line(line)
+        if point is not None:
+            pts.append(point)
     if len(pts) < 2:
         raise ValueError("XYZ file does not contain at least two 3D points.")
     return np.array(pts, dtype=float)

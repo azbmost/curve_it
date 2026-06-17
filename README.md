@@ -136,6 +136,8 @@ x y z
 
 They can also be standard XYZ-like files with an atom count/comment header and an element label before each coordinate triplet.
 
+The GUI includes a **Convert XYZ...** tool below **View curve** for converting plain coordinate files to molecular XYZ and molecular XYZ back to plain coordinate files. Curve It can use either format as the curve input.
+
 ## Outputs
 
 - The curved PDB is written to `-o/--output-pdb`, or to `<input>_curved.pdb` if no output path is given.
