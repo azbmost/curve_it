@@ -32,7 +32,7 @@ Two modes:
             * Choose the helix PDB file and see the estimated helix axis length.
             * Choose the curve (XYZ/txt) file and see its length, total curvature,
               and writhe (if curvature tools are available).
-            * View the 3D curve using the view_xyzV2.py plotting code (if importable).
+            * View the 3D curve using the view_xyzV3.py plotting code (if importable).
             * Adjust all mapping parameters (scale-mode, scale-anchor, path-type,
               helix_phase, twist, path-start).
             * Run the embedding and write the output PDB.
@@ -133,7 +133,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V2.4"
+APP_VERSION = "V2.5"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -295,6 +295,140 @@ def parse_xyz_coordinate_line(line: str) -> Optional[List[float]]:
     return None
 
 
+def curve_component_label(index: int) -> str:
+    """Return spreadsheet-style labels: A, B, ..., Z, AA, AB, ..."""
+    if index < 0:
+        raise ValueError("Component index must be non-negative.")
+    label = ""
+    n = index
+    while True:
+        label = chr(ord("A") + (n % 26)) + label
+        n = n // 26 - 1
+        if n < 0:
+            break
+    return label
+
+
+def curve_component_index(label: str) -> int:
+    """Convert spreadsheet-style component labels to zero-based indices."""
+    text = (label or "").strip().upper()
+    if not text or not text.isalpha():
+        raise ValueError(f"Invalid component label: {label!r}")
+    value = 0
+    for char in text:
+        value = value * 26 + (ord(char) - ord("A") + 1)
+    return value - 1
+
+
+def describe_curve_components(components: List[np.ndarray]) -> str:
+    """Return a compact description of parsed curve components."""
+    parts = [
+        f"{curve_component_label(i)}:{component.shape[0]}"
+        for i, component in enumerate(components)
+    ]
+    return ", ".join(parts)
+
+
+def combine_curve_components(components: List[np.ndarray],
+                             indices: Optional[List[int]] = None) -> np.ndarray:
+    """Concatenate selected components in file order into one polyline."""
+    if indices is None:
+        indices = list(range(len(components)))
+    if not indices:
+        raise ValueError("At least one curve component must be selected.")
+    selected = [components[i] for i in indices]
+    combined = np.vstack(selected)
+    if combined.shape[0] < 2:
+        raise ValueError("Selected curve component(s) must contain at least two points total.")
+    return combined
+
+
+def parse_curve_component_selection(selection: Optional[str], n_components: int) -> List[int]:
+    """Parse component labels such as 'A,C' or 'A-C' into zero-based indices."""
+    if n_components <= 0:
+        raise ValueError("No curve components are available.")
+    text = (selection or "all").strip()
+    if not text or text.lower() in {"all", "*"}:
+        return list(range(n_components))
+
+    chosen: List[int] = []
+    for token in text.replace(";", ",").replace(" ", ",").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            start_label, end_label = [part.strip() for part in token.split("-", 1)]
+            start = curve_component_index(start_label)
+            end = curve_component_index(end_label)
+            if end < start:
+                start, end = end, start
+            chosen.extend(range(start, end + 1))
+        else:
+            chosen.append(curve_component_index(token))
+
+    unique: List[int] = []
+    for idx in sorted(chosen):
+        if idx < 0 or idx >= n_components:
+            max_label = curve_component_label(n_components - 1)
+            bad_label = str(idx) if idx < 0 else curve_component_label(idx)
+            raise ValueError(f"Component {bad_label} is out of range A-{max_label}.")
+        if idx not in unique:
+            unique.append(idx)
+    if not unique:
+        raise ValueError("No valid curve components were selected.")
+    return unique
+
+
+def format_curve_component_selection(indices: List[int]) -> str:
+    """Return labels such as A,C,D for selected component indices."""
+    return ",".join(curve_component_label(i) for i in indices)
+
+
+def read_xyz_curve_components_from_text(xyz_text: str) -> List[np.ndarray]:
+    """Read one or more curve components from XYZ-like text."""
+    raw_lines = xyz_text.splitlines()
+    nonempty_indices = [i for i, line in enumerate(raw_lines) if line.strip()]
+    if not nonempty_indices:
+        raise ValueError("XYZ file does not contain readable lines.")
+
+    start_index = nonempty_indices[0]
+    if first_token_is_integer(raw_lines[start_index]):
+        atom_count = int(raw_lines[start_index].strip())
+        data_lines = raw_lines[start_index + 2:start_index + 2 + atom_count]
+        pts: List[List[float]] = []
+        for line in data_lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or stripped.startswith("!"):
+                continue
+            point = parse_xyz_coordinate_line(stripped)
+            if point is not None:
+                pts.append(point)
+        if len(pts) < 2:
+            raise ValueError("XYZ file does not contain at least two 3D points.")
+        return [np.array(pts, dtype=float)]
+
+    components: List[np.ndarray] = []
+    current: List[List[float]] = []
+    for line in raw_lines[start_index:]:
+        stripped = line.strip()
+        if not stripped:
+            if current:
+                components.append(np.array(current, dtype=float))
+                current = []
+            continue
+        if stripped.startswith("#") or stripped.startswith("!"):
+            continue
+        point = parse_xyz_coordinate_line(stripped)
+        if point is not None:
+            current.append(point)
+    if current:
+        components.append(np.array(current, dtype=float))
+    components = [component for component in components if component.shape[0] > 0]
+    if not components or sum(component.shape[0] for component in components) < 2:
+        raise ValueError("XYZ file does not contain at least two 3D points.")
+    return components
+
+
 def read_xyz_curve_from_text(xyz_text: str) -> np.ndarray:
     """
     Read a 3D polyline from a generic XYZ-like text file.
@@ -311,30 +445,8 @@ def read_xyz_curve_from_text(xyz_text: str) -> np.ndarray:
     - Otherwise, on each non-comment line, collect numeric tokens and use the
       first three as x,y,z.
     """
-    raw_lines = xyz_text.splitlines()
-    nonempty_indices = [i for i, line in enumerate(raw_lines) if line.strip()]
-    if not nonempty_indices:
-        raise ValueError("XYZ file does not contain readable lines.")
-
-    start_index = nonempty_indices[0]
-    atom_count: Optional[int] = None
-    if first_token_is_integer(raw_lines[start_index]):
-        atom_count = int(raw_lines[start_index].strip())
-        data_lines = raw_lines[start_index + 2:start_index + 2 + atom_count]
-    else:
-        data_lines = raw_lines[start_index:]
-
-    pts: List[List[float]] = []
-    for line in data_lines:
-        line = line.strip()
-        if not line or line.startswith("#") or line.startswith("!"):
-            continue
-        point = parse_xyz_coordinate_line(line)
-        if point is not None:
-            pts.append(point)
-    if len(pts) < 2:
-        raise ValueError("XYZ file does not contain at least two 3D points.")
-    return np.array(pts, dtype=float)
+    components = read_xyz_curve_components_from_text(xyz_text)
+    return combine_curve_components(components)
 
 
 def write_plain_xyz_curve(path: str, points: np.ndarray) -> None:
@@ -1426,6 +1538,7 @@ def build_generation_remarks(
     interp_mode: str,
     interp_n: int,
     interp_p: int,
+    curve_components: Optional[str] = None,
 ) -> List[str]:
     """Build PDB REMARK lines describing how Curve It generated the file."""
     curve_source = curve_xyz_path if curve_xyz_path else "default planar ring curve"
@@ -1441,6 +1554,8 @@ def build_generation_remarks(
         f"Options: interp_mode={interp_mode}; interp_n={int(interp_n)}; interp_p={int(interp_p)}.",
         "Method: principal-axis coordinates mapped onto the target curve with a rotation-minimizing frame and rigid atom-group transforms.",
     ]
+    if curve_components:
+        messages.insert(4, f"Curve components selected: {curve_components}.")
     return make_pdb_remark_lines(messages)
 
 
@@ -1600,6 +1715,8 @@ def launch_gui() -> None:
     curve_points_raw: Optional[np.ndarray] = None
     curve_points: Optional[np.ndarray] = None  # interpolated curve used for embedding/viewing
     curve_xyz_path: Optional[str] = None
+    curve_components_raw: Optional[List[np.ndarray]] = None
+    selected_curve_component_indices: List[int] = []
 
     root = tk.Tk()
     root.title(f"{APP_NAME} {APP_VERSION} - {APP_TITLE}")
@@ -1624,6 +1741,7 @@ def launch_gui() -> None:
     curve_n_raw_var = tk.StringVar(value="N/A")
     curve_n_used_var = tk.StringVar(value="N/A")
     interp_out_path_var = tk.StringVar(value="N/A")
+    curve_components_var = tk.StringVar(value="N/A")
 
     scale_mode_var = tk.StringVar(value="curve_to_helix")
     numeric_length_var = tk.StringVar(value="340.0")  # example default
@@ -1682,6 +1800,11 @@ def launch_gui() -> None:
             "Curve Metrics",
             "Curve length is the polyline arc length. Total curvature and writhe are reported for closed curves only.\n\n"
             "Use these as geometry checks before running the fit."
+        ),
+        "curve_components": (
+            "Curve Components",
+            "Blank lines in a coordinate XYZ/txt file split the curve into components A, B, C, and so on.\n\n"
+            "Use Select components to choose which components are used for fitting. Selected components are concatenated in file order for fitting and metrics."
         ),
         "xyz_convert": (
             "XYZ Converter",
@@ -1954,6 +2077,104 @@ def launch_gui() -> None:
 
     path_type_var.trace_add("write", on_path_type_changed_for_interp)
 
+    def update_curve_component_fields() -> None:
+        if curve_components_raw is None:
+            curve_components_var.set("N/A")
+            return
+        n_components = len(curve_components_raw)
+        selected = format_curve_component_selection(selected_curve_component_indices)
+        details = describe_curve_components(curve_components_raw)
+        curve_components_var.set(f"{n_components} component(s): {details}; selected {selected}")
+
+    def set_selected_curve_components(indices: List[int], show_error: bool = False) -> bool:
+        nonlocal curve_points_raw, selected_curve_component_indices
+        if curve_components_raw is None:
+            curve_points_raw = None
+            curve_n_raw_var.set("N/A")
+            curve_n_used_var.set("N/A")
+            update_curve_component_fields()
+            return False
+        try:
+            selected_points = combine_curve_components(curve_components_raw, indices)
+        except Exception as e:
+            if show_error:
+                messagebox.showerror("Component selection error", str(e))
+            return False
+        selected_curve_component_indices = list(indices)
+        curve_points_raw = selected_points
+        curve_n_raw_var.set(
+            f"{int(selected_points.shape[0])} ({format_curve_component_selection(indices)})"
+        )
+        update_curve_component_fields()
+        refresh_curve_after_interpolation(show_error=show_error)
+        return True
+
+    def open_component_selection_dialog() -> None:
+        nonlocal selected_curve_component_indices
+        if curve_components_raw is None:
+            messagebox.showwarning("No curve components", "Load a curve file first.")
+            return
+
+        dialog = tk.Toplevel(root)
+        dialog.title("Select curve components")
+        dialog.transient(root)
+        dialog.geometry("360x320")
+
+        tk.Label(
+            dialog,
+            text="Choose component(s) to use for fitting",
+            font=section_font,
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=3, sticky="we", padx=10, pady=(10, 4))
+
+        tk.Label(
+            dialog,
+            text="Selected components are concatenated in file order.",
+            fg="gray",
+            anchor="w",
+        ).grid(row=1, column=0, columnspan=3, sticky="we", padx=10, pady=(0, 6))
+
+        listbox = tk.Listbox(dialog, selectmode=tk.MULTIPLE, exportselection=False, height=10)
+        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=listbox.yview)
+        listbox.configure(yscrollcommand=scrollbar.set)
+        for i, component in enumerate(curve_components_raw):
+            label = curve_component_label(i)
+            listbox.insert("end", f"{label}    {component.shape[0]} points")
+            if i in selected_curve_component_indices:
+                listbox.selection_set(i)
+        listbox.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=(10, 0), pady=4)
+        scrollbar.grid(row=2, column=2, sticky="ns", padx=(0, 10), pady=4)
+
+        def select_all_components() -> None:
+            listbox.selection_set(0, "end")
+
+        def apply_selection() -> None:
+            nonlocal selected_curve_component_indices
+            indices = list(listbox.curselection())
+            if not indices:
+                messagebox.showwarning("No components selected", "Select at least one component.")
+                return
+            if set_selected_curve_components(indices, show_error=True):
+                dialog.destroy()
+
+        tk.Button(dialog, text="Select all", command=select_all_components).grid(
+            row=3, column=0, sticky="w", padx=10, pady=(6, 10)
+        )
+        tk.Button(dialog, text="Use selected", command=apply_selection).grid(
+            row=3, column=1, sticky="e", padx=4, pady=(6, 10)
+        )
+        tk.Button(dialog, text="Cancel", command=dialog.destroy).grid(
+            row=3, column=2, sticky="e", padx=10, pady=(6, 10)
+        )
+
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_columnconfigure(1, weight=1)
+        dialog.grid_rowconfigure(2, weight=1)
+        dialog.grab_set()
+        dialog.wait_window()
+
     title_label = tk.Label(
         root,
         text=APP_TITLE,
@@ -2019,28 +2240,31 @@ def launch_gui() -> None:
     curve_entry.grid(row=1, column=1, columnspan=5, sticky="we", padx=4, pady=2)
 
     def load_curve_from_path(path: str) -> Optional[np.ndarray]:
-        nonlocal curve_points_raw, curve_points, curve_xyz_path
+        nonlocal curve_components_raw, curve_points_raw, curve_points, curve_xyz_path, selected_curve_component_indices
         try:
             with open(path, "r") as f:
                 xyz_text = f.read()
-            pts_raw = read_xyz_curve_from_text(xyz_text)
-            curve_n_raw_var.set(str(int(pts_raw.shape[0])))
-            curve_points_raw = pts_raw
+            components_raw = read_xyz_curve_components_from_text(xyz_text)
+            curve_components_raw = components_raw
             curve_points = None
             curve_xyz_path = path
+            selected_curve_component_indices = list(range(len(components_raw)))
 
-            # Apply interpolation according to the current settings and refresh
-            # the displayed metrics.
-            refresh_curve_after_interpolation(show_error=True)
+            # Select all components by default, then apply interpolation and
+            # refresh the displayed metrics.
+            set_selected_curve_components(selected_curve_component_indices, show_error=True)
 
             return curve_points
         except Exception as e:
             import traceback
             traceback.print_exc()
             messagebox.showerror("Error reading curve", f"Failed to read curve:\n{e}")
+            curve_components_raw = None
             curve_points_raw = None
             curve_points = None
             curve_xyz_path = None
+            selected_curve_component_indices = []
+            curve_components_var.set("N/A")
             curve_n_raw_var.set("N/A")
             curve_n_used_var.set("N/A")
             interp_out_path_var.set("N/A")
@@ -2090,9 +2314,16 @@ def launch_gui() -> None:
         closed = (path_type_var.get() == "closed")
         try:
             try:
-                # Use the plotting helper from view_xyzV2.py when available.
-                from curve_it_lib import view_xyzV2 as view_xyz
-                view_xyz.plot_curve(curve_points, closed=closed)
+                # Use the component-aware plotting helper from view_xyzV3.py when available.
+                from curve_it_lib import view_xyzV3 as view_xyz
+                if curve_components_raw is not None and len(curve_components_raw) > 1:
+                    view_xyz.plot_curve_components(
+                        curve_components_raw,
+                        selected_indices=selected_curve_component_indices,
+                        closed=closed,
+                    )
+                else:
+                    view_xyz.plot_curve(curve_points, closed=closed)
                 return
             except Exception:
                 pass
@@ -2260,6 +2491,14 @@ def launch_gui() -> None:
         row=3, column=6, sticky="w", padx=4, pady=2
     )
     help_button(file_frame, "xyz_convert").grid(row=3, column=7, sticky="w", padx=(0, 4), pady=2)
+
+    tk.Label(file_frame, text="Components:").grid(row=4, column=0, sticky="e", padx=4, pady=2)
+    components_entry = ttk.Entry(file_frame, textvariable=curve_components_var, width=48, state="readonly")
+    components_entry.grid(row=4, column=1, columnspan=5, sticky="we", padx=4, pady=2)
+    tk.Button(file_frame, text="Select components...", command=open_component_selection_dialog).grid(
+        row=4, column=6, sticky="w", padx=4, pady=2
+    )
+    help_button(file_frame, "curve_components").grid(row=4, column=7, sticky="w", padx=(0, 4), pady=2)
 
     for col in range(8):
         file_frame.grid_columnconfigure(col, weight=0)
@@ -2592,6 +2831,7 @@ def launch_gui() -> None:
         interp_mode: str,
         interp_n: int,
         interp_p: int,
+        curve_components: Optional[str] = None,
     ) -> str:
         """Return a copyable CLI equivalent for the current GUI run."""
         cmd = [
@@ -2611,8 +2851,10 @@ def launch_gui() -> None:
             "--interp-mode", interp_mode,
             "--interp-n", str(interp_n),
             "--interp-p", str(interp_p),
-            "-o", output_pdb,
         ])
+        if curve_components:
+            cmd.extend(["--curve-components", curve_components])
+        cmd.extend(["-o", output_pdb])
         quoted = [shlex.quote(str(part)) for part in cmd]
         if len(" ".join(quoted)) <= 100:
             return " ".join(quoted)
@@ -2720,6 +2962,9 @@ def launch_gui() -> None:
             interp_p_meta = int(interp_p_var.get().strip())
         except ValueError:
             interp_p_meta = 0
+        selected_component_arg = None
+        if curve_components_raw is not None and curve_xyz_path is not None and len(curve_components_raw) > 1:
+            selected_component_arg = format_curve_component_selection(selected_curve_component_indices)
         cli_command = format_cli_command(
             input_pdb=helix_pdb_path or helix_path_var.get().strip(),
             input_curve=curve_xyz_path,
@@ -2733,6 +2978,7 @@ def launch_gui() -> None:
             interp_mode=interp_mode_var.get(),
             interp_n=interp_n_meta,
             interp_p=interp_p_meta,
+            curve_components=selected_component_arg,
         )
 
         try:
@@ -2770,6 +3016,7 @@ def launch_gui() -> None:
                     interp_mode=interp_mode_var.get(),
                     interp_n=interp_n_meta,
                     interp_p=interp_p_meta,
+                    curve_components=selected_component_arg,
                 )
 
                 write_output_pdb(pdb_text, new_coords, out_path, remark_lines=remark_lines)
@@ -2915,6 +3162,13 @@ def main(argv: Optional[List[str]] = None) -> None:
         help=("When --interp-mode p: number of extra points to insert between each adjacent point pair (>=0). "
               "Default: 0."),
     )
+    parser.add_argument(
+        "--curve-components",
+        default="all",
+        help=("For plain XYZ/txt curve files with blank-line-separated components, choose which "
+              "components to use. Components are labeled A, B, C... in file order. Examples: "
+              "'A', 'B,C', 'A-C', or 'all' (default). Molecular XYZ files are treated as one component."),
+    )
 
     parser.add_argument(
         "--gui", "-g",
@@ -2968,6 +3222,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     print(f"[INFO] Parsed {len(atoms)} atoms from PDB.")
 
     # Read or generate curve.
+    curve_component_selection_label: Optional[str] = None
     if curve_xyz_path is None:
         print("[INFO] No curve XYZ provided; using default planar ring curve.")
         curve_points = generate_ring_curve()
@@ -2976,8 +3231,29 @@ def main(argv: Optional[List[str]] = None) -> None:
         print(f"[INFO] Reading curve XYZ: {curve_xyz_path}")
         with open(curve_xyz_path, "r") as f:
             xyz_text = f.read()
-        curve_points = read_xyz_curve_from_text(xyz_text)
-        print(f"[INFO] Parsed {curve_points.shape[0]} points from curve file.")
+        try:
+            curve_components = read_xyz_curve_components_from_text(xyz_text)
+            selected_curve_components = parse_curve_component_selection(
+                args.curve_components,
+                len(curve_components),
+            )
+            curve_points = combine_curve_components(curve_components, selected_curve_components)
+        except Exception as e:
+            raise SystemExit(f"Failed to read curve components: {e}")
+
+        explicit_components = (args.curve_components or "all").strip().lower() not in {"all", "*", ""}
+        if len(curve_components) > 1 or explicit_components:
+            curve_component_selection_label = format_curve_component_selection(selected_curve_components)
+            print(
+                f"[INFO] Parsed {len(curve_components)} curve component(s): "
+                f"{describe_curve_components(curve_components)}"
+            )
+            print(
+                f"[INFO] Using curve component(s): {curve_component_selection_label} "
+                f"({curve_points.shape[0]} points total)."
+            )
+        else:
+            print(f"[INFO] Parsed {curve_points.shape[0]} points from curve file.")
 
     # Optional curve interpolation (resample/insert points before embedding).
     interp_closed = (args.path_type == "closed")
@@ -3050,6 +3326,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         interp_mode=args.interp_mode,
         interp_n=args.interp_n,
         interp_p=args.interp_p,
+        curve_components=curve_component_selection_label,
     )
 
     write_rescaled_curve_xyz(curve_xyz_path, scaled_curve_pts, scaling_applied)

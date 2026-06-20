@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V2.4`  
+Version: `V2.5`  
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -79,6 +79,12 @@ Run with a curve file:
 python3 curve_it.py input.pdb curve.xyz -o output_curved.pdb
 ```
 
+Use selected components from a blank-line-separated curve file:
+
+```bash
+python3 curve_it.py input.pdb br_abz.txt --curve-components B,C -o output_curved.pdb
+```
+
 Treat the curve as a closed loop:
 
 ```bash
@@ -136,6 +142,10 @@ x y z
 
 They can also be standard XYZ-like files with an atom count/comment header and an element label before each coordinate triplet.
 
+Plain coordinate files may contain multiple components separated by one or more blank lines. Curve It labels those components `A`, `B`, `C`, and so on in file order. By default, all components are concatenated in file order and used as the curve. Use `--curve-components` in CLI mode, or **Select components...** in the GUI, to choose a subset such as `A`, `B,C`, or `A-C`.
+
+The GUI **View curve** window can show all parsed components or the currently selected components. Molecular XYZ files are treated as one component and can also be used directly as the curve input.
+
 The GUI includes a **Convert XYZ...** tool below **View curve** for converting plain coordinate files to molecular XYZ and molecular XYZ back to plain coordinate files. Curve It can use either format as the curve input.
 
 ## Outputs
@@ -179,14 +189,15 @@ Supporting scripts live in `curve_it_lib/`:
 
 - `interpolate_xyz.py`
 - `cal_xyz_total_curvature_writheV2.py`
-- `view_xyzV2.py`
+- `view_xyzV3.py`
 
 They can still be run directly, for example:
 
 ```bash
 python3 curve_it_lib/interpolate_xyz.py curve.xyz --n 400
 python3 curve_it_lib/cal_xyz_total_curvature_writheV2.py curve.xyz
-python3 curve_it_lib/view_xyzV2.py curve.xyz
+python3 curve_it_lib/view_xyzV3.py curve.xyz
+python3 curve_it_lib/view_xyzV3.py multi_component.txt --components A,C
 ```
 
 ## License

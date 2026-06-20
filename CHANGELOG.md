@@ -1,5 +1,15 @@
 # Changelog
 
+## V2.5 - 2026-06-20
+
+- Added component-aware parsing for plain XYZ/txt curve files separated by blank lines; components are labeled `A`, `B`, `C`, and so on.
+- Added CLI `--curve-components` selection with support for values such as `A`, `B,C`, `A-C`, and `all`.
+- Added GUI component summary and **Select components...** dialog; all components remain selected by default for backward compatibility.
+- Updated **View curve** to use `curve_it_lib/view_xyzV3.py`, including component checkboxes plus **All components** and **Selected** view controls.
+- Added selected curve component labels to generated PDB `REMARK 900` provenance lines.
+- Confirmed molecular XYZ files remain usable as curve inputs and are treated as a single component.
+- Kept optional GUI icon loading from `assets/icon.png`; the app still runs if the icon asset is absent.
+
 ## V2.4 - 2026-06-17
 
 - Renamed the main script from `curve_naV2.3.py` to `curve_it.py`.
