@@ -34,12 +34,12 @@ Example:
 
 import argparse
 import os
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, CheckButtons
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  needed for 3D projection
+from mpl_toolkits.mplot3d import Axes3D, proj3d  # noqa: F401  needed for 3D projection
 
 
 def token_to_float(token: str) -> Optional[float]:
@@ -244,6 +244,122 @@ def set_equal_aspect_3d(ax, points: np.ndarray) -> None:
     ax.set_zlim(mid_z - half, mid_z + half)
 
 
+def _project_points_to_display(ax: Any, points: np.ndarray) -> np.ndarray:
+    """Project 3D points to display-pixel coordinates for hover picking."""
+    x2, y2, _z2 = proj3d.proj_transform(
+        points[:, 0],
+        points[:, 1],
+        points[:, 2],
+        ax.get_proj(),
+    )
+    return ax.transData.transform(np.column_stack((x2, y2)))
+
+
+def _nearest_path_location(
+    ax: Any,
+    mouse_xy: np.ndarray,
+    points: np.ndarray,
+    closed: bool,
+) -> Optional[Dict[str, float]]:
+    """Return nearest projected polyline location and normalized path position."""
+    pts = np.asarray(points, dtype=float)
+    if pts.ndim != 2 or pts.shape[1] != 3 or pts.shape[0] < 2:
+        return None
+
+    n_points = pts.shape[0]
+    n_segments = n_points if (closed and n_points > 2) else n_points - 1
+    if n_segments <= 0:
+        return None
+
+    display_pts = _project_points_to_display(ax, pts)
+    segment_lengths = []
+    for i in range(n_segments):
+        j = (i + 1) % n_points
+        segment_lengths.append(float(np.linalg.norm(pts[j] - pts[i])))
+    segment_lengths_arr = np.asarray(segment_lengths, dtype=float)
+    total_length = float(np.sum(segment_lengths_arr))
+    if total_length <= 0.0:
+        return None
+
+    cumulative = np.zeros(n_segments + 1, dtype=float)
+    cumulative[1:] = np.cumsum(segment_lengths_arr)
+
+    best_distance = float("inf")
+    best_u = 0.0
+    for i in range(n_segments):
+        j = (i + 1) % n_points
+        a = display_pts[i]
+        b = display_pts[j]
+        ab = b - a
+        denom = float(np.dot(ab, ab))
+        if denom <= 1e-12:
+            alpha = 0.0
+            projected = a
+        else:
+            alpha = float(np.clip(np.dot(mouse_xy - a, ab) / denom, 0.0, 1.0))
+            projected = a + alpha * ab
+        distance = float(np.linalg.norm(mouse_xy - projected))
+        if distance < best_distance:
+            best_distance = distance
+            arc_position = cumulative[i] + alpha * segment_lengths_arr[i]
+            best_u = arc_position / total_length
+
+    return {"distance_px": best_distance, "u": float(np.clip(best_u, 0.0, 1.0))}
+
+
+def attach_path_location_report(
+    fig: Any,
+    ax: Any,
+    curve_entries: List[Dict[str, Any]],
+    pixel_tolerance: float = 12.0,
+) -> Any:
+    """Show normalized path location when the cursor is near a plotted curve."""
+    status_text = fig.text(
+        0.02,
+        0.015,
+        "Path location: move cursor over curve",
+        fontsize=9,
+        color="0.25",
+    )
+
+    def on_motion(event: Any) -> None:
+        if event.inaxes is not ax or event.x is None or event.y is None:
+            status_text.set_text("Path location: move cursor over curve")
+            fig.canvas.draw_idle()
+            return
+
+        mouse_xy = np.array([event.x, event.y], dtype=float)
+        best = None
+        best_label = ""
+        for entry in curve_entries:
+            visible_func = entry.get("visible")
+            if callable(visible_func) and not visible_func():
+                continue
+            result = _nearest_path_location(
+                ax,
+                mouse_xy,
+                np.asarray(entry["points"], dtype=float),
+                bool(entry.get("closed", True)),
+            )
+            if result is None:
+                continue
+            if best is None or result["distance_px"] < best["distance_px"]:
+                best = result
+                best_label = str(entry.get("label", "curve"))
+
+        if best is not None and best["distance_px"] <= pixel_tolerance:
+            status_text.set_text(
+                "Path location: {} u={:.4f}".format(best_label, best["u"])
+            )
+        else:
+            status_text.set_text("Path location: move cursor over curve")
+        fig.canvas.draw_idle()
+
+    cid = fig.canvas.mpl_connect("motion_notify_event", on_motion)
+    fig._curve_it_path_location_report = (status_text, cid)
+    return status_text
+
+
 def plot_curve(points: np.ndarray, closed: bool = True) -> None:
     """
     Plot the 3D curve.
@@ -307,6 +423,11 @@ def plot_curve(points: np.ndarray, closed: bool = True) -> None:
     ax.set_zlabel("Z")
     ax.set_title("3D Curve")
     ax.legend(loc="best")
+    attach_path_location_report(
+        fig,
+        ax,
+        [{"label": "curve", "points": points, "closed": closed}],
+    )
 
     plt.tight_layout()
     plt.show()
@@ -451,6 +572,18 @@ def plot_curve_components(
 
     all_button.on_clicked(lambda _event: apply_visibility(range(n_components)))
     selected_button.on_clicked(lambda _event: apply_visibility(selected_set))
+
+    curve_entries = []
+    for idx, points in enumerate(clean_components):
+        curve_entries.append({
+            "label": component_label(idx),
+            "points": points,
+            "closed": closed,
+            "visible": (lambda component_idx=idx: any(
+                artist.get_visible() for artist in artists_by_component[component_idx]
+            )),
+        })
+    attach_path_location_report(fig, ax, curve_entries)
 
     fig._curve_component_widgets = (check, all_button, selected_button)
     plt.show()

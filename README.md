@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V2.5`  
+Version: `V2.6`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -19,8 +19,8 @@ GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along An
 
 - Python 3.9 or newer
 - Required: `numpy`
-- Optional but recommended: `scipy` for curvature/writhe reporting
-- Optional: `matplotlib` for the GUI curve viewer
+- Optional but recommended: `scipy` for curvature/writhe reporting and the local curvature/torsion tool
+- Optional: `matplotlib` for the GUI curve viewer and local analysis plots
 - Optional: Tkinter for GUI mode. It is included with many Python installations.
 
 Install the Python packages:
@@ -144,9 +144,27 @@ They can also be standard XYZ-like files with an atom count/comment header and a
 
 Plain coordinate files may contain multiple components separated by one or more blank lines. Curve It labels those components `A`, `B`, `C`, and so on in file order. By default, all components are concatenated in file order and used as the curve. Use `--curve-components` in CLI mode, or **Select components...** in the GUI, to choose a subset such as `A`, `B,C`, or `A-C`.
 
-The GUI **View curve** window can show all parsed components or the currently selected components. Molecular XYZ files are treated as one component and can also be used directly as the curve input.
+The GUI **View curve** window can show all parsed components or the currently selected components. When the mouse cursor is close to the plotted curve or points, the viewer reports the normalized path location `u` from `0` to `1`. Molecular XYZ files are treated as one component and can also be used directly as the curve input.
 
-The GUI includes a **Convert XYZ...** tool below **View curve** for converting plain coordinate files to molecular XYZ and molecular XYZ back to plain coordinate files. Curve It can use either format as the curve input.
+## GUI Tools
+
+The GUI has a dedicated **Tools** area for utility tools.
+
+**Convert XYZ...** converts plain coordinate files to molecular XYZ and molecular XYZ back to plain coordinate files. Curve It can use either format as the curve input.
+
+**Local curvature/torsion...** opens `curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py`. This tool writes a CSV table with normalized path position, coordinates, local curvature, regularized local torsion, local writhe density, and diagnostic columns. Its GUI includes a quick-loading test example for a three-lobe trefoil knot, the `(2,3)` torus knot:
+
+```text
+x(t) = (2 + cos(3t)) cos(2t)
+y(t) = (2 + cos(3t)) sin(2t)
+z(t) = sin(3t),   0 <= t < 2*pi
+```
+
+You can also run the trefoil example from the command line:
+
+```bash
+python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py --example-trefoil --no-plot
+```
 
 ## Outputs
 
@@ -189,6 +207,7 @@ Supporting scripts live in `curve_it_lib/`:
 
 - `interpolate_xyz.py`
 - `cal_xyz_total_curvature_writheV2.py`
+- `cal_xyz_local_curvature_torsionV3_1.py`
 - `view_xyzV3.py`
 
 They can still be run directly, for example:
@@ -196,6 +215,8 @@ They can still be run directly, for example:
 ```bash
 python3 curve_it_lib/interpolate_xyz.py curve.xyz --n 400
 python3 curve_it_lib/cal_xyz_total_curvature_writheV2.py curve.xyz
+python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py curve.xyz --no-plot
+python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py --example-trefoil --no-plot
 python3 curve_it_lib/view_xyzV3.py curve.xyz
 python3 curve_it_lib/view_xyzV3.py multi_component.txt --components A,C
 ```

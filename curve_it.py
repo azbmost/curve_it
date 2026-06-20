@@ -133,7 +133,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V2.5"
+APP_VERSION = "V2.6"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -732,7 +732,7 @@ def smooth_closed_curve(points: np.ndarray) -> np.ndarray:
     if not HAVE_CURVATURE_WRITHE:
         return points
 
-    pts = np.asarray(points, dtype=float)
+    pts = _strip_closing_duplicate(np.asarray(points, dtype=float), eps=1e-8)
     n = len(pts)
     if n < 7:
         return pts
@@ -782,7 +782,7 @@ def smooth_closed_curve_force(points: np.ndarray) -> np.ndarray:
     if not HAVE_CURVATURE_WRITHE:
         return points
 
-    pts = np.asarray(points, dtype=float)
+    pts = _strip_closing_duplicate(np.asarray(points, dtype=float), eps=1e-8)
     n = len(pts)
     if n < 7:
         return pts
@@ -1819,6 +1819,14 @@ def launch_gui() -> None:
             "X x y z\n\n"
             "Curve It can use either format as a curve input."
         ),
+        "local_curvature_torsion": (
+            "Local Curvature/Torsion",
+            "Open the local curve analysis tool. It writes a CSV table with normalized path position, coordinates, local curvature, regularized local torsion, and local writhe density.\n\n"
+            "The tool includes a quick example for a three-lobe trefoil knot, the (2,3) torus knot:\n"
+            "x(t) = (2 + cos(3t)) cos(2t)\n"
+            "y(t) = (2 + cos(3t)) sin(2t)\n"
+            "z(t) = sin(3t)"
+        ),
         "path_type": (
             "Path Type",
             "closed treats the curve as a periodic loop and can wrap the fitted PDB around the curve.\n\n"
@@ -2475,6 +2483,22 @@ def launch_gui() -> None:
         except Exception as e:
             messagebox.showerror("Conversion error", f"Failed to write converted file:\n{e}")
 
+    def launch_local_curvature_torsion_tool() -> None:
+        script_path = resource_path(
+            os.path.join("curve_it_lib", "cal_xyz_local_curvature_torsionV3_1.py")
+        )
+        if not os.path.isfile(script_path):
+            messagebox.showerror(
+                "Tool not found",
+                f"Could not find the local curvature/torsion tool:\n{script_path}",
+            )
+            return
+        try:
+            import subprocess
+            subprocess.Popen([sys.executable, script_path, "--gui"])
+        except Exception as e:
+            messagebox.showerror("Tool launch error", f"Failed to launch tool:\n{e}")
+
     tk.Button(file_frame, text="View curve", command=view_curve).grid(
         row=2, column=6, sticky="w", padx=4, pady=2
     )
@@ -2487,10 +2511,6 @@ def launch_gui() -> None:
     tk.Label(file_frame, text="Writhe:").grid(row=3, column=4, sticky="e", padx=4, pady=2)
     writhe_entry = ttk.Entry(file_frame, textvariable=writhe_var, width=16, state="readonly")
     writhe_entry.grid(row=3, column=5, sticky="we", padx=4, pady=2)
-    tk.Button(file_frame, text="Convert XYZ...", command=convert_xyz_file_dialog).grid(
-        row=3, column=6, sticky="w", padx=4, pady=2
-    )
-    help_button(file_frame, "xyz_convert").grid(row=3, column=7, sticky="w", padx=(0, 4), pady=2)
 
     tk.Label(file_frame, text="Components:").grid(row=4, column=0, sticky="e", padx=4, pady=2)
     components_entry = ttk.Entry(file_frame, textvariable=curve_components_var, width=48, state="readonly")
@@ -2505,9 +2525,28 @@ def launch_gui() -> None:
     file_frame.grid_columnconfigure(1, weight=1)
     file_frame.grid_columnconfigure(5, weight=1)
 
+    # --- Tools frame ---
+    tools_frame = tk.LabelFrame(root, text="Tools", font=section_font)
+    tools_frame.grid(row=2, column=0, sticky="nsew", padx=8, pady=6)
+    tk.Button(tools_frame, text="Convert XYZ...", command=convert_xyz_file_dialog).grid(
+        row=0, column=0, sticky="w", padx=4, pady=4
+    )
+    help_button(tools_frame, "xyz_convert").grid(row=0, column=1, sticky="w", padx=(0, 14), pady=4)
+    tk.Button(
+        tools_frame,
+        text="Local curvature/torsion...",
+        command=launch_local_curvature_torsion_tool,
+    ).grid(row=0, column=2, sticky="w", padx=4, pady=4)
+    help_button(tools_frame, "local_curvature_torsion").grid(
+        row=0, column=3, sticky="w", padx=(0, 4), pady=4
+    )
+    for col in range(4):
+        tools_frame.grid_columnconfigure(col, weight=0)
+    tools_frame.grid_columnconfigure(4, weight=1)
+
     # --- Curve parameters frame ---
     curve_param_frame = tk.LabelFrame(root, text="Curve parameters", font=section_font)
-    curve_param_frame.grid(row=2, column=0, sticky="nsew", padx=8, pady=6)
+    curve_param_frame.grid(row=3, column=0, sticky="nsew", padx=8, pady=6)
 
     tk.Label(curve_param_frame, text="Interpolation mode:").grid(
         row=0, column=0, sticky="e", padx=4, pady=2
@@ -2613,7 +2652,7 @@ def launch_gui() -> None:
 
     # --- Parameters frame ---
     param_frame = tk.LabelFrame(root, text="Mapping parameters", font=section_font)
-    param_frame.grid(row=3, column=0, sticky="nsew", padx=8, pady=6)
+    param_frame.grid(row=4, column=0, sticky="nsew", padx=8, pady=6)
 
     # Scale mode and numeric target length
     tk.Label(param_frame, text="Scale mode:").grid(row=0, column=0, sticky="e", padx=4, pady=2)
@@ -2760,7 +2799,7 @@ def launch_gui() -> None:
 
     # --- Output and run frame ---
     out_frame = tk.LabelFrame(root, text="Output and run", font=section_font)
-    out_frame.grid(row=4, column=0, sticky="nsew", padx=8, pady=6)
+    out_frame.grid(row=5, column=0, sticky="nsew", padx=8, pady=6)
 
     tk.Label(out_frame, text="Output PDB:").grid(row=0, column=0, sticky="e", padx=4, pady=2)
     output_entry = tk.Entry(out_frame, textvariable=output_path_var, width=44)
@@ -2789,7 +2828,7 @@ def launch_gui() -> None:
 
     # --- Run log frame ---
     log_frame = tk.LabelFrame(root, text="Run log", font=section_font)
-    log_frame.grid(row=5, column=0, sticky="nsew", padx=8, pady=(0, 8))
+    log_frame.grid(row=6, column=0, sticky="nsew", padx=8, pady=(0, 8))
     log_text = tk.Text(log_frame, height=8, wrap="word", state="disabled")
     log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=log_text.yview)
     log_text.configure(yscrollcommand=log_scroll.set)
@@ -3049,7 +3088,8 @@ def launch_gui() -> None:
     root.grid_rowconfigure(2, weight=0)
     root.grid_rowconfigure(3, weight=0)
     root.grid_rowconfigure(4, weight=0)
-    root.grid_rowconfigure(5, weight=1)
+    root.grid_rowconfigure(5, weight=0)
+    root.grid_rowconfigure(6, weight=1)
 
     root.mainloop()
 

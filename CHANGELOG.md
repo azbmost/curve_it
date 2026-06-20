@@ -1,5 +1,14 @@
 # Changelog
 
+## V2.6 - 2026-06-20
+
+- Added `curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py` as a Curve It tool for local curvature, regularized torsion, and local writhe-density CSV output.
+- Added a dedicated GUI **Tools** area containing **Convert XYZ...** and **Local curvature/torsion...** for current and future utilities.
+- Added a quick-loading and quick-running trefoil example to the local curvature/torsion tool: `x=(2+cos(3t))cos(2t)`, `y=(2+cos(3t))sin(2t)`, `z=sin(3t)`.
+- Added cursor hover reporting in **View curve** so the plot footer shows normalized path location `u` from `0` to `1` when the cursor is close to the curve.
+- Revised `cal_xyz_total_curvature_writheV2.py` to strip duplicated closed-curve endpoints before smoothing/spline fitting and to use normalized chord-length spline parameterization.
+- Updated in-memory closed-curve smoothing in `curve_it.py` to strip duplicated final points before smoothing.
+
 ## V2.5 - 2026-06-20
 
 - Added component-aware parsing for plain XYZ/txt curve files separated by blank lines; components are labeled `A`, `B`, `C`, and so on.

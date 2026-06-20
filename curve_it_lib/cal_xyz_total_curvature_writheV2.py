@@ -175,6 +175,20 @@ def smooth_closed_points(points: np.ndarray) -> np.ndarray:
     return smoothed_points
 
 
+def strip_duplicate_endpoint(points: np.ndarray, tol: float = 1e-8) -> np.ndarray:
+    """
+    Remove a duplicated final point from a closed curve.
+
+    Periodic smoothing/spline code closes the curve internally. If the input
+    already repeats the first point as the final row, keeping both rows can
+    overweight that same geometric location.
+    """
+    pts = np.asarray(points, dtype=float)
+    if len(pts) > 1 and np.linalg.norm(pts[0] - pts[-1]) <= tol:
+        return pts[:-1].copy()
+    return pts
+
+
 def read_xyz_like(filename: str, file_format: str = "auto", smooth: bool = True) -> np.ndarray:
     """
     Read 3D points and optionally smooth them as a closed curve.
@@ -187,6 +201,8 @@ def read_xyz_like(filename: str, file_format: str = "auto", smooth: bool = True)
     if len(points) < 4:
         raise ValueError("At least 4 points are needed for a closed 3D curve.")
 
+    points = strip_duplicate_endpoint(points)
+
     if smooth:
         points = smooth_closed_points(points)
 
@@ -197,15 +213,35 @@ def build_periodic_splines(points: np.ndarray) -> Tuple[CubicSpline, CubicSpline
     """
     Build periodic cubic splines x(t), y(t), z(t) for a closed curve.
 
-    If the first and last points are not equal, the curve is closed by
-    appending the first point.
+    The spline parameter t is normalized chord length, which is more stable
+    than uniform point-index spacing for irregularly sampled curves. If the
+    input repeats the first point as the final row, the duplicate is removed
+    before the curve is closed internally.
     """
-    points = np.asarray(points, dtype=float)
+    points = strip_duplicate_endpoint(np.asarray(points, dtype=float))
+    if len(points) < 4:
+        raise ValueError("At least 4 non-duplicated points are needed for a closed 3D curve.")
 
-    if not np.allclose(points[0], points[-1]):
-        points = np.vstack([points, points[0]])
+    points = np.vstack([points, points[0]])
+    segment_lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    total_length = float(np.sum(segment_lengths))
+    if total_length <= 0.0:
+        raise ValueError("The curve has zero total chord length.")
 
-    t = np.linspace(0.0, 1.0, len(points))
+    t = np.empty(len(points), dtype=float)
+    t[0] = 0.0
+    t[1:] = np.cumsum(segment_lengths) / total_length
+    t[-1] = 1.0
+
+    keep = np.ones(len(t), dtype=bool)
+    if len(t) > 2:
+        keep[1:-1] = np.diff(t[:-1]) > 1e-14
+    keep[-1] = True
+    points = points[keep]
+    t = t[keep]
+    if len(points) < 4:
+        raise ValueError("At least 4 non-duplicated points are needed for a closed 3D curve.")
+
     spline_x = CubicSpline(t, points[:, 0], bc_type="periodic")
     spline_y = CubicSpline(t, points[:, 1], bc_type="periodic")
     spline_z = CubicSpline(t, points[:, 2], bc_type="periodic")
