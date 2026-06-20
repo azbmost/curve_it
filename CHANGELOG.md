@@ -1,5 +1,13 @@
 # Changelog
 
+## V2.7 - 2026-06-20
+
+- Added Plane It as a companion GUI/CLI tool via `plane_it.py` and versioned implementation `plane_itV3_6.py`, adapted from the provided V3.6 projection script.
+- Added **Plane It...** to the Curve It GUI **Tools** area without changing existing Curve It processing behavior.
+- Added the supplied Plane It icon at `assets/plane_it_icon.png`.
+- Updated Plane It branding in user-facing docstrings, CLI help, GUI title/messages, and projection-basis PDB remarks.
+- Updated README with Plane It GUI/CLI usage, DSSR default-output behavior, blank-line coordinate component handling, and PyInstaller packaging examples.
+
 ## V2.6 - 2026-06-20
 
 - Added `curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py` as a Curve It tool for local curvature, regularized torsion, and local writhe-density CSV output.

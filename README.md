@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V2.6`
+Version: `V2.7`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -116,6 +116,37 @@ python3 curve_it.py input.pdb curve.xyz --interp-mode n --interp-n 400
 python3 curve_it.py input.pdb curve.xyz --interp-mode p --interp-p 5
 ```
 
+## Plane It
+
+Plane It projects selected atoms or 3D points from PDB/XYZ/text files into 2D SVG using PCA or current XY coordinates.
+
+Launch the Plane It GUI:
+
+```bash
+python3 plane_it.py
+python3 plane_it.py --gui
+```
+
+Basic CLI examples:
+
+```bash
+python3 plane_it.py input.pdb --atom-type P
+python3 plane_it.py input.pdb --atom-type P --draw-lines
+python3 plane_it.py input.pdb --atom-type P --draw-lines --draw-base-pairs
+python3 plane_it.py points.txt --atom-type all
+python3 plane_it.py input.pdb --atom-type P --write-projection-basis
+```
+
+Plain coordinate text files may contain multiple components separated by blank lines; Plane It treats those components as chains `A`, `B`, `C`, and so on.
+
+DSSR base-pair lines use the default output path `<input_folder>/tmp_file/<input_filename>.out`. When needed, Plane It may try to run:
+
+```bash
+x3dna-dssr -i=<input> --more -o=<default output>
+```
+
+This requires `x3dna-dssr` to be installed and available on `PATH`; otherwise, place an existing DSSR output file at the default path before using `--draw-base-pairs`.
+
 ## Curve Interpolation
 
 Interpolation under **Curve parameters** changes the curve that Curve It actually uses for the run. It is not only for total curvature and writhe reporting.
@@ -166,6 +197,8 @@ You can also run the trefoil example from the command line:
 python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py --example-trefoil --no-plot
 ```
 
+**Plane It...** opens the Plane It companion GUI.
+
 ## Outputs
 
 - The curved PDB is written to `-o/--output-pdb`, or to `<input>_curved.pdb` if no output path is given.
@@ -181,12 +214,13 @@ Protein PDBs can be handled when the structure has a meaningful roughly straight
 On macOS/Linux, make the script directly executable:
 
 ```bash
-chmod +x curve_it.py
+chmod +x curve_it.py plane_it.py
 ./curve_it.py --version
 ./curve_it.py input.pdb curve.xyz -o output_curved.pdb
+./plane_it.py --help
 ```
 
-To run it from anywhere, place this repo folder on your `PATH`, or create a small wrapper script that calls the full path to `curve_it.py`.
+To run them from anywhere, place this repo folder on your `PATH`, or create small wrapper scripts that call the full paths to `curve_it.py` and `plane_it.py`.
 
 ## Build A Standalone Executable
 
@@ -195,11 +229,12 @@ PyInstaller is one common option:
 ```bash
 python3 -m pip install pyinstaller
 python3 -m PyInstaller --onefile --name curve_it --add-data "assets/icon.png:assets" curve_it.py
+python3 -m PyInstaller --onefile --name plane_it --add-data "assets/plane_it_icon.png:assets" plane_it.py
 ```
 
-For a GUI-style app bundle, you can add `--windowed`. On macOS, PyInstaller's `--icon` option expects an `.icns` file, so `assets/icon.png` is included as a GUI/task-menu asset but is not required for the script to run.
+For a GUI-style app bundle, you can add `--windowed`. On macOS, PyInstaller's `--icon` option expects an `.icns` file, so PNG files in `assets/` are included as GUI/task-menu assets but are not required for the scripts to run. `assets/plane_it_icon.png` is the supplied Plane It task-menu/GUI icon.
 
-The script checks for `assets/icon.png` at runtime and continues normally if it is missing.
+The scripts check for their icons at runtime and continue normally if an icon is missing.
 
 ## Helper Modules
 
