@@ -1988,7 +1988,7 @@ def write_projection_svg(
         label = chain_label(atom2.chain)
         out: List[str] = []
         stroke = getattr(args, "line_underlay_stroke", "#ffffff") if underlay else line_stroke_for(selected2)
-        width_value = style.line_width + float(getattr(args, "line_underlay_extra_width", 2.0)) if underlay else style.line_width
+        width_value = style.line_width + float(getattr(args, "line_underlay_extra_width", 8.0)) if underlay else style.line_width
         opacity_value = float(getattr(args, "line_underlay_opacity", 1.0)) if underlay else style.line_opacity
         class_name = "neighbor-line-underlay" if underlay else "neighbor-line"
         mode = normalize_connection_mode(segment.connection_mode)
@@ -2085,7 +2085,7 @@ def write_projection_svg(
         x2, y2 = to_svg_xy(extension.end_x, extension.end_y, scale, x_offset, y_offset, invert_y)
         seg_depth = extension_depth(extension)
         stroke = getattr(args, "line_underlay_stroke", "#ffffff") if underlay else line_stroke_for(selected)
-        width_value = style.line_width + float(getattr(args, "line_underlay_extra_width", 2.0)) if underlay else style.line_width
+        width_value = style.line_width + float(getattr(args, "line_underlay_extra_width", 8.0)) if underlay else style.line_width
         opacity_value = float(getattr(args, "line_underlay_opacity", 1.0)) if underlay else style.line_opacity
         class_name = "neighbor-line-underlay terminal-extension-underlay" if underlay else "neighbor-line terminal-extension"
         title_prefix = "3-prime O3' extension underlay" if underlay else "3-prime O3' extension"
@@ -2193,7 +2193,7 @@ def write_projection_svg(
                 x2=svg_float(x2),
                 y2=svg_float(y2),
                 stroke=svg_escape(getattr(args, "base_pair_stroke", "#444444")),
-                width=svg_float(float(getattr(args, "base_pair_width", 1.0))),
+                width=svg_float(float(getattr(args, "base_pair_width", 3.0))),
                 opacity=svg_float(float(getattr(args, "base_pair_opacity", 0.75))),
                 bp_index=svg_escape(bp.index),
                 nt1=svg_escape(bp.nt1),
@@ -2673,9 +2673,9 @@ def validate_svg_args(args: argparse.Namespace) -> None:
     normalize_connection_mode(getattr(args, "connection_mode", "smooth"))
     if not (0.0 <= float(getattr(args, "line_underlay_opacity", 1.0)) <= 1.0):
         raise ValueError("--line-underlay-opacity must be between 0 and 1")
-    if float(getattr(args, "line_underlay_extra_width", 2.0)) < 0:
+    if float(getattr(args, "line_underlay_extra_width", 8.0)) < 0:
         raise ValueError("--line-underlay-extra-width must be non-negative")
-    if float(getattr(args, "base_pair_width", 1.0)) < 0:
+    if float(getattr(args, "base_pair_width", 3.0)) < 0:
         raise ValueError("--base-pair-width must be non-negative")
     if not (0.0 <= float(getattr(args, "base_pair_opacity", 0.75)) <= 1.0):
         raise ValueError("--base-pair-opacity must be between 0 and 1")
@@ -2877,7 +2877,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--depth-front", choices=["positive", "negative"], default="positive", help="Which depth side is front for SVG depth ordering. Default: positive")
     parser.add_argument("--line-underlay", action="store_true", help="When --depth-order-lines is used, draw a wider line under each neighbor segment, usually white, to make depth separation clearer")
     parser.add_argument("--line-underlay-stroke", default="#ffffff", help="Stroke color for the depth-order neighbor-line underlay. Default: white")
-    parser.add_argument("--line-underlay-extra-width", type=float, default=2.0, help="Additional width added to each underlay line relative to the visible neighbor line. Default: 2")
+    parser.add_argument("--line-underlay-extra-width", type=float, default=8.0, help="Additional width added to each underlay line relative to the visible neighbor line. Default: 8.0")
     parser.add_argument("--line-underlay-opacity", type=float, default=1.0, help="Opacity of the neighbor-line underlay. Default: 1")
     parser.add_argument("--pdb-order-circles", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--pdb-order-lines", action="store_true", help=argparse.SUPPRESS)
@@ -2894,7 +2894,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--draw-base-pairs", action="store_true", help="Draw base-pair interaction lines parsed from the default x3dna-dssr output; lines connect paired C1' atoms")
     parser.add_argument("--base-pair-stroke", default="#444444", help="Base-pair line color. Default: #444444")
-    parser.add_argument("--base-pair-width", type=float, default=1.0, help="Base-pair line width. Default: 1")
+    parser.add_argument("--base-pair-width", type=float, default=3.0, help="Base-pair line width. Default: 3.0")
     parser.add_argument("--base-pair-opacity", type=float, default=0.75, help="Base-pair line opacity. Default: 0.75")
     parser.add_argument("--write-pca-pdb", "--write-projection-basis", dest="write_pca_pdb", action="store_true", help="Write a projection-basis PDB/XYZ file. PDB input writes PDB; XYZ/coordinate input writes XYZ")
     parser.add_argument("--pca-pdb-output", "--projection-basis-output", dest="pca_pdb_output", default=None, help="Output projection-basis PDB/XYZ path. Default: <input_stem>_<atom/options>_PCA.pdb for PDB input, or _PCA before the original XYZ/text extension for XYZ/coordinate input")
@@ -2936,7 +2936,7 @@ def namespace_from_gui_values(values: dict) -> argparse.Namespace:
         depth_front=values.get("depth_front", "positive"),
         line_underlay=values.get("line_underlay", False),
         line_underlay_stroke=values.get("line_underlay_stroke", "#ffffff"),
-        line_underlay_extra_width=float(values.get("line_underlay_extra_width", 2.0)),
+        line_underlay_extra_width=float(values.get("line_underlay_extra_width", 8.0)),
         line_underlay_opacity=float(values.get("line_underlay_opacity", 1.0)),
         pdb_order_circles=False,
         pdb_order_lines=False,
@@ -2946,7 +2946,7 @@ def namespace_from_gui_values(values: dict) -> argparse.Namespace:
         style=values.get("style_specs", []),
         draw_base_pairs=values.get("draw_base_pairs", False),
         base_pair_stroke=values.get("base_pair_stroke", "#444444"),
-        base_pair_width=float(values.get("base_pair_width", 1.0)),
+        base_pair_width=float(values.get("base_pair_width", 3.0)),
         base_pair_opacity=float(values.get("base_pair_opacity", 0.75)),
         write_pca_pdb=values["write_pca_pdb"],
         pca_pdb_output=values["pca_pdb_output"] or None,
@@ -3156,11 +3156,11 @@ def run_gui() -> int:
     depth_front_var = tk.StringVar(value="positive")
     line_underlay_var = tk.BooleanVar(value=False)
     line_underlay_stroke_var = tk.StringVar(value="#ffffff")
-    line_underlay_extra_width_var = tk.StringVar(value="2.0")
+    line_underlay_extra_width_var = tk.StringVar(value="8.0")
     line_underlay_opacity_var = tk.StringVar(value="1.0")
     draw_base_pairs_var = tk.BooleanVar(value=False)
     base_pair_stroke_var = tk.StringVar(value="#444444")
-    base_pair_width_var = tk.StringVar(value="1.0")
+    base_pair_width_var = tk.StringVar(value="3.0")
     base_pair_opacity_var = tk.StringVar(value="0.75")
     xy_only_var = tk.BooleanVar(value=False)
     write_pca_pdb_var = tk.BooleanVar(value=False)
@@ -3864,14 +3864,14 @@ def run_gui() -> int:
             "depth_front": depth_front_var.get(),
             "line_underlay": bool(line_underlay_var.get()),
             "line_underlay_stroke": line_underlay_stroke_var.get().strip() or "#ffffff",
-            "line_underlay_extra_width": line_underlay_extra_width_var.get().strip() or "2.0",
+            "line_underlay_extra_width": line_underlay_extra_width_var.get().strip() or "8.0",
             "line_underlay_opacity": line_underlay_opacity_var.get().strip() or "1.0",
             "color_by": color_by_var.get(),
             "xy_only": bool(xy_only_var.get()),
             "write_pca_pdb": bool(write_pca_pdb_var.get()),
             "draw_base_pairs": bool(draw_base_pairs_var.get()),
             "base_pair_stroke": base_pair_stroke_var.get().strip() or "#444444",
-            "base_pair_width": base_pair_width_var.get().strip() or "1.0",
+            "base_pair_width": base_pair_width_var.get().strip() or "3.0",
             "base_pair_opacity": base_pair_opacity_var.get().strip() or "0.75",
             "style_specs": style_specs,
         }
