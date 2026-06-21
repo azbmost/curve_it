@@ -2,7 +2,8 @@
 
 ## V2.6 - 2026-06-20
 
-- Added Plane It as a companion GUI/CLI tool via `plane_it.py` and versioned implementation `plane_itV3_6.py`, adapted from the provided V3.6 projection script.
+- Added Plane It as a companion GUI/CLI tool via stable launcher `plane_it.py` and versioned implementation `curve_it_lib/plane_itV3_6.py`, adapted from the provided V3.6 projection script.
+- Updated `plane_it.py` to discover the newest `curve_it_lib/plane_itV*.py` implementation automatically when future versioned files are added.
 - Added **Plane It...** to the Curve It GUI **Tools** area without changing existing Curve It processing behavior.
 - Added the supplied Plane It icon at `assets/plane_it_icon.png`.
 - Updated Plane It branding in user-facing docstrings, CLI help, GUI title/messages, and projection-basis PDB remarks.

@@ -2507,7 +2507,7 @@ def launch_gui() -> None:
     def launch_plane_it_tool() -> None:
         script_path = resource_path("plane_it.py")
         if not os.path.isfile(script_path):
-            script_path = resource_path("plane_itV3_6.py")
+            script_path = resource_path(os.path.join("curve_it_lib", "plane_itV3_6.py"))
         if not os.path.isfile(script_path):
             messagebox.showerror(
                 "Tool not found",

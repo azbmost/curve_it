@@ -87,7 +87,9 @@ TOOL_VERSION = "V3.6"
 
 def resource_path(relative_path: str) -> Path:
     """Return a resource path that also works from a PyInstaller bundle."""
-    base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    source_dir = Path(__file__).resolve().parent
+    source_root = source_dir.parent if source_dir.name == "curve_it_lib" else source_dir
+    base_dir = Path(getattr(sys, "_MEIPASS", source_root))
     return base_dir / relative_path
 
 

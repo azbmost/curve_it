@@ -116,37 +116,6 @@ python3 curve_it.py input.pdb curve.xyz --interp-mode n --interp-n 400
 python3 curve_it.py input.pdb curve.xyz --interp-mode p --interp-p 5
 ```
 
-## Plane It
-
-Plane It projects selected atoms or 3D points from PDB/XYZ/text files into 2D SVG using PCA or current XY coordinates.
-
-Launch the Plane It GUI:
-
-```bash
-python3 plane_it.py
-python3 plane_it.py --gui
-```
-
-Basic CLI examples:
-
-```bash
-python3 plane_it.py input.pdb --atom-type P
-python3 plane_it.py input.pdb --atom-type P --draw-lines
-python3 plane_it.py input.pdb --atom-type P --draw-lines --draw-base-pairs
-python3 plane_it.py points.txt --atom-type all
-python3 plane_it.py input.pdb --atom-type P --write-projection-basis
-```
-
-Plain coordinate text files may contain multiple components separated by blank lines; Plane It treats those components as chains `A`, `B`, `C`, and so on.
-
-DSSR base-pair lines use the default output path `<input_folder>/tmp_file/<input_filename>.out`. When needed, Plane It may try to run:
-
-```bash
-x3dna-dssr -i=<input> --more -o=<default output>
-```
-
-This requires `x3dna-dssr` to be installed and available on `PATH`; otherwise, place an existing DSSR output file at the default path before using `--draw-base-pairs`.
-
 ## Curve Interpolation
 
 Interpolation under **Curve parameters** changes the curve that Curve It actually uses for the run. It is not only for total curvature and writhe reporting.
@@ -197,7 +166,34 @@ You can also run the trefoil example from the command line:
 python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py --example-trefoil --no-plot
 ```
 
-**Plane It...** opens the Plane It companion GUI.
+**Plane It...** opens the Plane It companion GUI. Plane It projects selected atoms or 3D points from PDB/XYZ/text files into 2D SVG using PCA or current XY coordinates. The stable launcher is `plane_it.py`; the versioned implementation lives in `curve_it_lib/` as `plane_itV*.py`.
+
+Launch the Plane It GUI:
+
+```bash
+python3 plane_it.py
+python3 plane_it.py --gui
+```
+
+Basic CLI examples:
+
+```bash
+python3 plane_it.py input.pdb --atom-type P
+python3 plane_it.py input.pdb --atom-type P --draw-lines
+python3 plane_it.py input.pdb --atom-type P --draw-lines --draw-base-pairs
+python3 plane_it.py points.txt --atom-type all
+python3 plane_it.py input.pdb --atom-type P --write-projection-basis
+```
+
+Plain coordinate text files may contain multiple components separated by blank lines; Plane It treats those components as chains `A`, `B`, `C`, and so on.
+
+DSSR base-pair lines use the default output path `<input_folder>/tmp_file/<input_filename>.out`. When needed, Plane It may try to run:
+
+```bash
+x3dna-dssr -i=<input> --more -o=<default output>
+```
+
+This requires `x3dna-dssr` to be installed and available on `PATH`; otherwise, place an existing DSSR output file at the default path before using `--draw-base-pairs`.
 
 ## Outputs
 
@@ -229,10 +225,10 @@ PyInstaller is one common option:
 ```bash
 python3 -m pip install pyinstaller
 python3 -m PyInstaller --onefile --name curve_it --add-data "assets/icon.png:assets" curve_it.py
-python3 -m PyInstaller --onefile --name plane_it --add-data "assets/plane_it_icon.png:assets" plane_it.py
+python3 -m PyInstaller --onefile --name plane_it --add-data "assets/plane_it_icon.png:assets" --add-data "curve_it_lib/plane_itV3_6.py:curve_it_lib" plane_it.py
 ```
 
-For a GUI-style app bundle, you can add `--windowed`. On macOS, PyInstaller's `--icon` option expects an `.icns` file, so PNG files in `assets/` are included as GUI/task-menu assets but are not required for the scripts to run. `assets/plane_it_icon.png` is the supplied Plane It task-menu/GUI icon.
+For a GUI-style app bundle, you can add `--windowed`. On macOS, PyInstaller's `--icon` option expects an `.icns` file, so PNG files in `assets/` are included as GUI/task-menu assets but are not required for the scripts to run. `assets/plane_it_icon.png` is the supplied Plane It task-menu/GUI icon. If the Plane It implementation file is updated later, replace `plane_itV3_6.py` in the PyInstaller command with the current `plane_itV*.py` file.
 
 The scripts check for their icons at runtime and continue normally if an icon is missing.
 
@@ -243,6 +239,7 @@ Supporting scripts live in `curve_it_lib/`:
 - `interpolate_xyz.py`
 - `cal_xyz_total_curvature_writheV2.py`
 - `cal_xyz_local_curvature_torsionV3_1.py`
+- `plane_itV3_6.py` (versioned Plane It implementation; use `plane_it.py` as the stable launcher)
 - `view_xyzV3.py`
 
 They can still be run directly, for example:
