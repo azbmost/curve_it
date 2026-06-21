@@ -193,6 +193,8 @@ DSSR base-pair lines use the default output path `<input_folder>/tmp_file/<input
 x3dna-dssr -i=<input> --more -o=<default output>
 ```
 
+When Plane It runs `x3dna-dssr`, it uses that `tmp_file` folder as the working directory so DSSR sidecar files stay with the DSSR output instead of appearing in the folder where Plane It was launched.
+
 This requires `x3dna-dssr` to be installed and available on `PATH`; otherwise, place an existing DSSR output file at the default path before using `--draw-base-pairs`.
 
 ## Outputs

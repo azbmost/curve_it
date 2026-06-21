@@ -7,6 +7,7 @@
 - Added **Plane It...** to the Curve It GUI **Tools** area without changing existing Curve It processing behavior.
 - Added the supplied Plane It icon at `assets/plane_it_icon.png`.
 - Updated Plane It branding in user-facing docstrings, CLI help, GUI title/messages, and projection-basis PDB remarks.
+- Updated Plane It's DSSR runner to launch `x3dna-dssr` from the per-input `tmp_file` folder while passing absolute input/output paths, keeping DSSR sidecar files out of the launch directory.
 - Updated README with Plane It GUI/CLI usage, DSSR default-output behavior, blank-line coordinate component handling, and PyInstaller packaging examples.
 - Added `curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py` as a Curve It tool for local curvature, regularized torsion, and local writhe-density CSV output.
 - Added a dedicated GUI **Tools** area containing **Convert XYZ...** and **Local curvature/torsion...** for current and future utilities.

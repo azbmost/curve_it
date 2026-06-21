@@ -59,6 +59,9 @@ DSSR base-pair convention:
 
       x3dna-dssr -i=<input.pdb> --more -o=<that tmp_file output>
 
+  DSSR is launched with <input_folder>/tmp_file as its working directory so
+  any sidecar files produced by x3dna-dssr stay with the DSSR output.
+
   Each base-pair line connects the projected C1' atoms of the two DSSR-listed
   residues. For a DSSR line such as G.DT42 H.DA4, the line is drawn directly
   between G42-C1' and H4-C1'.
@@ -1571,10 +1574,19 @@ def ensure_dssr_output(pdb_file: Path, args: argparse.Namespace) -> Path:
         return output_path
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path = pdb_file.resolve()
+    output_path = output_path.resolve()
     executable = "x3dna-dssr"
-    command = [executable, "-i={0}".format(str(pdb_file)), "--more", "-o={0}".format(str(output_path))]
+    command = [executable, "-i={0}".format(str(input_path)), "--more", "-o={0}".format(str(output_path))]
     try:
-        completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        completed = subprocess.run(
+            command,
+            cwd=str(output_path.parent),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
     except FileNotFoundError as exc:
         raise ValueError(
             "Could not find 'x3dna-dssr'. Install x3dna-dssr, or place an existing DSSR output file at the default path: {0}".format(output_path)
@@ -3069,7 +3081,7 @@ def run_gui() -> int:
             "When depth-ordering neighbor lines, draw a wider line underneath each segment, usually white. This can mask lines behind it and make front/back order clearer."
         ),
         "base_pairs": (
-            "Draw base-pair interaction lines from x3dna-dssr output. The script uses or creates tmp_file/<input_filename>.out next to the input PDB, and draws each line between the paired residues' C1' atoms."
+            "Draw base-pair interaction lines from x3dna-dssr output. The script uses or creates tmp_file/<input_filename>.out next to the input PDB, runs x3dna-dssr from that tmp_file folder when needed, and draws each line between the paired residues' C1' atoms."
         ),
     }
 
@@ -3754,7 +3766,7 @@ def run_gui() -> int:
         basepair_frame,
         text=(
             "Default DSSR path: tmp_file/<input_filename>.out in the same folder as the input PDB. "
-            "If the file is missing, x3dna-dssr is run with default settings. "
+            "If the file is missing, x3dna-dssr is run from that tmp_file folder so sidecar files stay there. "
             "Base-pair lines use the projected C1' atoms of the paired residues."
         ),
         wraplength=1080,
