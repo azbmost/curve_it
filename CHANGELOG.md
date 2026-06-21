@@ -1,5 +1,11 @@
 # Changelog
 
+## V2.7 - 2026-06-21
+
+- Changed `--scale-mode none` so it preserves both the PDB/helix length and the curve length, then maps using native PDB/helix axial spacing. Open curves must be at least as long as the PDB/helix principal-axis length; closed curves may wrap periodically.
+- Kept `--scale-mode helix_to_curve` as the full-curve distribution mode for an unscaled curve.
+- Updated Curve It version, CLI help, GUI help, and README wording for the new scale-mode distinction.
+
 ## V2.6 - 2026-06-20
 
 - Added Plane It as a companion GUI/CLI tool via stable launcher `plane_it.py` and versioned implementation `curve_it_lib/plane_itV3_6.py`, adapted from the provided V3.6 projection script.

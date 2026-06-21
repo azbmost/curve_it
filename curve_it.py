@@ -47,8 +47,8 @@ Geometry:
   residue-by-residue. The group center along the input axis is mapped to the
   curve, and all atoms in the group are transformed using the same local frame,
   preserving their internal geometry.
-- For closed paths with numeric --scale-mode, holonomy of the frame is
-  compensated per wrap to avoid twist discontinuities at the seam.
+- For closed paths with numeric --scale-mode or --scale-mode none, holonomy of
+  the frame is compensated per wrap to avoid twist discontinuities at the seam.
 
 Inputs (CLI mode):
     helix_pdb: PDB file with a straight DNA/RNA helix, protein helix, or other
@@ -61,9 +61,14 @@ Scaling options (via --scale-mode / GUI):
     - 'curve_to_helix' (default):
         scale the curve so its length matches the helix axis length.
     - 'none':
-        do not scale the curve; the helix is distributed over the given curve.
+        do not scale the PDB/helix or the curve; map the PDB/helix with its
+        native axial spacing. For open curves, the curve must be at least as
+        long as the PDB/helix principal-axis length, and only the needed
+        initial curve portion is used. For closed curves, periodic wrapping is
+        allowed.
     - 'helix_to_curve':
-        alias for 'none'.
+        keep the curve unchanged and distribute the PDB/helix over the full
+        curve length.
     - <positive number, in Å>:
         scale the curve so its length equals this number, but **do not remap
         the helix to fill that length**; helix spacing is preserved and
@@ -95,8 +100,8 @@ Additional behavior:
     - '--twist ANGLE' (degrees) applies an additional linear twist of the helix
       about its own axis along its length before embedding. Positive values
       twist right-handed, negative values twist left-handed.
-    - For closed paths with numeric --scale-mode, holonomy of the frame is
-      compensated per lap to eliminate twist jumps.
+    - For closed paths with numeric --scale-mode or --scale-mode none, holonomy
+      of the frame is compensated per lap to eliminate twist jumps.
     - If curve_it_lib/cal_xyz_total_curvature_writheV2.py is importable, the total curvature
       and writhe of the (scaled) curve are reported for closed paths, and
       are also shown in the GUI for loaded curves (assuming closed).
@@ -133,7 +138,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V2.6"
+APP_VERSION = "V2.7"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -1160,8 +1165,12 @@ def embed_helix_on_curve(atoms: List[AtomRecord],
     scale_mode  :
         - 'curve_to_helix' (default): scale curve length to match helix length
           and distribute the helix evenly over the full curve.
-        - 'none' or 'helix_to_curve': keep curve unchanged; helix is
-          distributed over its length.
+        - 'none': preserve both the PDB/helix length and the curve length.
+          For open curves, the curve must be at least as long as the PDB/helix
+          principal-axis length, and only the needed initial portion of the
+          curve is used. For closed curves, periodic wrapping is allowed.
+        - 'helix_to_curve': keep curve unchanged and distribute the PDB/helix
+          over the full curve length.
         - any positive number (as string or float): target curve length in Å.
           The curve is scaled to that length, but the helix axis coordinate
           itself is used for mapping, so its axial spacing is preserved.
@@ -1271,6 +1280,38 @@ def embed_helix_on_curve(atoms: List[AtomRecord],
             raise ValueError("Numeric scale_mode must be > 0.")
         mode = "target_length"
 
+    if mode == "none":
+        if (not closed) and L_curve + 1e-6 < helix_len:
+            raise ValueError(
+                "scale_mode='none' preserves both helix and curve lengths, so an "
+                "open curve must be at least as long as the input PDB/helix "
+                f"principal-axis length. Open curve length = {L_curve:.3f} Å; "
+                f"PDB/helix axis length = {helix_len:.3f} Å. Use a longer open "
+                "curve, use --path-type closed for periodic wrapping, or choose "
+                "--scale-mode curve_to_helix / helix_to_curve / numeric."
+            )
+
+        print(
+            "[INFO] scale_mode='none' (V2.7): preserving both PDB/helix and curve "
+            "lengths; no curve scaling and no helix stretching."
+        )
+        if closed and L_curve + 1e-6 < helix_len:
+            print(
+                "[INFO] Closed curve is shorter than the PDB/helix axis; periodic "
+                "wrapping will be used."
+            )
+        elif (not closed) and L_curve > helix_len + 1e-6:
+            print(
+                "[INFO] Open curve is longer than the PDB/helix axis; mapping uses "
+                "the initial portion of the curve and leaves the remaining curve unused."
+            )
+
+        # Reuse numeric target-length mapping with target length equal to the
+        # existing curve length. This gives factor-1 curve scaling while keeping
+        # native PDB/helix axial spacing along the curve.
+        target_length = L_curve
+        mode = "target_length"
+
     if mode == "target_length" and (not closed) and target_length is not None and target_length < helix_len:
         print(
             f"[WARNING] Numeric scale_mode ({target_length:.3f} Å) is smaller than "
@@ -1292,9 +1333,9 @@ def embed_helix_on_curve(atoms: List[AtomRecord],
         print(f"[INFO] Scaling curve to helix length (factor {scale:.3f})")
         print(f"[INFO] Scale anchor: {anchor_pt[0]:.3f} {anchor_pt[1]:.3f} {anchor_pt[2]:.3f}")
         print(f"[INFO] Scaled curve length (Å): {arc[-1]:.3f}")
-    elif mode in ("none", "helix_to_curve"):
+    elif mode == "helix_to_curve":
         arc = arc_raw.copy()
-        print(f"[INFO] Curve length (Å): {arc[-1]:.3f} (no scaling)")
+        print(f"[INFO] Curve length (Å): {arc[-1]:.3f} (helix distributed over full curve; no curve scaling)")
     elif mode == "target_length" and target_length is not None:
         scale = target_length / L_curve
         anchor_pt = get_scale_anchor_point(scale_anchor, pts)
@@ -1867,7 +1908,8 @@ def launch_gui() -> None:
         "scale_mode": (
             "Scale Mode",
             "curve_to_helix scales the curve length to match the input PDB axis length.\n\n"
-            "none or helix_to_curve leaves the curve length unchanged.\n\n"
+            "none leaves both the PDB/helix and curve unscaled, then maps using native PDB axial spacing. Open curves must be at least as long as the PDB axis; closed curves can wrap periodically.\n\n"
+            "helix_to_curve leaves the curve length unchanged but distributes the PDB over the full curve.\n\n"
             "numeric scales the curve to the numeric target length while preserving PDB axial spacing."
         ),
         "numeric_length": (
@@ -2818,8 +2860,8 @@ def launch_gui() -> None:
     param_frame.grid_columnconfigure(4, weight=1)
 
     mapping_hint = (
-        "Hint: curve_to_helix scales the curve to the PDB axis length; none leaves the curve length unchanged; "
-        "numeric sets a curve target length without stretching PDB spacing. "
+        "Hint: curve_to_helix scales the curve to the PDB axis length; none preserves native PDB spacing on the unscaled curve; "
+        "helix_to_curve distributes the PDB over the full unscaled curve; numeric sets a curve target length without stretching PDB spacing. "
         "path_start affects closed curves only; helix_phase rotates cross-sections, and twist adds linear axial twist."
     )
     tk.Label(param_frame, text=mapping_hint, fg="gray", wraplength=820, justify="left").grid(
@@ -3162,8 +3204,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         default="curve_to_helix",
         help=("How to reconcile length mismatch between helix and curve. "
               "Use 'curve_to_helix' (default) to scale the curve length to "
-              "match the helix, 'none' or 'helix_to_curve' to leave the curve "
-              "unchanged, or provide a positive number in Å (e.g. "
+              "match the helix; 'none' to leave both PDB/helix and curve "
+              "unscaled while mapping with native PDB axial spacing; "
+              "'helix_to_curve' to leave the curve unchanged while distributing "
+              "the PDB over the full curve; or provide a positive number in Å (e.g. "
               "'--scale-mode 340.0') to scale the curve to that target length "
               "without stretching the helix; in that numeric mode, any "
               "mismatch shows up as gaps or overlaps."),

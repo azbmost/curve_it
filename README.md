@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V2.6`
+Version: `V2.7`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -96,6 +96,8 @@ Use the curve without length scaling:
 ```bash
 python3 curve_it.py input.pdb curve.xyz --scale-mode none -o output_curved.pdb
 ```
+
+With `--scale-mode none`, Curve It does not scale the PDB/helix or the curve. It maps the PDB/helix onto the curve using the PDB/helix's native axial spacing. For open curves, the curve must be at least as long as the PDB/helix principal-axis length; if it is longer, only the needed initial part of the curve is used. For closed curves, periodic wrapping is allowed. Use `--scale-mode helix_to_curve` when you want the unscaled PDB/helix distributed over the full unscaled curve.
 
 Scale the curve to a numeric target length in Angstrom:
 
