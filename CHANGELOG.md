@@ -1,5 +1,12 @@
 # Changelog
 
+## V2.8 - 2026-06-23
+
+- Added `curve_it_lib/generate_helix_xyzV2.py` as a **Generate helical curve...** tool in the Curve It GUI **Tools** area.
+- Updated the generator GUI to use Curve It-style bold sections, light-blue `?` help buttons, and optional package icon loading.
+- Added a Plane It `--draw-xy-plane` option and GUI control to draw an SVG group/layer named `xy-plane` with a `xy-plane-shape` polygon for the original coordinate plane `z=0`; when SVG depth ordering is enabled, the plane patch is sorted with the same back-to-front rules by mean projected corner depth.
+- Updated Curve It version, README, and helper-module documentation for the new circular helix curve generator.
+
 ## V2.7 - 2026-06-21
 
 - Changed `--scale-mode none` so it preserves both the PDB/helix length and the curve length, then maps using native PDB/helix axial spacing. Open curves must be at least as long as the PDB/helix principal-axis length; closed curves may wrap periodically.

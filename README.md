@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V2.7`
+Version: `V2.8`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -154,6 +154,23 @@ The GUI has a dedicated **Tools** area for utility tools.
 
 **Convert XYZ...** converts plain coordinate files to molecular XYZ and molecular XYZ back to plain coordinate files. Curve It can use either format as the curve input.
 
+**Generate helical curve...** opens `curve_it_lib/generate_helix_xyzV2.py`. This tool writes a plain-coordinate XYZ file for a circular helix:
+
+```text
+x(t) = R cos(t + phi)
+y(t) = +/- R sin(t + phi)
+z(t) = z0 + c t
+```
+
+The output has one `x y z` point per line and can be loaded directly as a Curve It curve input. The GUI can derive `c` from `R` and pitch angle, derive `R` from `c` and pitch angle, or use `R` and `c` directly.
+
+You can also run it from the command line:
+
+```bash
+python3 curve_it_lib/generate_helix_xyzV2.py -R 10 -c 2 -L 200 -n 1000 -o helix.xyz
+python3 curve_it_lib/generate_helix_xyzV2.py -R 10 --pitch-angle-deg 20 --derive c-from-R -L 200 -o helix.xyz
+```
+
 **Local curvature/torsion...** opens `curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py`. This tool writes a CSV table with normalized path position, coordinates, local curvature, regularized local torsion, local writhe density, and diagnostic columns. Its GUI includes a quick-loading test example for a three-lobe trefoil knot, the `(2,3)` torus knot:
 
 ```text
@@ -185,9 +202,12 @@ python3 plane_it.py input.pdb --atom-type P --draw-lines
 python3 plane_it.py input.pdb --atom-type P --draw-lines --draw-base-pairs
 python3 plane_it.py points.txt --atom-type all
 python3 plane_it.py input.pdb --atom-type P --write-projection-basis
+python3 plane_it.py input.pdb --atom-type P --draw-xy-plane --depth-order-circles
 ```
 
 Plain coordinate text files may contain multiple components separated by blank lines; Plane It treats those components as chains `A`, `B`, `C`, and so on.
+
+Use `--draw-xy-plane` to include a finite patch of the original coordinate plane `z=0` in the SVG. The SVG group/layer is named `xy-plane`, and its polygon shape is named `xy-plane-shape`. If SVG depth ordering is enabled for circles, neighbor lines, or base-pair lines, the xy-plane patch is sorted with the same back-to-front rules using its mean projected corner depth.
 
 DSSR base-pair lines use the default output path `<input_folder>/tmp_file/<input_filename>.out`. When needed, Plane It may try to run:
 
@@ -228,7 +248,7 @@ PyInstaller is one common option:
 
 ```bash
 python3 -m pip install pyinstaller
-python3 -m PyInstaller --onefile --name curve_it --add-data "assets/icon.png:assets" curve_it.py
+python3 -m PyInstaller --onefile --name curve_it --add-data "assets/icon.png:assets" --add-data "curve_it_lib:curve_it_lib" curve_it.py
 python3 -m PyInstaller --onefile --name plane_it --add-data "assets/plane_it_icon.png:assets" --add-data "curve_it_lib/plane_itV3_6.py:curve_it_lib" plane_it.py
 ```
 
@@ -243,6 +263,7 @@ Supporting scripts live in `curve_it_lib/`:
 - `interpolate_xyz.py`
 - `cal_xyz_total_curvature_writheV2.py`
 - `cal_xyz_local_curvature_torsionV3_1.py`
+- `generate_helix_xyzV2.py`
 - `plane_itV3_6.py` (versioned Plane It implementation; use `plane_it.py` as the stable launcher)
 - `view_xyzV3.py`
 
@@ -253,6 +274,7 @@ python3 curve_it_lib/interpolate_xyz.py curve.xyz --n 400
 python3 curve_it_lib/cal_xyz_total_curvature_writheV2.py curve.xyz
 python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py curve.xyz --no-plot
 python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py --example-trefoil --no-plot
+python3 curve_it_lib/generate_helix_xyzV2.py -R 10 -c 2 -L 200 -o helix.xyz
 python3 curve_it_lib/view_xyzV3.py curve.xyz
 python3 curve_it_lib/view_xyzV3.py multi_component.txt --components A,C
 ```

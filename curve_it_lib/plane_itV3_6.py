@@ -36,6 +36,7 @@ Examples:
   python plane_it.py input.pdb --atom-type P --style "P draw_lines=true extend_3prime=true"
   python plane_it.py input.pdb --atom-type P --flip-about-y --write-projection-basis
   python plane_it.py input.pdb --atom-type P --draw-base-pairs
+  python plane_it.py input.pdb --atom-type P --draw-xy-plane --depth-order-circles
   python plane_it.py --gui
 
 GUI behavior:
@@ -112,6 +113,7 @@ TWO_LETTER_ELEMENTS = {
 DEFAULT_COLOR_SATURATION = 0.67
 DEFAULT_COLOR_VALUE = 0.90
 GOLDEN_RATIO_CONJUGATE = 0.618033988749895
+XY_PLANE_MARGIN_FRACTION = 0.08
 
 
 @dataclass
@@ -814,6 +816,8 @@ def default_name_tags_from_args(args: argparse.Namespace, styles: Optional[Dict[
         tags.append("flipY")
     if bool(getattr(args, "draw_base_pairs", False)):
         tags.append("bp")
+    if bool(getattr(args, "draw_xy_plane", False)):
+        tags.append("xyplane")
     if bool(getattr(args, "depth_order_circles", False) or getattr(args, "depth_order_lines", False) or getattr(args, "depth_order_base_pairs", False)):
         tags.append("depth")
     if bool(getattr(args, "line_underlay", False)):
@@ -1054,6 +1058,22 @@ def write_projection_json(
             ),
         }
 
+    base_pair_depth_order_active = bool(
+        getattr(args, "depth_order_base_pairs", False)
+        and base_pair_info
+        and base_pair_info.get("base_pairs_drawn", 0)
+    )
+    xy_plane_depth_ordered = bool(
+        getattr(args, "draw_xy_plane", False)
+        and (
+            getattr(args, "depth_order_circles", False)
+            or getattr(args, "depth_order_lines", False)
+            or getattr(args, "pdb_order_circles", False)
+            or getattr(args, "pdb_order_lines", False)
+            or base_pair_depth_order_active
+        )
+    )
+
     metadata = {
         "input_file": str(Path(args.pdb_file)),
         "requested_input_format": getattr(args, "input_format", "auto"),
@@ -1079,6 +1099,19 @@ def write_projection_json(
         "line_underlay": bool(getattr(args, "line_underlay", False)),
         "depth_front": args.depth_front,
         "base_pairs": base_pair_info or {"enabled": False},
+        "xy_plane": {
+            "drawn": bool(getattr(args, "draw_xy_plane", False)),
+            "layer_id": "xy-plane",
+            "shape_id": "xy-plane-shape",
+            "plane": "z=0",
+            "finite_patch": "selected atom/point input x/y bounds plus margin",
+            "depth_ordered": xy_plane_depth_ordered,
+            "depth_sort": "mean projected corner depth",
+            "fill": getattr(args, "xy_plane_fill", "#7dd3fc"),
+            "stroke": getattr(args, "xy_plane_stroke", "#0284c7"),
+            "stroke_width": float(getattr(args, "xy_plane_stroke_width", 1.5)),
+            "opacity": float(getattr(args, "xy_plane_opacity", 0.18)),
+        },
         "counts_by_atom_type": atom_type_counts(selected_atoms),
         "counts_by_chain": chain_counts(selected_atoms),
         "styles_by_atom_type": {atom_type: style_to_dict(styles[atom_type.upper()]) for atom_type in atom_types},
@@ -1438,6 +1471,54 @@ def smooth_segment_path(
 def project_arbitrary_points(points: np.ndarray, projection: ProjectionResult) -> Tuple[np.ndarray, np.ndarray]:
     transformed = transform_points_to_projection_basis(points, projection)
     return transformed[:, :2].copy(), transformed[:, 2].copy()
+
+
+def build_xy_plane_patch(
+    selected_atoms: Sequence[SelectedAtom],
+    projection: ProjectionResult,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return raw, projected, and depth coordinates for a finite z=0 plane patch.
+
+    The mathematical xy plane is infinite, so the SVG layer draws a finite patch
+    spanning the selected atoms' input x/y bounds with a small margin.
+    """
+    if not selected_atoms:
+        raise ValueError("Cannot draw xy plane without selected atoms or points")
+
+    xy = np.array([[atom.atom.x, atom.atom.y] for atom in selected_atoms], dtype=float)
+    x_min, y_min = np.min(xy, axis=0)
+    x_max, y_max = np.max(xy, axis=0)
+    x_span = float(x_max - x_min)
+    y_span = float(y_max - y_min)
+
+    fallback_span = max(x_span, y_span, 1.0)
+    if x_span <= 1.0e-12:
+        x_min -= 0.5 * fallback_span
+        x_max += 0.5 * fallback_span
+        x_span = float(x_max - x_min)
+    if y_span <= 1.0e-12:
+        y_min -= 0.5 * fallback_span
+        y_max += 0.5 * fallback_span
+        y_span = float(y_max - y_min)
+
+    x_margin = max(x_span * XY_PLANE_MARGIN_FRACTION, 1.0e-6)
+    y_margin = max(y_span * XY_PLANE_MARGIN_FRACTION, 1.0e-6)
+    x_min -= x_margin
+    x_max += x_margin
+    y_min -= y_margin
+    y_max += y_margin
+
+    raw_corners = np.array(
+        [
+            [x_min, y_min, 0.0],
+            [x_max, y_min, 0.0],
+            [x_max, y_max, 0.0],
+            [x_min, y_max, 0.0],
+        ],
+        dtype=float,
+    )
+    projected_corners, depths = project_arbitrary_points(raw_corners, projection)
+    return raw_corners, projected_corners, depths
 
 
 def default_dssr_output_path(pdb_file: Path) -> Path:
@@ -1848,7 +1929,16 @@ def write_projection_svg(
     height = float(args.height)
     padding = float(args.padding)
     invert_y = not args.no_invert_y
-    scale, x_offset, y_offset = compute_svg_transform(projected_xy, width, height, padding, invert_y)
+    draw_xy_plane = bool(getattr(args, "draw_xy_plane", False))
+    xy_plane_raw_corners = None
+    xy_plane_projected_corners = None
+    xy_plane_depths = None
+    transform_points = projected_xy
+    if draw_xy_plane:
+        xy_plane_raw_corners, xy_plane_projected_corners, xy_plane_depths = build_xy_plane_patch(selected_atoms, projection)
+        transform_points = np.vstack([projected_xy, xy_plane_projected_corners])
+
+    scale, x_offset, y_offset = compute_svg_transform(transform_points, width, height, padding, invert_y)
     grouped = group_selected_atoms(selected_atoms, projected_xy, projected_depth)
     selected_entries = [
         (selected, float(proj_x), float(proj_y), float(depth))
@@ -1928,6 +2018,16 @@ def write_projection_svg(
         order_line = max(drawable.segment_line1, drawable.segment_line2)
         frontmost_score = max(depth_sort_value(drawable.depth1), depth_sort_value(drawable.depth2))
         return (frontmost_score, 1, order_line)
+
+    def xy_plane_depth_mean() -> float:
+        if xy_plane_depths is None or len(xy_plane_depths) == 0:
+            return 0.0
+        return float(np.mean(xy_plane_depths))
+
+    def xy_plane_depth_sort_key() -> Tuple[float, int, int]:
+        # A finite patch can span several depths. Use mean projected depth for
+        # the painter-order key, while storing all corner depths in SVG metadata.
+        return (depth_sort_value(xy_plane_depth_mean()), 0, -1)
 
     def circle_lines(selected: SelectedAtom, proj_x: float, proj_y: float, depth: float, indent: str) -> List[str]:
         atom = selected.atom
@@ -2218,6 +2318,50 @@ def write_projection_svg(
         out.append(indent + "</line>")
         return out
 
+    def append_xy_plane_layer(svg_lines: List[str], indent: str) -> None:
+        if not draw_xy_plane or xy_plane_raw_corners is None or xy_plane_projected_corners is None or xy_plane_depths is None:
+            return
+
+        svg_points = [
+            to_svg_xy(float(proj_x), float(proj_y), scale, x_offset, y_offset, invert_y)
+            for proj_x, proj_y in xy_plane_projected_corners
+        ]
+        points_attr = " ".join("{0},{1}".format(svg_float(x), svg_float(y)) for x, y in svg_points)
+        raw_attr = ";".join(
+            "{0},{1},{2}".format(svg_float(x), svg_float(y), svg_float(z))
+            for x, y, z in xy_plane_raw_corners
+        )
+        proj_attr = ";".join(
+            "{0},{1},{2}".format(svg_float(x), svg_float(y), svg_float(depth))
+            for (x, y), depth in zip(xy_plane_projected_corners, xy_plane_depths)
+        )
+        depth_mean = xy_plane_depth_mean()
+        svg_lines.append(
+            indent + '<g id="xy-plane" class="xy-plane-layer" inkscape:groupmode="layer" inkscape:label="xy-plane" data-layer-name="xy-plane" data-plane="z=0" data-depth-sort-key="{depth_key}">'.format(
+                depth_key=svg_float(depth_sort_value(depth_mean))
+            )
+        )
+        svg_lines.append(indent + "  <title>xy-plane: projected patch of original coordinate plane z=0</title>")
+        svg_lines.append(
+            indent + '  <polygon id="xy-plane-shape" class="xy-plane" points="{points}" '
+            'fill="{fill}" stroke="{stroke}" stroke-width="{stroke_width}" opacity="{opacity}" '
+            'data-name="xy-plane" data-plane="z=0" data-raw-corners="{raw}" data-projected-corners="{proj}" '
+            'data-depth-mean="{depth_mean}" data-projection-mode="{mode}">'.format(
+                points=svg_escape(points_attr),
+                fill=svg_escape(getattr(args, "xy_plane_fill", "#7dd3fc")),
+                stroke=svg_escape(getattr(args, "xy_plane_stroke", "#0284c7")),
+                stroke_width=svg_float(float(getattr(args, "xy_plane_stroke_width", 1.5))),
+                opacity=svg_float(float(getattr(args, "xy_plane_opacity", 0.18))),
+                raw=svg_escape(raw_attr),
+                proj=svg_escape(proj_attr),
+                depth_mean=svg_float(depth_mean),
+                mode=svg_escape(projection.mode),
+            )
+        )
+        svg_lines.append(indent + "    <title>xy-plane shape: finite z=0 patch spanning selected atom x/y bounds</title>")
+        svg_lines.append(indent + "  </polygon>")
+        svg_lines.append(indent + "</g>")
+
     def connection_segments() -> List[ConnectionSegment]:
         segments: List[ConnectionSegment] = []
         for chain, type_groups in sorted_chain_items(grouped):
@@ -2423,10 +2567,13 @@ def write_projection_svg(
                 svg_escape(depth_front)
             )
         )
-        svg_lines.append("      <title>Depth-ordered circles, neighbor connection segments, and/or base-pair lines. Anchor circles are kept above their incident neighbor/base-pair segments.</title>")
+        svg_lines.append("      <title>Depth-ordered circles, neighbor connection segments, base-pair lines, and/or xy-plane. Anchor circles are kept above their incident neighbor/base-pair segments.</title>")
         drawable_items: List[Tuple[Tuple[float, int, int], str, object]] = []
         segments = connection_segments() if include_lines else []
         extensions = terminal_extension_segments() if include_lines else []
+
+        if draw_xy_plane:
+            drawable_items.append((xy_plane_depth_sort_key(), "xy_plane", None))
 
         # Record the highest depth score of line/base-pair elements touching each circle.
         # A circle is then drawn at least at that score, with a later element layer, so
@@ -2471,6 +2618,8 @@ def write_projection_svg(
                 svg_lines.extend(extension_segment_lines(item, "      "))
             elif kind == "base_pair":
                 svg_lines.extend(base_pair_line_lines(item, "      "))
+            elif kind == "xy_plane":
+                append_xy_plane_layer(svg_lines, "      ")
             else:
                 selected, proj_x, proj_y, depth = item
                 svg_lines.extend(circle_lines(selected, proj_x, proj_y, depth, "      "))
@@ -2492,7 +2641,9 @@ def write_projection_svg(
         "depth_order_circles": depth_order_circles,
         "depth_order_lines": depth_order_lines,
         "depth_order_base_pairs": depth_order_base_pairs,
+        "depth_order_xy_plane": bool(draw_xy_plane and (depth_order_circles or depth_order_lines or depth_order_base_pairs)),
         "line_underlay": line_underlay,
+        "draw_xy_plane": draw_xy_plane,
         "depth_front": depth_front,
         "closed_chains": getattr(args, "closed_chains", ""),
         "close_all_chains": bool(getattr(args, "close_all_chains", False)),
@@ -2503,7 +2654,7 @@ def write_projection_svg(
 
     lines: List[str] = []
     lines.append('<?xml version="1.0" encoding="UTF-8"?>')
-    lines.append('<svg xmlns="http://www.w3.org/2000/svg" width="{0}" height="{1}" viewBox="0 0 {0} {1}">'.format(svg_float(width), svg_float(height)))
+    lines.append('<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="{0}" height="{1}" viewBox="0 0 {0} {1}">'.format(svg_float(width), svg_float(height)))
     title = "Structure PCA projection" if projection.mode == "pca" else "Structure current-XY projection"
     lines.append("  <title>{0}</title>".format(svg_escape(title)))
     if projection.mode == "pca":
@@ -2517,6 +2668,7 @@ def write_projection_svg(
     lines.append("    .neighbor-line { fill: none; vector-effect: non-scaling-stroke; stroke-linecap: butt; stroke-linejoin: round; }")
     lines.append("    .neighbor-line-underlay { fill: none; vector-effect: non-scaling-stroke; stroke-linecap: butt; stroke-linejoin: round; }")
     lines.append("    .base-pair-line { fill: none; vector-effect: non-scaling-stroke; stroke-linecap: butt; }")
+    lines.append("    .xy-plane { vector-effect: non-scaling-stroke; stroke-linejoin: round; }")
     lines.append("    .smooth-curve { fill: none; }")
     lines.append("  </style>")
     lines.append(
@@ -2534,6 +2686,7 @@ def write_projection_svg(
 
     any_depth_order = depth_order_circles or depth_order_lines or depth_order_base_pairs
     if not any_depth_order:
+        append_xy_plane_layer(lines, "    ")
         append_grouped_elements(lines, include_lines=True, include_points=False, layer_id="chain_grouped_lines", layer_label="grouped neighbor lines")
         append_base_pair_layer(lines, layer_id="base_pairs", ordered=False)
         append_grouped_elements(lines, include_lines=False, include_points=True, layer_id="chain_grouped_points", layer_label="grouped points")
@@ -2679,6 +2832,10 @@ def validate_svg_args(args: argparse.Namespace) -> None:
         raise ValueError("--base-pair-width must be non-negative")
     if not (0.0 <= float(getattr(args, "base_pair_opacity", 0.75)) <= 1.0):
         raise ValueError("--base-pair-opacity must be between 0 and 1")
+    if float(getattr(args, "xy_plane_stroke_width", 1.5)) < 0:
+        raise ValueError("--xy-plane-stroke-width must be non-negative")
+    if not (0.0 <= float(getattr(args, "xy_plane_opacity", 0.18)) <= 1.0):
+        raise ValueError("--xy-plane-opacity must be between 0 and 1")
 
 
 def format_summary(
@@ -2757,6 +2914,23 @@ def format_summary(
             out.append("SVG connection underlay: enabled")
     if getattr(args, "depth_order_base_pairs", False):
         out.append("SVG base-pair stacking: depth order; front side '{0}' is drawn last and covers the back".format(args.depth_front))
+    if getattr(args, "draw_xy_plane", False):
+        base_pair_depth_order_active = bool(
+            getattr(args, "depth_order_base_pairs", False)
+            and base_pair_info
+            and base_pair_info.get("base_pairs_drawn", 0)
+        )
+        depth_order_xy_plane = bool(
+            args.depth_order_circles
+            or args.depth_order_lines
+            or getattr(args, "pdb_order_circles", False)
+            or getattr(args, "pdb_order_lines", False)
+            or base_pair_depth_order_active
+        )
+        if depth_order_xy_plane:
+            out.append("SVG xy-plane: enabled as layer 'xy-plane' and depth-ordered by mean projected patch depth")
+        else:
+            out.append("SVG xy-plane: enabled as background layer 'xy-plane'")
     return "\n".join(out)
 
 
@@ -2879,6 +3053,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--line-underlay-stroke", default="#ffffff", help="Stroke color for the depth-order neighbor-line underlay. Default: white")
     parser.add_argument("--line-underlay-extra-width", type=float, default=8.0, help="Additional width added to each underlay line relative to the visible neighbor line. Default: 8.0")
     parser.add_argument("--line-underlay-opacity", type=float, default=1.0, help="Opacity of the neighbor-line underlay. Default: 1")
+    parser.add_argument("--draw-xy-plane", action="store_true", help="Draw the original coordinate xy plane (z=0) as an SVG layer/group named xy-plane. If SVG depth ordering is enabled, the plane patch is included in the same depth order using mean projected patch depth.")
+    parser.add_argument("--xy-plane-fill", default="#7dd3fc", help="Fill color for --draw-xy-plane. Default: #7dd3fc")
+    parser.add_argument("--xy-plane-stroke", default="#0284c7", help="Stroke color for --draw-xy-plane. Default: #0284c7")
+    parser.add_argument("--xy-plane-stroke-width", type=float, default=1.5, help="Stroke width for --draw-xy-plane. Default: 1.5")
+    parser.add_argument("--xy-plane-opacity", type=float, default=0.18, help="Opacity for --draw-xy-plane. Default: 0.18")
     parser.add_argument("--pdb-order-circles", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--pdb-order-lines", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--color-by", choices=["atom-type", "chain"], default="chain", help="Default SVG color mode. Default: chain")
@@ -2938,6 +3117,11 @@ def namespace_from_gui_values(values: dict) -> argparse.Namespace:
         line_underlay_stroke=values.get("line_underlay_stroke", "#ffffff"),
         line_underlay_extra_width=float(values.get("line_underlay_extra_width", 8.0)),
         line_underlay_opacity=float(values.get("line_underlay_opacity", 1.0)),
+        draw_xy_plane=values.get("draw_xy_plane", False),
+        xy_plane_fill=values.get("xy_plane_fill", "#7dd3fc"),
+        xy_plane_stroke=values.get("xy_plane_stroke", "#0284c7"),
+        xy_plane_stroke_width=float(values.get("xy_plane_stroke_width", 1.5)),
+        xy_plane_opacity=float(values.get("xy_plane_opacity", 0.18)),
         pdb_order_circles=False,
         pdb_order_lines=False,
         color_by=values.get("color_by", "chain"),
@@ -3080,6 +3264,11 @@ def run_gui() -> int:
         "line_underlay": (
             "When depth-ordering neighbor lines, draw a wider line underneath each segment, usually white. This can mask lines behind it and make front/back order clearer."
         ),
+        "xy_plane": (
+            "Draw a finite patch of the original coordinate xy plane (z=0) in the SVG. "
+            "The SVG group/layer is named xy-plane and contains a shape named xy-plane-shape. "
+            "When depth ordering is enabled for circles, neighbor lines, or base-pair lines, this plane patch is sorted with those items using its mean projected corner depth."
+        ),
         "base_pairs": (
             "Draw base-pair interaction lines from x3dna-dssr output. The script uses or creates tmp_file/<input_filename>.out next to the input PDB, runs x3dna-dssr from that tmp_file folder when needed, and draws each line between the paired residues' C1' atoms."
         ),
@@ -3158,6 +3347,11 @@ def run_gui() -> int:
     line_underlay_stroke_var = tk.StringVar(value="#ffffff")
     line_underlay_extra_width_var = tk.StringVar(value="8.0")
     line_underlay_opacity_var = tk.StringVar(value="1.0")
+    draw_xy_plane_var = tk.BooleanVar(value=False)
+    xy_plane_fill_var = tk.StringVar(value="#7dd3fc")
+    xy_plane_stroke_var = tk.StringVar(value="#0284c7")
+    xy_plane_stroke_width_var = tk.StringVar(value="1.5")
+    xy_plane_opacity_var = tk.StringVar(value="0.18")
     draw_base_pairs_var = tk.BooleanVar(value=False)
     base_pair_stroke_var = tk.StringVar(value="#444444")
     base_pair_width_var = tk.StringVar(value="3.0")
@@ -3206,6 +3400,8 @@ def run_gui() -> int:
             tags.append("flipY")
         if bool(draw_base_pairs_var.get()):
             tags.append("bp")
+        if bool(draw_xy_plane_var.get()):
+            tags.append("xyplane")
         if bool(depth_order_circles_var.get() or depth_order_lines_var.get() or depth_order_base_pairs_var.get()):
             tags.append("depth")
         if bool(line_underlay_var.get()):
@@ -3713,6 +3909,19 @@ def run_gui() -> int:
     underlay_opacity_entry.pack(side="left", padx=(4, 12))
     state_widgets["line_underlay_opacity"] = underlay_opacity_entry
 
+    xy_plane_frame = ttk.Frame(draw_frame)
+    xy_plane_frame.grid(row=5, column=0, columnspan=10, sticky="ew", pady=4)
+    ttk.Checkbutton(xy_plane_frame, text="Draw xy-plane (z=0)", variable=draw_xy_plane_var).pack(side="left")
+    help_button(xy_plane_frame, "xy-plane layer", help_texts["xy_plane"]).pack(side="left", padx=(4, 12))
+    ttk.Label(xy_plane_frame, text="Fill").pack(side="left")
+    ttk.Entry(xy_plane_frame, textvariable=xy_plane_fill_var, width=10).pack(side="left", padx=(4, 12))
+    ttk.Label(xy_plane_frame, text="Stroke").pack(side="left")
+    ttk.Entry(xy_plane_frame, textvariable=xy_plane_stroke_var, width=10).pack(side="left", padx=(4, 12))
+    ttk.Label(xy_plane_frame, text="Stroke width").pack(side="left")
+    ttk.Entry(xy_plane_frame, textvariable=xy_plane_stroke_width_var, width=7).pack(side="left", padx=(4, 12))
+    ttk.Label(xy_plane_frame, text="Opacity").pack(side="left")
+    ttk.Entry(xy_plane_frame, textvariable=xy_plane_opacity_var, width=7).pack(side="left", padx=(4, 12))
+
     ttk.Label(
         draw_frame,
         text=(
@@ -3720,7 +3929,7 @@ def run_gui() -> int:
             "In Color by chain mode, chain colors override these color fields, while radius, opacity, stroke width, and line settings remain per atom type."
         ),
         wraplength=1080,
-    ).grid(row=5, column=0, columnspan=10, sticky="w", pady=(6, 0))
+    ).grid(row=6, column=0, columnspan=10, sticky="w", pady=(6, 0))
 
     # ---------- DSSR base-pair options ----------
     basepair_frame = ttk.LabelFrame(content, text="DSSR base-pair interaction lines", padding=10)
@@ -3866,6 +4075,11 @@ def run_gui() -> int:
             "line_underlay_stroke": line_underlay_stroke_var.get().strip() or "#ffffff",
             "line_underlay_extra_width": line_underlay_extra_width_var.get().strip() or "8.0",
             "line_underlay_opacity": line_underlay_opacity_var.get().strip() or "1.0",
+            "draw_xy_plane": bool(draw_xy_plane_var.get()),
+            "xy_plane_fill": xy_plane_fill_var.get().strip() or "#7dd3fc",
+            "xy_plane_stroke": xy_plane_stroke_var.get().strip() or "#0284c7",
+            "xy_plane_stroke_width": xy_plane_stroke_width_var.get().strip() or "1.5",
+            "xy_plane_opacity": xy_plane_opacity_var.get().strip() or "0.18",
             "color_by": color_by_var.get(),
             "xy_only": bool(xy_only_var.get()),
             "write_pca_pdb": bool(write_pca_pdb_var.get()),
@@ -3905,6 +4119,7 @@ def run_gui() -> int:
         depth_order_base_pairs_var,
         depth_front_var,
         line_underlay_var,
+        draw_xy_plane_var,
         draw_base_pairs_var,
     ]:
         trace_state(var)

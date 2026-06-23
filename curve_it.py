@@ -138,7 +138,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V2.7"
+APP_VERSION = "V2.8"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -1292,7 +1292,7 @@ def embed_helix_on_curve(atoms: List[AtomRecord],
             )
 
         print(
-            "[INFO] scale_mode='none' (V2.7): preserving both PDB/helix and curve "
+            "[INFO] scale_mode='none': preserving both PDB/helix and curve "
             "lengths; no curve scaling and no helix stretching."
         )
         if closed and L_curve + 1e-6 < helix_len:
@@ -1867,6 +1867,11 @@ def launch_gui() -> None:
             "x(t) = (2 + cos(3t)) cos(2t)\n"
             "y(t) = (2 + cos(3t)) sin(2t)\n"
             "z(t) = sin(3t)"
+        ),
+        "generate_helical_curve": (
+            "Generate Helical Curve",
+            "Open the circular helix curve generator.\n\n"
+            "It writes a plain-coordinate XYZ file with one x y z point per line. The generated file can be loaded directly as a Curve It curve input."
         ),
         "plane_it": (
             "Plane It",
@@ -2546,6 +2551,22 @@ def launch_gui() -> None:
         except Exception as e:
             messagebox.showerror("Tool launch error", f"Failed to launch tool:\n{e}")
 
+    def launch_generate_helical_curve_tool() -> None:
+        script_path = resource_path(
+            os.path.join("curve_it_lib", "generate_helix_xyzV2.py")
+        )
+        if not os.path.isfile(script_path):
+            messagebox.showerror(
+                "Tool not found",
+                f"Could not find the helical curve generator:\n{script_path}",
+            )
+            return
+        try:
+            import subprocess
+            subprocess.Popen([sys.executable, script_path, "--gui"])
+        except Exception as e:
+            messagebox.showerror("Tool launch error", f"Failed to launch Generate Helical Curve:\n{e}")
+
     def launch_plane_it_tool() -> None:
         script_path = resource_path("plane_it.py")
         if not os.path.isfile(script_path):
@@ -2597,23 +2618,31 @@ def launch_gui() -> None:
     help_button(tools_frame, "xyz_convert").grid(row=0, column=1, sticky="w", padx=(0, 14), pady=4)
     tk.Button(
         tools_frame,
+        text="Generate helical curve...",
+        command=launch_generate_helical_curve_tool,
+    ).grid(row=0, column=2, sticky="w", padx=4, pady=4)
+    help_button(tools_frame, "generate_helical_curve").grid(
+        row=0, column=3, sticky="w", padx=(0, 14), pady=4
+    )
+    tk.Button(
+        tools_frame,
         text="Local curvature/torsion...",
         command=launch_local_curvature_torsion_tool,
-    ).grid(row=0, column=2, sticky="w", padx=4, pady=4)
+    ).grid(row=1, column=0, sticky="w", padx=4, pady=4)
     help_button(tools_frame, "local_curvature_torsion").grid(
-        row=0, column=3, sticky="w", padx=(0, 4), pady=4
+        row=1, column=1, sticky="w", padx=(0, 14), pady=4
     )
     tk.Button(
         tools_frame,
         text="Plane It...",
         command=launch_plane_it_tool,
-    ).grid(row=0, column=4, sticky="w", padx=(14, 4), pady=4)
+    ).grid(row=1, column=2, sticky="w", padx=4, pady=4)
     help_button(tools_frame, "plane_it").grid(
-        row=0, column=5, sticky="w", padx=(0, 4), pady=4
+        row=1, column=3, sticky="w", padx=(0, 14), pady=4
     )
-    for col in range(6):
+    for col in range(4):
         tools_frame.grid_columnconfigure(col, weight=0)
-    tools_frame.grid_columnconfigure(6, weight=1)
+    tools_frame.grid_columnconfigure(4, weight=1)
 
     # --- Curve parameters frame ---
     curve_param_frame = tk.LabelFrame(root, text="Curve parameters", font=section_font)
