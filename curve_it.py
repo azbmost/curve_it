@@ -132,13 +132,14 @@ import io
 import os
 import shlex
 import sys
+import tempfile
 import textwrap
 from typing import List, Tuple, Dict, Optional, Any
 
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V2.8"
+APP_VERSION = "V3_0"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -1936,7 +1937,7 @@ def launch_gui() -> None:
             "10,0,0"
         ),
         "helix_phase": (
-            "Helix Phase",
+            "Phase",
             "Rotates all cross-sections around the input structure axis before fitting.\n\n"
             "Example: 90 rotates the fitted structure by 90 degrees around its local axis."
         ),
@@ -2567,6 +2568,105 @@ def launch_gui() -> None:
         except Exception as e:
             messagebox.showerror("Tool launch error", f"Failed to launch Generate Helical Curve:\n{e}")
 
+    def launch_get_phase_tool() -> None:
+        helix_path = (helix_pdb_path or helix_path_var.get()).strip()
+        if not helix_path:
+            messagebox.showwarning("No PDB", "Load or enter a helix PDB file first.")
+            return
+
+        try:
+            from curve_it_lib import get_curve_it_phaseV5 as get_curve_it_phase
+        except Exception as e:
+            messagebox.showerror("Tool not found", f"Failed to load the phase helper:\n{e}")
+            return
+
+        try:
+            smode = scale_mode_var.get()
+            if smode == "numeric":
+                smode_arg = numeric_length_var.get().strip()
+                if not smode_arg:
+                    raise ValueError("Numeric scale mode needs a numeric target length.")
+            else:
+                smode_arg = smode
+
+            anch_mode = scale_anchor_mode_var.get()
+            if anch_mode == "custom":
+                anch_arg = scale_anchor_custom_var.get().strip()
+                if not anch_arg:
+                    raise ValueError("Custom scale anchor needs x,y,z coordinates.")
+            else:
+                anch_arg = anch_mode
+
+            curve_path = (curve_xyz_path or curve_path_var.get()).strip()
+            if not curve_path:
+                curve_path = os.path.join(tempfile.gettempdir(), "curve_it_default_ring_phase.xyz")
+                write_plain_xyz_curve(curve_path, generate_ring_curve())
+
+            interp_n = int(interp_n_var.get().strip() or "200")
+            interp_p = int(interp_p_var.get().strip() or "0")
+            twist_deg = float(twist_var.get().strip() or "0")
+            pstart = float(path_start_var.get())
+        except Exception as e:
+            messagebox.showerror("Phase helper setup error", str(e))
+            return
+
+        selected_component_arg = None
+        if curve_components_raw is not None and len(curve_components_raw) > 1:
+            selected_component_arg = format_curve_component_selection(selected_curve_component_indices)
+
+        try:
+            output_report = get_curve_it_phase.default_output_path(helix_path)
+        except Exception:
+            output_report = ""
+
+        initial = argparse.Namespace(
+            gui=True,
+            input_pdb=helix_path,
+            curve_xyz=curve_path,
+            curve_it_dir=None,
+            output=output_report,
+            atom_serial=None,
+            atom_index0=None,
+            atom_name=None,
+            chain=None,
+            resseq=None,
+            icode=None,
+            resname=None,
+            scale_mode=smode_arg,
+            path_type=path_type_var.get(),
+            scale_anchor=anch_arg,
+            path_start=pstart,
+            twist=twist_deg,
+            curve_components=selected_component_arg,
+            interp_mode=interp_mode_var.get(),
+            interp_n=interp_n,
+            interp_p=interp_p,
+            target_mode="curvature_angle",
+            curvature_angle_deg=0.0,
+            normal_angle_deg=None,
+            curvature_step=0.0,
+            axis_point=np.array([0.0, 0.0, 0.0], dtype=float),
+            axis_dir=np.array([0.0, 0.0, 1.0], dtype=float),
+            target_point=np.array([0.0, 0.0, 0.0], dtype=float),
+            custom_vector=np.array([1.0, 0.0, 0.0], dtype=float),
+            side=None,
+        )
+
+        def transfer_phase(phase_deg: float, _report: str, report_path: str) -> None:
+            helix_phase_var.set(f"{phase_deg:.6f}")
+            status_var.set(f"Phase set to {phase_deg:.6f} deg.")
+            append_log(f"[INFO] Phase helper set helix_phase={phase_deg:.6f} deg. Report: {report_path}\n")
+
+        try:
+            phase_window = get_curve_it_phase.run_gui(
+                initial=initial,
+                parent=root,
+                on_phase=transfer_phase,
+            )
+            root._curve_it_phase_window = phase_window
+        except Exception as e:
+            messagebox.showerror("Tool launch error", f"Failed to launch Get phase:\n{e}")
+
     def launch_plane_it_tool() -> None:
         script_path = resource_path("plane_it.py")
         if not os.path.isfile(script_path):
@@ -2815,11 +2915,16 @@ def launch_gui() -> None:
     path_type_menu.grid(row=2, column=7, sticky="w", padx=4, pady=2)
     help_button(param_frame, "path_type").grid(row=2, column=8, sticky="w", padx=(0, 4), pady=2)
 
-    # Helix phase & Twist
-    tk.Label(param_frame, text="Helix phase (deg):").grid(row=2, column=0, sticky="e", padx=4, pady=2)
+    # Phase & Twist
+    tk.Label(param_frame, text="Phase (deg):").grid(row=2, column=0, sticky="e", padx=4, pady=2)
     helix_phase_entry = tk.Entry(param_frame, textvariable=helix_phase_var, width=10)
     helix_phase_entry.grid(row=2, column=1, sticky="w", padx=4, pady=2)
-    help_button(param_frame, "helix_phase").grid(row=2, column=2, sticky="w", padx=(0, 8), pady=2)
+    phase_tool_frame = tk.Frame(param_frame)
+    phase_tool_frame.grid(row=2, column=2, sticky="w", padx=(0, 8), pady=2)
+    help_button(phase_tool_frame, "helix_phase").pack(side="left")
+    tk.Button(phase_tool_frame, text="Get phase", command=launch_get_phase_tool).pack(
+        side="left", padx=(4, 0)
+    )
 
     tk.Label(param_frame, text="Twist (deg):").grid(row=2, column=3, sticky="e", padx=4, pady=2)
     twist_entry = tk.Entry(param_frame, textvariable=twist_var, width=10)
@@ -2891,7 +2996,7 @@ def launch_gui() -> None:
     mapping_hint = (
         "Hint: curve_to_helix scales the curve to the PDB axis length; none preserves native PDB spacing on the unscaled curve; "
         "helix_to_curve distributes the PDB over the full unscaled curve; numeric sets a curve target length without stretching PDB spacing. "
-        "path_start affects closed curves only; helix_phase rotates cross-sections, and twist adds linear axial twist."
+        "path_start affects closed curves only; phase rotates cross-sections, and twist adds linear axial twist."
     )
     tk.Label(param_frame, text=mapping_hint, fg="gray", wraplength=820, justify="left").grid(
         row=4, column=0, columnspan=9, sticky="w", padx=4, pady=(2, 4)
@@ -3059,12 +3164,12 @@ def launch_gui() -> None:
         # Path type
         ptype = path_type_var.get()
 
-        # Helix phase
+        # Phase
         try:
             hphase = float(helix_phase_var.get())
         except ValueError:
-            messagebox.showerror("Invalid helix_phase",
-                                 "helix_phase must be a number (degrees).")
+            messagebox.showerror("Invalid phase",
+                                 "Phase must be a number (degrees).")
             return
 
         # Twist

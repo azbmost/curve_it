@@ -1,5 +1,12 @@
 # Changelog
 
+## V3_0 - 2026-06-25
+
+- Added `curve_it_lib/get_curve_it_phaseV5.py` as an integrated **Get phase** helper beside the main GUI **Phase (deg)** field.
+- Prefills the phase helper from the main Curve It GUI and transfers the computed phase back automatically.
+- Added light-blue `?` help buttons, unit labels, and dynamic enable/disable behavior to the phase helper GUI.
+- Renamed the main GUI label from **Helix phase (deg)** to **Phase (deg)**.
+
 ## V2.8 - 2026-06-23
 
 - Added `curve_it_lib/generate_helix_xyzV2.py` as a **Generate helical curve...** tool in the Curve It GUI **Tools** area.
