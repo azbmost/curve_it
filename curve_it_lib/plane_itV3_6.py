@@ -4137,7 +4137,7 @@ def run_gui() -> int:
             return
         output_text.delete("1.0", "end")
         output_text.insert("1.0", summary + "\n")
-        messagebox.showinfo("Plane It", "Finished.\n\n" + summary)
+        messagebox.showinfo("Plane It", "Finished. See the run log for details.")
 
     for var in [
         projection_mode_var,
