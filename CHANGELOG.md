@@ -1,5 +1,12 @@
 # Changelog
 
+## V3_1 - 2026-06-26
+
+- Updated Plane It's **Draw base-pair lines** controls to choose the atom used as each residue's line anchor.
+- Changed the default base-pair line atom from `C1'` to `C3'`.
+- Updated Plane It help text to recommend `C3'` for B-DNA and `C4'` for A-RNA.
+- Updated Curve It version metadata to `V3_1`.
+
 ## V3_0 - 2026-06-25
 
 - Added `curve_it_lib/get_curve_it_phaseV5.py` as an integrated **Get phase** helper beside the main GUI **Phase (deg)** field.

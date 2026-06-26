@@ -36,6 +36,7 @@ Examples:
   python plane_it.py input.pdb --atom-type P --style "P draw_lines=true extend_3prime=true"
   python plane_it.py input.pdb --atom-type P --flip-about-y --write-projection-basis
   python plane_it.py input.pdb --atom-type P --draw-base-pairs
+  python plane_it.py input.pdb --atom-type P --draw-base-pairs --base-pair-atom "C4'"
   python plane_it.py input.pdb --atom-type P --draw-xy-plane --depth-order-circles
   python plane_it.py --gui
 
@@ -63,9 +64,9 @@ DSSR base-pair convention:
   DSSR is launched with <input_folder>/tmp_file as its working directory so
   any sidecar files produced by x3dna-dssr stay with the DSSR output.
 
-  Each base-pair line connects the projected C1' atoms of the two DSSR-listed
-  residues. For a DSSR line such as G.DT42 H.DA4, the line is drawn directly
-  between G42-C1' and H4-C1'.
+  Each base-pair line connects the selected projected anchor atom of the two
+  DSSR-listed residues. The default anchor is C3', recommended for B-DNA.
+  C4' is recommended for A-RNA.
 """
 
 from __future__ import annotations
@@ -1125,7 +1126,7 @@ def write_projection_json(
             "Neighbor connections, if enabled for an atom type, connect consecutive selected atoms with the same chain, model, and atom type in input order.",
             "Each atom type can use straight or smooth Catmull-Rom/cubic-Bezier neighbor connections.",
             "Closed chains add one additional neighbor segment from the last selected atom in that chain/model/type group back to the first.",
-            "Base-pair interaction lines, if enabled, are read from DSSR and connect the projected C1' atoms of the paired residues.",
+            "Base-pair interaction lines, if enabled, are read from DSSR and connect the selected projected anchor atom of the paired residues.",
             "When SVG depth ordering is enabled, circles, neighbor segments, and/or base-pair lines are written back-to-front using the selected projection depth coordinate.",
             "When color_by is chain, chain colors override per-atom-type fill and line_stroke, but radius, opacity, stroke_width, line_width, and line_opacity remain per atom type.",
         ],
@@ -1754,31 +1755,34 @@ def residue_key_sort_key(key: ResidueKey) -> Tuple[int, str, int, str]:
     return (key.model, key.chain, resseq_int, key.icode)
 
 
-def c1_prime_atom_matches(atom: AtomRecord) -> bool:
-    """Return True for nucleic-acid C1' atoms.
-
-    Most modern PDB files use C1'. Older files may use C1*; accepting both
-    keeps the base-pair drawing useful for legacy structures.
-    """
-    name = atom.atom_name.strip().upper()
-    return name in {"C1'", "C1*"}
+DEFAULT_BASE_PAIR_ATOM = "C3'"
 
 
-def build_c1_prime_points(
+def normalize_base_pair_atom_name(atom_name: str) -> str:
+    """Normalize a base-pair anchor atom name, accepting legacy * primes."""
+    return (atom_name or DEFAULT_BASE_PAIR_ATOM).strip().upper().replace("*", "'").replace("`", "'")
+
+
+def base_pair_atom_matches(atom: AtomRecord, anchor_atom_name: str) -> bool:
+    return normalize_base_pair_atom_name(atom.atom_name) == normalize_base_pair_atom_name(anchor_atom_name)
+
+
+def build_base_pair_anchor_points(
     all_atoms: Sequence[AtomRecord],
     projection: ProjectionResult,
+    anchor_atom_name: str,
 ) -> Dict[ResidueKey, Tuple[float, float, float, int]]:
-    """Map each residue to the projected position of its C1' atom."""
-    c1_atoms = [atom for atom in all_atoms if c1_prime_atom_matches(atom)]
+    """Map each residue to the projected position of the selected anchor atom."""
+    anchor_atoms = [atom for atom in all_atoms if base_pair_atom_matches(atom, anchor_atom_name)]
     points: Dict[ResidueKey, Tuple[float, float, float, int]] = {}
-    if not c1_atoms:
+    if not anchor_atoms:
         return points
 
-    xyz = np.array([[atom.x, atom.y, atom.z] for atom in c1_atoms], dtype=float)
+    xyz = np.array([[atom.x, atom.y, atom.z] for atom in anchor_atoms], dtype=float)
     xy, depths = project_arbitrary_points(xyz, projection)
-    for atom, (proj_x, proj_y), depth in zip(c1_atoms, xy, depths):
+    for atom, (proj_x, proj_y), depth in zip(anchor_atoms, xy, depths):
         key = residue_key_from_atom(atom)
-        # Keep the first C1' encountered for a residue. The altloc filter has
+        # Keep the first matching anchor encountered for a residue. The altloc filter has
         # already been applied while reading atoms, so this normally avoids
         # duplicate alternate conformations.
         if key not in points:
@@ -1821,16 +1825,16 @@ def find_o3_prime_point_for_entry(
     key = residue_key_from_atom(selected.atom)
     return o3_points.get(key)
 
-def find_c1_prime_point(
+def find_base_pair_anchor_point(
     nt_token: str,
-    c1_points: Dict[ResidueKey, Tuple[float, float, float, int]],
+    anchor_points: Dict[ResidueKey, Tuple[float, float, float, int]],
 ) -> Optional[Tuple[ResidueKey, Tuple[float, float, float, int]]]:
     parsed = parse_dssr_nt_token(nt_token)
     if parsed is None:
         return None
     chain, _resname, resseq, icode = parsed
     candidates: List[Tuple[ResidueKey, Tuple[float, float, float, int]]] = []
-    for key, point in c1_points.items():
+    for key, point in anchor_points.items():
         if key.chain != chain:
             continue
         if key.resseq != resseq:
@@ -1861,14 +1865,15 @@ def prepare_base_pair_drawables(
             "skipped_examples": [],
         }
 
+    anchor_atom_name = normalize_base_pair_atom_name(getattr(args, "base_pair_atom", DEFAULT_BASE_PAIR_ATOM))
     dssr_output = ensure_dssr_output(pdb_file, args)
     base_pairs = parse_dssr_base_pairs(dssr_output)
-    c1_points = build_c1_prime_points(all_atoms, projection)
+    anchor_points = build_base_pair_anchor_points(all_atoms, projection, anchor_atom_name)
     drawables: List[BasePairDrawable] = []
     skipped: List[str] = []
     for bp in base_pairs:
-        first = find_c1_prime_point(bp.nt1, c1_points)
-        second = find_c1_prime_point(bp.nt2, c1_points)
+        first = find_base_pair_anchor_point(bp.nt1, anchor_points)
+        second = find_base_pair_anchor_point(bp.nt2, anchor_points)
         if first is None or second is None:
             if len(skipped) < 10:
                 missing = []
@@ -1876,7 +1881,7 @@ def prepare_base_pair_drawables(
                     missing.append(bp.nt1)
                 if second is None:
                     missing.append(bp.nt2)
-                skipped.append("base pair {0}: missing C1' atom for {1}".format(bp.index, ", ".join(missing)))
+                skipped.append("base pair {0}: missing {1} atom for {2}".format(bp.index, anchor_atom_name, ", ".join(missing)))
             continue
         key1, point1 = first
         key2, point2 = second
@@ -1904,8 +1909,8 @@ def prepare_base_pair_drawables(
         "base_pairs_drawn": len(drawables),
         "base_pairs_skipped": len(base_pairs) - len(drawables),
         "skipped_examples": skipped,
-        "anchor_atom_name": "C1'",
-        "anchor_definition": "projected C1' atom of each DSSR-listed residue",
+        "anchor_atom_name": anchor_atom_name,
+        "anchor_definition": "projected {0} atom of each DSSR-listed residue".format(anchor_atom_name),
     }
     return drawables, info
 
@@ -2281,13 +2286,15 @@ def write_projection_svg(
         x2, y2 = to_svg_xy(drawable.x2, drawable.y2, scale, x_offset, y_offset, invert_y)
         bp = drawable.base_pair
         depth = base_pair_depth(drawable)
+        anchor_atom_name = normalize_base_pair_atom_name(getattr(args, "base_pair_atom", DEFAULT_BASE_PAIR_ATOM))
         out: List[str] = []
         out.append(
             indent + '<line class="base-pair-line" x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
             'stroke="{stroke}" stroke-width="{width}" opacity="{opacity}" '
             'data-base-pair-index="{bp_index}" data-nt1="{nt1}" data-nt2="{nt2}" data-bp="{bp}" data-name="{name}" '
             'data-lw="{lw}" data-dssr="{dssr}" data-chain1="{chain1}" data-resseq1="{resseq1}" '
-            'data-chain2="{chain2}" data-resseq2="{resseq2}" data-depth="{depth}" data-depth-front="{depth_front}">'.format(
+            'data-chain2="{chain2}" data-resseq2="{resseq2}" data-anchor-atom="{anchor_atom}" '
+            'data-depth="{depth}" data-depth-front="{depth_front}">'.format(
                 x1=svg_float(x1),
                 y1=svg_float(y1),
                 x2=svg_float(x2),
@@ -2306,13 +2313,14 @@ def write_projection_svg(
                 resseq1=svg_escape(drawable.key1.resseq),
                 chain2=svg_escape(drawable.key2.chain),
                 resseq2=svg_escape(drawable.key2.resseq),
+                anchor_atom=svg_escape(anchor_atom_name),
                 depth=svg_float(depth),
                 depth_front=svg_escape(depth_front),
             )
         )
         out.append(
-            indent + "  <title>Base pair {0}: {1} - {2}; line connects projected C1' atoms of paired residues</title>".format(
-                svg_escape(bp.index), svg_escape(bp.nt1), svg_escape(bp.nt2)
+            indent + "  <title>Base pair {0}: {1} - {2}; line connects projected {3} atoms of paired residues</title>".format(
+                svg_escape(bp.index), svg_escape(bp.nt1), svg_escape(bp.nt2), svg_escape(anchor_atom_name)
             )
         )
         out.append(indent + "</line>")
@@ -2555,7 +2563,12 @@ def write_projection_svg(
                 svg_escape(layer_id), svg_escape(order_text), svg_escape(depth_front)
             )
         )
-        svg_lines.append("      <title>Base-pair interaction lines from DSSR</title>")
+        anchor_atom_name = normalize_base_pair_atom_name(getattr(args, "base_pair_atom", DEFAULT_BASE_PAIR_ATOM))
+        svg_lines.append(
+            "      <title>Base-pair interaction lines from DSSR, anchored at {0}</title>".format(
+                svg_escape(anchor_atom_name)
+            )
+        )
         items = sorted(base_pair_drawables, key=base_pair_depth_sort_key) if ordered else list(base_pair_drawables)
         for drawable in items:
             svg_lines.extend(base_pair_line_lines(drawable, "      "))
@@ -2832,6 +2845,8 @@ def validate_svg_args(args: argparse.Namespace) -> None:
         raise ValueError("--base-pair-width must be non-negative")
     if not (0.0 <= float(getattr(args, "base_pair_opacity", 0.75)) <= 1.0):
         raise ValueError("--base-pair-opacity must be between 0 and 1")
+    if not normalize_base_pair_atom_name(getattr(args, "base_pair_atom", DEFAULT_BASE_PAIR_ATOM)):
+        raise ValueError("--base-pair-atom must not be blank")
     if float(getattr(args, "xy_plane_stroke_width", 1.5)) < 0:
         raise ValueError("--xy-plane-stroke-width must be non-negative")
     if not (0.0 <= float(getattr(args, "xy_plane_opacity", 0.18)) <= 1.0):
@@ -2897,6 +2912,7 @@ def format_summary(
             base_pair_info.get("base_pairs_in_dssr", 0),
             base_pair_info.get("base_pairs_skipped", 0),
         ))
+        out.append("Base-pair line atom: {0}".format(base_pair_info.get("anchor_atom_name", DEFAULT_BASE_PAIR_ATOM)))
         out.append("DSSR output: {0}".format(base_pair_info.get("dssr_output")))
     out.append("Projection SVG: {0}".format(output_svg))
     out.append("Projection JSON: {0}".format(output_json))
@@ -3071,7 +3087,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "'C1\' fill=#377eb8 radius=2 draw_lines=false connection_mode=straight'."
         ),
     )
-    parser.add_argument("--draw-base-pairs", action="store_true", help="Draw base-pair interaction lines parsed from the default x3dna-dssr output; lines connect paired C1' atoms")
+    parser.add_argument("--draw-base-pairs", action="store_true", help="Draw base-pair interaction lines parsed from the default x3dna-dssr output")
+    parser.add_argument("--base-pair-atom", default=DEFAULT_BASE_PAIR_ATOM, help="Atom used as each residue's base-pair line anchor. Default: C3'. Recommended: C3' for B-DNA, C4' for A-RNA")
     parser.add_argument("--base-pair-stroke", default="#444444", help="Base-pair line color. Default: #444444")
     parser.add_argument("--base-pair-width", type=float, default=3.0, help="Base-pair line width. Default: 3.0")
     parser.add_argument("--base-pair-opacity", type=float, default=0.75, help="Base-pair line opacity. Default: 0.75")
@@ -3129,6 +3146,7 @@ def namespace_from_gui_values(values: dict) -> argparse.Namespace:
         line_opacity=float(values["line_opacity"]),
         style=values.get("style_specs", []),
         draw_base_pairs=values.get("draw_base_pairs", False),
+        base_pair_atom=values.get("base_pair_atom", DEFAULT_BASE_PAIR_ATOM),
         base_pair_stroke=values.get("base_pair_stroke", "#444444"),
         base_pair_width=float(values.get("base_pair_width", 3.0)),
         base_pair_opacity=float(values.get("base_pair_opacity", 0.75)),
@@ -3270,7 +3288,8 @@ def run_gui() -> int:
             "When depth ordering is enabled for circles, neighbor lines, or base-pair lines, this plane patch is sorted with those items using its mean projected corner depth."
         ),
         "base_pairs": (
-            "Draw base-pair interaction lines from x3dna-dssr output. The script uses or creates tmp_file/<input_filename>.out next to the input PDB, runs x3dna-dssr from that tmp_file folder when needed, and draws each line between the paired residues' C1' atoms."
+            "Draw base-pair interaction lines from x3dna-dssr output. The script uses or creates tmp_file/<input_filename>.out next to the input PDB and runs x3dna-dssr from that tmp_file folder when needed. "
+            "Choose the residue atom used as each line anchor with Line atom. C3' is recommended for B-DNA; C4' is recommended for A-RNA. C1' and P are also available for comparison or custom workflows."
         ),
     }
 
@@ -3353,6 +3372,7 @@ def run_gui() -> int:
     xy_plane_stroke_width_var = tk.StringVar(value="1.5")
     xy_plane_opacity_var = tk.StringVar(value="0.18")
     draw_base_pairs_var = tk.BooleanVar(value=False)
+    base_pair_atom_var = tk.StringVar(value=DEFAULT_BASE_PAIR_ATOM)
     base_pair_stroke_var = tk.StringVar(value="#444444")
     base_pair_width_var = tk.StringVar(value="3.0")
     base_pair_opacity_var = tk.StringVar(value="0.75")
@@ -3694,7 +3714,7 @@ def run_gui() -> int:
             set_label_state(state_widgets.get("draw_base_pairs_label"), base_pairs_available)
             set_widget_state(state_widgets.get("depth_order_base_pairs"), base_pairs_on)
             set_label_state(state_widgets.get("depth_order_base_pairs_label"), base_pairs_on)
-            for key in ["base_pair_stroke", "base_pair_width", "base_pair_opacity"]:
+            for key in ["base_pair_atom", "base_pair_stroke", "base_pair_width", "base_pair_opacity"]:
                 set_with_label(key, base_pairs_on)
             set_widget_state(state_widgets.get("depth_front"), depth_enabled, readonly=True)
             set_label_state(state_widgets.get("depth_front_label"), depth_enabled)
@@ -3935,7 +3955,8 @@ def run_gui() -> int:
     basepair_frame = ttk.LabelFrame(content, text="DSSR base-pair interaction lines", padding=10)
     basepair_frame.grid(row=basepair_grid_row, column=0, sticky="ew", pady=(0, 8))
     basepair_frame.columnconfigure(1, weight=1)
-    basepair_frame.columnconfigure(5, weight=1)
+    basepair_frame.columnconfigure(3, weight=1)
+    basepair_frame.columnconfigure(7, weight=1)
 
     draw_bp_frame = ttk.Frame(basepair_frame)
     draw_bp_frame.grid(row=0, column=0, columnspan=2, sticky="w", pady=4)
@@ -3953,33 +3974,46 @@ def run_gui() -> int:
     state_widgets["depth_order_base_pairs"] = depth_bp_check
     state_widgets["depth_order_base_pairs_label"] = depth_bp_check
 
+    bp_atom_label = label_with_help(basepair_frame, "Line atom", "Base-pair line atom", help_texts["base_pairs"])
+    bp_atom_label.grid(row=1, column=0, sticky="w", padx=(0, 6), pady=3)
+    state_widgets["base_pair_atom_label"] = bp_atom_label
+    bp_atom_combo = ttk.Combobox(
+        basepair_frame,
+        textvariable=base_pair_atom_var,
+        values=[DEFAULT_BASE_PAIR_ATOM, "C4'", "C1'", "P"],
+        width=8,
+    )
+    bp_atom_combo.grid(row=1, column=1, sticky="w", pady=3)
+    state_widgets["base_pair_atom"] = bp_atom_combo
+
     bp_color_label = ttk.Label(basepair_frame, text="Line color")
-    bp_color_label.grid(row=1, column=0, sticky="w", padx=(0, 6), pady=3)
+    bp_color_label.grid(row=1, column=2, sticky="w", padx=(18, 6), pady=3)
     state_widgets["base_pair_stroke_label"] = bp_color_label
     bp_color_entry = ttk.Entry(basepair_frame, textvariable=base_pair_stroke_var, width=10)
-    bp_color_entry.grid(row=1, column=1, sticky="w", pady=3)
+    bp_color_entry.grid(row=1, column=3, sticky="w", pady=3)
     state_widgets["base_pair_stroke"] = bp_color_entry
     bp_width_label = ttk.Label(basepair_frame, text="Width")
-    bp_width_label.grid(row=1, column=2, sticky="w", padx=(18, 6), pady=3)
+    bp_width_label.grid(row=1, column=4, sticky="w", padx=(18, 6), pady=3)
     state_widgets["base_pair_width_label"] = bp_width_label
     bp_width_entry = ttk.Entry(basepair_frame, textvariable=base_pair_width_var, width=7)
-    bp_width_entry.grid(row=1, column=3, sticky="w", pady=3)
+    bp_width_entry.grid(row=1, column=5, sticky="w", pady=3)
     state_widgets["base_pair_width"] = bp_width_entry
     bp_opacity_label = ttk.Label(basepair_frame, text="Opacity")
-    bp_opacity_label.grid(row=1, column=4, sticky="w", padx=(18, 6), pady=3)
+    bp_opacity_label.grid(row=1, column=6, sticky="w", padx=(18, 6), pady=3)
     state_widgets["base_pair_opacity_label"] = bp_opacity_label
     bp_opacity_entry = ttk.Entry(basepair_frame, textvariable=base_pair_opacity_var, width=7)
-    bp_opacity_entry.grid(row=1, column=5, sticky="w", pady=3)
+    bp_opacity_entry.grid(row=1, column=7, sticky="w", pady=3)
     state_widgets["base_pair_opacity"] = bp_opacity_entry
     ttk.Label(
         basepair_frame,
         text=(
             "Default DSSR path: tmp_file/<input_filename>.out in the same folder as the input PDB. "
             "If the file is missing, x3dna-dssr is run from that tmp_file folder so sidecar files stay there. "
-            "Base-pair lines use the projected C1' atoms of the paired residues."
+            "Base-pair lines use the selected projected atom of the paired residues. "
+            "C3' is recommended for B-DNA; C4' is recommended for A-RNA."
         ),
         wraplength=1080,
-    ).grid(row=2, column=0, columnspan=6, sticky="w", pady=(6, 0))
+    ).grid(row=2, column=0, columnspan=8, sticky="w", pady=(6, 0))
 
     # ---------- Run log ----------
     log_frame = ttk.LabelFrame(content, text="Run log", padding=10)
@@ -4084,6 +4118,7 @@ def run_gui() -> int:
             "xy_only": bool(xy_only_var.get()),
             "write_pca_pdb": bool(write_pca_pdb_var.get()),
             "draw_base_pairs": bool(draw_base_pairs_var.get()),
+            "base_pair_atom": base_pair_atom_var.get().strip() or DEFAULT_BASE_PAIR_ATOM,
             "base_pair_stroke": base_pair_stroke_var.get().strip() or "#444444",
             "base_pair_width": base_pair_width_var.get().strip() or "3.0",
             "base_pair_opacity": base_pair_opacity_var.get().strip() or "0.75",

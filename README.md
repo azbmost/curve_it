@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_0`
+Version: `V3_1`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -200,6 +200,7 @@ Basic CLI examples:
 python3 plane_it.py input.pdb --atom-type P
 python3 plane_it.py input.pdb --atom-type P --draw-lines
 python3 plane_it.py input.pdb --atom-type P --draw-lines --draw-base-pairs
+python3 plane_it.py input.pdb --atom-type P --draw-base-pairs --base-pair-atom "C4'"
 python3 plane_it.py points.txt --atom-type all
 python3 plane_it.py input.pdb --atom-type P --write-projection-basis
 python3 plane_it.py input.pdb --atom-type P --draw-xy-plane --depth-order-circles
@@ -218,6 +219,8 @@ x3dna-dssr -i=<input> --more -o=<default output>
 When Plane It runs `x3dna-dssr`, it uses that `tmp_file` folder as the working directory so DSSR sidecar files stay with the DSSR output instead of appearing in the folder where Plane It was launched.
 
 This requires `x3dna-dssr` to be installed and available on `PATH`; otherwise, place an existing DSSR output file at the default path before using `--draw-base-pairs`.
+
+Base-pair lines use `--base-pair-atom` as the residue anchor atom. The default is `C3'`, recommended for B-DNA; `C4'` is recommended for A-RNA.
 
 ## Outputs
 
