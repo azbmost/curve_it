@@ -1,5 +1,12 @@
 # Changelog
 
+## V3_2 - 2026-06-26
+
+- Added `curve_it_lib/curved_connectorV3_0.py` as a bundled **Curved Connector...** GUI/CLI tool.
+- Added a Curve It GUI Tools launcher and help entry for curved connector screening.
+- Incorporated the elastica note into the connector tool documentation/help: the centerline is a practical clamped Euler-elastica proxy, and `twist_mismatch_deg` is an endpoint orientation mismatch rather than physical torsion.
+- Updated README helper-module documentation and bumped Curve It version metadata to `V3_2`.
+
 ## V3_1 - 2026-06-26
 
 - Updated Plane It's **Draw base-pair lines** controls to choose the atom used as each residue's line anchor.

@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_1`
+Version: `V3_2`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -185,6 +185,15 @@ You can also run the trefoil example from the command line:
 python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py --example-trefoil --no-plot
 ```
 
+**Curved Connector...** opens `curve_it_lib/curved_connectorV3_0.py`. This tool screens curved nucleic-acid connectors between two target helical end base-pairs using a straight duplex template. It builds a practical clamped Euler-elastica proxy centerline for each candidate length, ranks candidates by destination-end fit, and writes ranked PDB assemblies plus `connector_summary.tsv`.
+
+```bash
+python3 curve_it_lib/curved_connectorV3_0.py target.pdb template.pdb \
+    --source-bp A33,B1 --dest-bp E1,F33 --top-k 5
+```
+
+The summary's `twist_mismatch_deg` is an endpoint base-pair orientation mismatch, not integrated geometric torsion or material twist energy.
+
 **Plane It...** opens the Plane It companion GUI. Plane It projects selected atoms or 3D points from PDB/XYZ/text files into 2D SVG using PCA or current XY coordinates. The stable launcher is `plane_it.py`; the versioned implementation lives in `curve_it_lib/` as `plane_itV*.py`.
 
 Launch the Plane It GUI:
@@ -267,6 +276,7 @@ Supporting scripts live in `curve_it_lib/`:
 - `cal_xyz_total_curvature_writheV2.py`
 - `cal_xyz_local_curvature_torsionV3_1.py`
 - `generate_helix_xyzV2.py`
+- `curved_connectorV3_0.py`
 - `plane_itV3_6.py` (versioned Plane It implementation; use `plane_it.py` as the stable launcher)
 - `view_xyzV3.py`
 

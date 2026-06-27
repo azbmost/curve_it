@@ -139,7 +139,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_1"
+APP_VERSION = "V3_2"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -1879,6 +1879,12 @@ def launch_gui() -> None:
             "Open the Plane It companion tool.\n\n"
             "Plane It projects selected atoms or 3D points from PDB/XYZ/text files into 2D SVG using PCA or current XY coordinates. It also supports projection-basis output, JSON metadata, optional CSV output, line drawing, and DSSR base-pair lines."
         ),
+        "curved_connector": (
+            "Curved Connector",
+            "Open the curved nucleic-acid connector screening tool.\n\n"
+            "It screens connector lengths from a straight duplex template, bends each candidate along a practical clamped Euler-elastica proxy centerline, and writes ranked PDB assemblies plus connector_summary.tsv.\n\n"
+            "The reported twist_mismatch_deg is an endpoint base-pair orientation mismatch, not integrated curve torsion or material twist energy."
+        ),
         "path_type": (
             "Path Type",
             "closed treats the curve as a periodic loop and can wrap the fitted PDB around the curve.\n\n"
@@ -2683,6 +2689,20 @@ def launch_gui() -> None:
         except Exception as e:
             messagebox.showerror("Tool launch error", f"Failed to launch Plane It:\n{e}")
 
+    def launch_curved_connector_tool() -> None:
+        script_path = resource_path(os.path.join("curve_it_lib", "curved_connectorV3_0.py"))
+        if not os.path.isfile(script_path):
+            messagebox.showerror(
+                "Tool not found",
+                f"Could not find the Curved Connector tool:\n{script_path}",
+            )
+            return
+        try:
+            import subprocess
+            subprocess.Popen([sys.executable, script_path, "--gui"])
+        except Exception as e:
+            messagebox.showerror("Tool launch error", f"Failed to launch Curved Connector:\n{e}")
+
     tk.Button(file_frame, text="View curve", command=view_curve).grid(
         row=2, column=6, sticky="w", padx=4, pady=2
     )
@@ -2739,6 +2759,14 @@ def launch_gui() -> None:
     ).grid(row=1, column=2, sticky="w", padx=4, pady=4)
     help_button(tools_frame, "plane_it").grid(
         row=1, column=3, sticky="w", padx=(0, 14), pady=4
+    )
+    tk.Button(
+        tools_frame,
+        text="Curved Connector...",
+        command=launch_curved_connector_tool,
+    ).grid(row=2, column=0, sticky="w", padx=4, pady=4)
+    help_button(tools_frame, "curved_connector").grid(
+        row=2, column=1, sticky="w", padx=(0, 14), pady=4
     )
     for col in range(4):
         tools_frame.grid_columnconfigure(col, weight=0)
