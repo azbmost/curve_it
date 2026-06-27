@@ -2676,7 +2676,7 @@ def launch_gui() -> None:
     def launch_plane_it_tool() -> None:
         script_path = resource_path("plane_it.py")
         if not os.path.isfile(script_path):
-            script_path = resource_path(os.path.join("curve_it_lib", "plane_itV3_6.py"))
+            script_path = resource_path(os.path.join("curve_it_lib", "plane_itV3_7.py"))
         if not os.path.isfile(script_path):
             messagebox.showerror(
                 "Tool not found",
@@ -2728,49 +2728,6 @@ def launch_gui() -> None:
         file_frame.grid_columnconfigure(col, weight=0)
     file_frame.grid_columnconfigure(1, weight=1)
     file_frame.grid_columnconfigure(5, weight=1)
-
-    # --- Tools frame ---
-    tools_frame = tk.LabelFrame(root, text="Tools", font=section_font)
-    tools_frame.grid(row=2, column=0, sticky="nsew", padx=8, pady=6)
-    tk.Button(tools_frame, text="Convert XYZ...", command=convert_xyz_file_dialog).grid(
-        row=0, column=0, sticky="w", padx=4, pady=4
-    )
-    help_button(tools_frame, "xyz_convert").grid(row=0, column=1, sticky="w", padx=(0, 14), pady=4)
-    tk.Button(
-        tools_frame,
-        text="Generate helical curve...",
-        command=launch_generate_helical_curve_tool,
-    ).grid(row=0, column=2, sticky="w", padx=4, pady=4)
-    help_button(tools_frame, "generate_helical_curve").grid(
-        row=0, column=3, sticky="w", padx=(0, 14), pady=4
-    )
-    tk.Button(
-        tools_frame,
-        text="Local curvature/torsion...",
-        command=launch_local_curvature_torsion_tool,
-    ).grid(row=1, column=0, sticky="w", padx=4, pady=4)
-    help_button(tools_frame, "local_curvature_torsion").grid(
-        row=1, column=1, sticky="w", padx=(0, 14), pady=4
-    )
-    tk.Button(
-        tools_frame,
-        text="Plane It...",
-        command=launch_plane_it_tool,
-    ).grid(row=1, column=2, sticky="w", padx=4, pady=4)
-    help_button(tools_frame, "plane_it").grid(
-        row=1, column=3, sticky="w", padx=(0, 14), pady=4
-    )
-    tk.Button(
-        tools_frame,
-        text="Curved Connector...",
-        command=launch_curved_connector_tool,
-    ).grid(row=2, column=0, sticky="w", padx=4, pady=4)
-    help_button(tools_frame, "curved_connector").grid(
-        row=2, column=1, sticky="w", padx=(0, 14), pady=4
-    )
-    for col in range(4):
-        tools_frame.grid_columnconfigure(col, weight=0)
-    tools_frame.grid_columnconfigure(4, weight=1)
 
     # --- Curve parameters frame ---
     curve_param_frame = tk.LabelFrame(root, text="Curve parameters", font=section_font)
@@ -3059,9 +3016,27 @@ def launch_gui() -> None:
     status_label = tk.Label(out_frame, textvariable=status_var, anchor="w")
     status_label.grid(row=1, column=0, columnspan=3, sticky="we", padx=4, pady=4)
 
+    # --- Other tools frame ---
+    tools_frame = tk.LabelFrame(root, text="Other tools", font=section_font)
+    tools_frame.grid(row=6, column=0, sticky="nsew", padx=8, pady=6)
+
+    def add_tool_button(col: int, label: str, command: Any, topic_key: str) -> None:
+        cell = tk.Frame(tools_frame)
+        cell.grid(row=0, column=col, sticky="w", padx=(4, 14), pady=4)
+        tk.Button(cell, text=label, command=command).pack(side="left")
+        help_button(cell, topic_key).pack(side="left", padx=(4, 0))
+
+    add_tool_button(0, "Convert XYZ...", convert_xyz_file_dialog, "xyz_convert")
+    add_tool_button(1, "Generate helical curve...", launch_generate_helical_curve_tool, "generate_helical_curve")
+    add_tool_button(2, "Local curvature/torsion...", launch_local_curvature_torsion_tool, "local_curvature_torsion")
+    add_tool_button(3, "Plane It...", launch_plane_it_tool, "plane_it")
+    add_tool_button(4, "Curved Connector...", launch_curved_connector_tool, "curved_connector")
+    for col in range(5):
+        tools_frame.grid_columnconfigure(col, weight=1)
+
     # --- Run log frame ---
     log_frame = tk.LabelFrame(root, text="Run log", font=section_font)
-    log_frame.grid(row=6, column=0, sticky="nsew", padx=8, pady=(0, 8))
+    log_frame.grid(row=7, column=0, sticky="nsew", padx=8, pady=(0, 8))
     log_text = tk.Text(log_frame, height=8, wrap="word", state="disabled")
     log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=log_text.yview)
     log_text.configure(yscrollcommand=log_scroll.set)
@@ -3322,7 +3297,8 @@ def launch_gui() -> None:
     root.grid_rowconfigure(3, weight=0)
     root.grid_rowconfigure(4, weight=0)
     root.grid_rowconfigure(5, weight=0)
-    root.grid_rowconfigure(6, weight=1)
+    root.grid_rowconfigure(6, weight=0)
+    root.grid_rowconfigure(7, weight=1)
 
     root.mainloop()
 

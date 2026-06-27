@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-plane_itV3_6.py
+plane_itV3_7.py
 
 Plane It projects selected atoms/points from a PDB or XYZ file into 2D and writes an SVG.
 
-Versioned implementation: plane_itV3_6.py
+Versioned implementation: plane_itV3_7.py
 User-facing launcher: plane_it.py
 
 Inputs:
@@ -87,7 +87,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 TOOL_NAME = "Plane It"
-TOOL_VERSION = "V3.6"
+TOOL_VERSION = "V3.7"
 
 
 def resource_path(relative_path: str) -> Path:
@@ -2871,7 +2871,7 @@ def write_projection_basis_pdb(input_pdb: Path, output_pdb: Path, projection: Pr
     output_pdb.parent.mkdir(parents=True, exist_ok=True)
     n_transformed = 0
     with input_pdb.open("r", encoding="utf-8", errors="replace") as inp, output_pdb.open("w", encoding="utf-8") as out:
-        out.write("REMARK PROJECTION-BASIS PDB CREATED BY Plane It (plane_itV3_6.py)\n")
+        out.write("REMARK PROJECTION-BASIS PDB CREATED BY Plane It (plane_itV3_7.py)\n")
         out.write("REMARK PROJECTION MODE: {0}\n".format(projection.mode.upper()))
         if bool(getattr(projection, "pre_flip_about_y", False)):
             out.write("REMARK INPUT COORDINATES WERE FIRST FLIPPED ABOUT THE Y AXIS: X -> -X, Z -> -Z\n")
@@ -3927,6 +3927,14 @@ def run_gui() -> int:
             set_widget_state(state_widgets.get("depth_front"), depth_enabled, readonly=True)
             set_label_state(state_widgets.get("depth_front_label"), depth_enabled)
 
+            xy_plane_on = bool(draw_xy_plane_var.get())
+            for key in ["xy_plane_fill", "xy_plane_stroke", "xy_plane_stroke_width", "xy_plane_opacity"]:
+                set_with_label(key, xy_plane_on)
+
+            scale_bar_on = bool(draw_scale_bar_var.get())
+            for key in ["scale_bar_length", "scale_bar_unit_label", "scale_bar_stroke", "scale_bar_stroke_width", "scale_bar_text_size"]:
+                set_with_label(key, scale_bar_on)
+
             for row_info in atom_type_rows:
                 widgets = row_info.get("widgets", {})
                 line_on = bool(row_info["draw_lines"].get())
@@ -4139,31 +4147,69 @@ def run_gui() -> int:
 
     xy_plane_frame = ttk.Frame(draw_frame)
     xy_plane_frame.grid(row=5, column=0, columnspan=10, sticky="ew", pady=4)
-    ttk.Checkbutton(xy_plane_frame, text="Draw xy-plane (z=0)", variable=draw_xy_plane_var).pack(side="left")
+    xy_plane_check = ttk.Checkbutton(xy_plane_frame, text="Draw xy-plane (z=0)", variable=draw_xy_plane_var)
+    xy_plane_check.pack(side="left")
     help_button(xy_plane_frame, "xy-plane layer", help_texts["xy_plane"]).pack(side="left", padx=(4, 12))
-    ttk.Label(xy_plane_frame, text="Fill").pack(side="left")
-    ttk.Entry(xy_plane_frame, textvariable=xy_plane_fill_var, width=10).pack(side="left", padx=(4, 12))
-    ttk.Label(xy_plane_frame, text="Stroke").pack(side="left")
-    ttk.Entry(xy_plane_frame, textvariable=xy_plane_stroke_var, width=10).pack(side="left", padx=(4, 12))
-    ttk.Label(xy_plane_frame, text="Stroke width").pack(side="left")
-    ttk.Entry(xy_plane_frame, textvariable=xy_plane_stroke_width_var, width=7).pack(side="left", padx=(4, 12))
-    ttk.Label(xy_plane_frame, text="Opacity").pack(side="left")
-    ttk.Entry(xy_plane_frame, textvariable=xy_plane_opacity_var, width=7).pack(side="left", padx=(4, 12))
+    xy_fill_label = ttk.Label(xy_plane_frame, text="Fill")
+    xy_fill_label.pack(side="left")
+    state_widgets["xy_plane_fill_label"] = xy_fill_label
+    xy_fill_entry = ttk.Entry(xy_plane_frame, textvariable=xy_plane_fill_var, width=10)
+    xy_fill_entry.pack(side="left", padx=(4, 12))
+    state_widgets["xy_plane_fill"] = xy_fill_entry
+    xy_stroke_label = ttk.Label(xy_plane_frame, text="Stroke")
+    xy_stroke_label.pack(side="left")
+    state_widgets["xy_plane_stroke_label"] = xy_stroke_label
+    xy_stroke_entry = ttk.Entry(xy_plane_frame, textvariable=xy_plane_stroke_var, width=10)
+    xy_stroke_entry.pack(side="left", padx=(4, 12))
+    state_widgets["xy_plane_stroke"] = xy_stroke_entry
+    xy_stroke_width_label = ttk.Label(xy_plane_frame, text="Stroke width")
+    xy_stroke_width_label.pack(side="left")
+    state_widgets["xy_plane_stroke_width_label"] = xy_stroke_width_label
+    xy_stroke_width_entry = ttk.Entry(xy_plane_frame, textvariable=xy_plane_stroke_width_var, width=7)
+    xy_stroke_width_entry.pack(side="left", padx=(4, 12))
+    state_widgets["xy_plane_stroke_width"] = xy_stroke_width_entry
+    xy_opacity_label = ttk.Label(xy_plane_frame, text="Opacity")
+    xy_opacity_label.pack(side="left")
+    state_widgets["xy_plane_opacity_label"] = xy_opacity_label
+    xy_opacity_entry = ttk.Entry(xy_plane_frame, textvariable=xy_plane_opacity_var, width=7)
+    xy_opacity_entry.pack(side="left", padx=(4, 12))
+    state_widgets["xy_plane_opacity"] = xy_opacity_entry
 
     scale_bar_frame = ttk.Frame(draw_frame)
     scale_bar_frame.grid(row=6, column=0, columnspan=10, sticky="ew", pady=4)
-    ttk.Checkbutton(scale_bar_frame, text="Draw scale bar", variable=draw_scale_bar_var).pack(side="left")
+    scale_bar_check = ttk.Checkbutton(scale_bar_frame, text="Draw scale bar", variable=draw_scale_bar_var)
+    scale_bar_check.pack(side="left")
     help_button(scale_bar_frame, "Scale bar", help_texts["scale_bar"]).pack(side="left", padx=(4, 12))
-    ttk.Label(scale_bar_frame, text="Length").pack(side="left")
-    ttk.Entry(scale_bar_frame, textvariable=scale_bar_length_var, width=7).pack(side="left", padx=(4, 12))
-    ttk.Label(scale_bar_frame, text="Unit").pack(side="left")
-    ttk.Entry(scale_bar_frame, textvariable=scale_bar_unit_label_var, width=5).pack(side="left", padx=(4, 12))
-    ttk.Label(scale_bar_frame, text="Color").pack(side="left")
-    ttk.Entry(scale_bar_frame, textvariable=scale_bar_stroke_var, width=10).pack(side="left", padx=(4, 12))
-    ttk.Label(scale_bar_frame, text="Stroke width").pack(side="left")
-    ttk.Entry(scale_bar_frame, textvariable=scale_bar_stroke_width_var, width=7).pack(side="left", padx=(4, 12))
-    ttk.Label(scale_bar_frame, text="Text size").pack(side="left")
-    ttk.Entry(scale_bar_frame, textvariable=scale_bar_text_size_var, width=7).pack(side="left", padx=(4, 12))
+    scale_bar_length_label = ttk.Label(scale_bar_frame, text="Length")
+    scale_bar_length_label.pack(side="left")
+    state_widgets["scale_bar_length_label"] = scale_bar_length_label
+    scale_bar_length_entry = ttk.Entry(scale_bar_frame, textvariable=scale_bar_length_var, width=7)
+    scale_bar_length_entry.pack(side="left", padx=(4, 12))
+    state_widgets["scale_bar_length"] = scale_bar_length_entry
+    scale_bar_unit_label = ttk.Label(scale_bar_frame, text="Unit")
+    scale_bar_unit_label.pack(side="left")
+    state_widgets["scale_bar_unit_label_label"] = scale_bar_unit_label
+    scale_bar_unit_entry = ttk.Entry(scale_bar_frame, textvariable=scale_bar_unit_label_var, width=5)
+    scale_bar_unit_entry.pack(side="left", padx=(4, 12))
+    state_widgets["scale_bar_unit_label"] = scale_bar_unit_entry
+    scale_bar_color_label = ttk.Label(scale_bar_frame, text="Color")
+    scale_bar_color_label.pack(side="left")
+    state_widgets["scale_bar_stroke_label"] = scale_bar_color_label
+    scale_bar_color_entry = ttk.Entry(scale_bar_frame, textvariable=scale_bar_stroke_var, width=10)
+    scale_bar_color_entry.pack(side="left", padx=(4, 12))
+    state_widgets["scale_bar_stroke"] = scale_bar_color_entry
+    scale_bar_stroke_width_label = ttk.Label(scale_bar_frame, text="Stroke width")
+    scale_bar_stroke_width_label.pack(side="left")
+    state_widgets["scale_bar_stroke_width_label"] = scale_bar_stroke_width_label
+    scale_bar_stroke_width_entry = ttk.Entry(scale_bar_frame, textvariable=scale_bar_stroke_width_var, width=7)
+    scale_bar_stroke_width_entry.pack(side="left", padx=(4, 12))
+    state_widgets["scale_bar_stroke_width"] = scale_bar_stroke_width_entry
+    scale_bar_text_size_label = ttk.Label(scale_bar_frame, text="Text size")
+    scale_bar_text_size_label.pack(side="left")
+    state_widgets["scale_bar_text_size_label"] = scale_bar_text_size_label
+    scale_bar_text_size_entry = ttk.Entry(scale_bar_frame, textvariable=scale_bar_text_size_var, width=7)
+    scale_bar_text_size_entry.pack(side="left", padx=(4, 12))
+    state_widgets["scale_bar_text_size"] = scale_bar_text_size_entry
 
     ttk.Label(
         draw_frame,
@@ -4387,6 +4433,7 @@ def run_gui() -> int:
         depth_front_var,
         line_underlay_var,
         draw_xy_plane_var,
+        draw_scale_bar_var,
         draw_base_pairs_var,
     ]:
         trace_state(var)

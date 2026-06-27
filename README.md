@@ -219,6 +219,8 @@ Plain coordinate text files may contain multiple components separated by blank l
 
 Use `--draw-xy-plane` to include a finite patch of the original coordinate plane `z=0` in the SVG. The SVG group/layer is named `xy-plane`, and its polygon shape is named `xy-plane-shape`. If SVG depth ordering is enabled for circles, neighbor lines, or base-pair lines, the xy-plane patch is sorted with the same back-to-front rules using its mean projected corner depth.
 
+Plane It SVGs include a projected-length scale bar by default. The top-level projection group stores the conversion factor as `data-scale`, and the scale-bar layer reports the same value visibly as `scale: 1 <unit> = <data-scale> SVG units`. For PDB files, the projected coordinate unit is normally Angstrom. The default scale bar is 10 Angstrom; use `--scale-bar-length`, `--scale-bar-unit-label`, or `--no-scale-bar` to adjust it.
+
 DSSR base-pair lines use the default output path `<input_folder>/tmp_file/<input_filename>.out`. When needed, Plane It may try to run:
 
 ```bash
@@ -261,10 +263,10 @@ PyInstaller is one common option:
 ```bash
 python3 -m pip install pyinstaller
 python3 -m PyInstaller --onefile --name curve_it --add-data "assets/icon.png:assets" --add-data "curve_it_lib:curve_it_lib" curve_it.py
-python3 -m PyInstaller --onefile --name plane_it --add-data "assets/plane_it_icon.png:assets" --add-data "curve_it_lib/plane_itV3_6.py:curve_it_lib" plane_it.py
+python3 -m PyInstaller --onefile --name plane_it --add-data "assets/plane_it_icon.png:assets" --add-data "curve_it_lib/plane_itV3_7.py:curve_it_lib" plane_it.py
 ```
 
-For a GUI-style app bundle, you can add `--windowed`. On macOS, PyInstaller's `--icon` option expects an `.icns` file, so PNG files in `assets/` are included as GUI/task-menu assets but are not required for the scripts to run. `assets/plane_it_icon.png` is the supplied Plane It task-menu/GUI icon. If the Plane It implementation file is updated later, replace `plane_itV3_6.py` in the PyInstaller command with the current `plane_itV*.py` file.
+For a GUI-style app bundle, you can add `--windowed`. On macOS, PyInstaller's `--icon` option expects an `.icns` file, so PNG files in `assets/` are included as GUI/task-menu assets but are not required for the scripts to run. `assets/plane_it_icon.png` is the supplied Plane It task-menu/GUI icon. If the Plane It implementation file is updated later, replace `plane_itV3_7.py` in the PyInstaller command with the current `plane_itV*.py` file.
 
 The scripts check for their icons at runtime and continue normally if an icon is missing.
 
@@ -277,7 +279,7 @@ Supporting scripts live in `curve_it_lib/`:
 - `cal_xyz_local_curvature_torsionV3_1.py`
 - `generate_helix_xyzV2.py`
 - `curved_connectorV3_0.py`
-- `plane_itV3_6.py` (versioned Plane It implementation; use `plane_it.py` as the stable launcher)
+- `plane_itV3_7.py` (versioned Plane It implementation; use `plane_it.py` as the stable launcher)
 - `view_xyzV3.py`
 
 They can still be run directly, for example:
