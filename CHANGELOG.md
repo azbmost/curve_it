@@ -5,6 +5,9 @@
 - Added `curve_it_lib/curved_connectorV3_0.py` as a bundled **Curved Connector...** GUI/CLI tool.
 - Added a default Plane It SVG scale bar that reports the projected-coordinate conversion factor (`data-scale`) and draws a 10 Angstrom reference length.
 - Added `curve_it_lib/plane_itV3_7.py` with dynamic greying for Plane It's xy-plane and scale-bar styling fields.
+- Changed Plane It's xy-plane layer to draw the projection-basis xy-plane at projected depth 0 instead of the original input `z=0` plane.
+- Removed the white halo stroke from Plane It's scale-bar SVG text for cleaner Adobe Illustrator import.
+- Added `curve_it_lib/plane_itV3_8.py` with xy-plane and line-underlay enabled by default, first atom-type circle opacity defaulting to `0.2`, and circle SVG object names such as `A36P`.
 - Added a Curve It GUI Tools launcher and help entry for curved connector screening.
 - Incorporated the elastica note into the connector tool documentation/help: the centerline is a practical clamped Euler-elastica proxy, and `twist_mismatch_deg` is an endpoint orientation mismatch rather than physical torsion.
 - Updated README helper-module documentation and bumped Curve It version metadata to `V3_2`.

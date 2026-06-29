@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-plane_itV3_7.py
+plane_itV3_8.py
 
 Plane It projects selected atoms/points from a PDB or XYZ file into 2D and writes an SVG.
 
-Versioned implementation: plane_itV3_7.py
+Versioned implementation: plane_itV3_8.py
 User-facing launcher: plane_it.py
 
 Inputs:
@@ -87,7 +87,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 TOOL_NAME = "Plane It"
-TOOL_VERSION = "V3.7"
+TOOL_VERSION = "V3.8"
 
 
 def resource_path(relative_path: str) -> Path:
@@ -849,7 +849,7 @@ def default_name_tags_from_args(args: argparse.Namespace, styles: Optional[Dict[
         tags.append("xyplane")
     if bool(getattr(args, "depth_order_circles", False) or getattr(args, "depth_order_lines", False) or getattr(args, "depth_order_base_pairs", False)):
         tags.append("depth")
-    if bool(getattr(args, "line_underlay", False)):
+    if bool(getattr(args, "line_underlay", False) and getattr(args, "depth_order_lines", False) and any_lines):
         tags.append("underlay")
     return tags
 
@@ -935,12 +935,13 @@ def parse_style_specs(
     styles: Dict[str, AtomStyle] = {}
     for index, atom_type in enumerate(atom_types):
         color = color_for_index(index)
+        default_opacity = 0.2 if index == 0 else 1.0
         styles[atom_type.upper()] = AtomStyle(
             fill=color,
             stroke="#222222",
             stroke_width=0.6,
             radius=float(default_radius),
-            opacity=1.0,
+            opacity=default_opacity,
             draw_lines=bool(default_draw_lines),
             connection_mode=normalize_connection_mode(default_connection_mode),
             line_stroke=color,
@@ -1291,6 +1292,20 @@ def atom_title(selected: SelectedAtom, proj_x: float, proj_y: float, depth: floa
         proj_y=proj_y,
         depth=depth,
     )
+
+
+def atom_object_name(selected: SelectedAtom) -> str:
+    atom = selected.atom
+    chain = atom.chain.strip() or "blank"
+    residue = "{0}{1}".format(atom.resseq.strip(), atom.icode.strip())
+    atom_name = re.sub(r"\s+", "", atom.atom_name.strip())
+    raw_name = "{0}{1}{2}".format(chain, residue, atom_name)
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "", raw_name)
+    if not name:
+        name = "atom{0}".format(atom.line_number)
+    if not re.match(r"^[A-Za-z_]", name):
+        name = "atom_{0}".format(name)
+    return name
 
 
 def group_selected_atoms(
@@ -2086,19 +2101,26 @@ def write_projection_svg(
         return float(np.mean(xy_plane_depths))
 
     def xy_plane_depth_sort_key() -> Tuple[float, int, int]:
-        # A finite patch can span several depths. Use mean projected depth for
-        # the painter-order key, while storing all corner depths in SVG metadata.
+        # The projection-basis xy-plane is drawn at depth 0; keep the mean-based
+        # form so the ordering code stays parallel with other drawable items.
         return (depth_sort_value(xy_plane_depth_mean()), 0, -1)
+
+    circle_id_counts: Dict[str, int] = {}
 
     def circle_lines(selected: SelectedAtom, proj_x: float, proj_y: float, depth: float, indent: str) -> List[str]:
         atom = selected.atom
         style = styles[selected.atom_type.upper()]
         svg_x, svg_y = to_svg_xy(proj_x, proj_y, scale, x_offset, y_offset, invert_y)
         title = atom_title(selected, proj_x, proj_y, depth)
+        object_name = atom_object_name(selected)
+        count = circle_id_counts.get(object_name, 0)
+        circle_id_counts[object_name] = count + 1
+        object_id = object_name if count == 0 else "{0}_{1}".format(object_name, count + 1)
         out: List[str] = []
         out.append(
-            indent + '<circle class="point" cx="{cx}" cy="{cy}" r="{r}" '
+            indent + '<circle id="{object_id}" class="point" cx="{cx}" cy="{cy}" r="{r}" '
             'fill="{fill}" stroke="{stroke}" stroke-width="{stroke_width}" opacity="{opacity}" '
+            'inkscape:label="{object_name}" data-name="{object_name}" '
             'data-selected-atom-type="{selected_type}" data-model="{model}" data-record="{record}" '
             'data-serial="{serial}" data-atom-name="{atom_name}" data-element="{element}" '
             'data-altloc="{altloc}" data-resname="{resname}" data-chain="{chain}" '
@@ -2108,6 +2130,8 @@ def write_projection_svg(
                 cx=svg_float(svg_x),
                 cy=svg_float(svg_y),
                 r=svg_float(style.radius),
+                object_id=svg_escape(object_id),
+                object_name=svg_escape(object_name),
                 fill=svg_escape(point_fill_for(selected)),
                 stroke=svg_escape(style.stroke),
                 stroke_width=svg_float(style.stroke_width),
@@ -2897,7 +2921,7 @@ def write_projection_basis_pdb(input_pdb: Path, output_pdb: Path, projection: Pr
     output_pdb.parent.mkdir(parents=True, exist_ok=True)
     n_transformed = 0
     with input_pdb.open("r", encoding="utf-8", errors="replace") as inp, output_pdb.open("w", encoding="utf-8") as out:
-        out.write("REMARK PROJECTION-BASIS PDB CREATED BY Plane It (plane_itV3_7.py)\n")
+        out.write("REMARK PROJECTION-BASIS PDB CREATED BY Plane It (plane_itV3_8.py)\n")
         out.write("REMARK PROJECTION MODE: {0}\n".format(projection.mode.upper()))
         if bool(getattr(projection, "pre_flip_about_y", False)):
             out.write("REMARK INPUT COORDINATES WERE FIRST FLIPPED ABOUT THE Y AXIS: X -> -X, Z -> -Z\n")
@@ -3271,11 +3295,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--depth-order-lines", action="store_true", help="Draw neighbor line segments back-to-front using projection depth")
     parser.add_argument("--depth-order-base-pairs", action="store_true", help="Draw DSSR base-pair lines back-to-front using projection depth")
     parser.add_argument("--depth-front", choices=["positive", "negative"], default="positive", help="Which depth side is front for SVG depth ordering. Default: positive")
-    parser.add_argument("--line-underlay", action="store_true", help="When --depth-order-lines is used, draw a wider line under each neighbor segment, usually white, to make depth separation clearer")
+    parser.add_argument("--line-underlay", dest="line_underlay", action="store_true", default=True, help="When --depth-order-lines is used, draw a wider line under each neighbor segment, usually white, to make depth separation clearer. Default: on")
+    parser.add_argument("--no-line-underlay", dest="line_underlay", action="store_false", help="Disable the wider depth-ordered neighbor-line underlay")
     parser.add_argument("--line-underlay-stroke", default="#ffffff", help="Stroke color for the depth-order neighbor-line underlay. Default: white")
     parser.add_argument("--line-underlay-extra-width", type=float, default=8.0, help="Additional width added to each underlay line relative to the visible neighbor line. Default: 8.0")
     parser.add_argument("--line-underlay-opacity", type=float, default=1.0, help="Opacity of the neighbor-line underlay. Default: 1")
-    parser.add_argument("--draw-xy-plane", action="store_true", help="Draw the projection-basis xy plane (projection depth=0) as an SVG layer/group named xy-plane. In PCA mode this is the PC1/PC2 plane through the selected-atom centroid.")
+    parser.add_argument("--draw-xy-plane", dest="draw_xy_plane", action="store_true", default=True, help="Draw the projection-basis xy plane (projection depth=0) as an SVG layer/group named xy-plane. In PCA mode this is the PC1/PC2 plane through the selected-atom centroid. Default: on")
+    parser.add_argument("--no-xy-plane", dest="draw_xy_plane", action="store_false", help="Do not draw the projection-basis xy-plane layer")
     parser.add_argument("--xy-plane-fill", default="#7dd3fc", help="Fill color for --draw-xy-plane. Default: #7dd3fc")
     parser.add_argument("--xy-plane-stroke", default="#0284c7", help="Stroke color for --draw-xy-plane. Default: #0284c7")
     parser.add_argument("--xy-plane-stroke-width", type=float, default=1.5, help="Stroke width for --draw-xy-plane. Default: 1.5")
@@ -3345,11 +3371,11 @@ def namespace_from_gui_values(values: dict) -> argparse.Namespace:
         depth_order_lines=values.get("depth_order_lines", False),
         depth_order_base_pairs=values.get("depth_order_base_pairs", False),
         depth_front=values.get("depth_front", "positive"),
-        line_underlay=values.get("line_underlay", False),
+        line_underlay=values.get("line_underlay", True),
         line_underlay_stroke=values.get("line_underlay_stroke", "#ffffff"),
         line_underlay_extra_width=float(values.get("line_underlay_extra_width", 8.0)),
         line_underlay_opacity=float(values.get("line_underlay_opacity", 1.0)),
-        draw_xy_plane=values.get("draw_xy_plane", False),
+        draw_xy_plane=values.get("draw_xy_plane", True),
         xy_plane_fill=values.get("xy_plane_fill", "#7dd3fc"),
         xy_plane_stroke=values.get("xy_plane_stroke", "#0284c7"),
         xy_plane_stroke_width=float(values.get("xy_plane_stroke_width", 1.5)),
@@ -3591,11 +3617,11 @@ def run_gui() -> int:
     depth_order_lines_var = tk.BooleanVar(value=True)
     depth_order_base_pairs_var = tk.BooleanVar(value=True)
     depth_front_var = tk.StringVar(value="positive")
-    line_underlay_var = tk.BooleanVar(value=False)
+    line_underlay_var = tk.BooleanVar(value=True)
     line_underlay_stroke_var = tk.StringVar(value="#ffffff")
     line_underlay_extra_width_var = tk.StringVar(value="8.0")
     line_underlay_opacity_var = tk.StringVar(value="1.0")
-    draw_xy_plane_var = tk.BooleanVar(value=False)
+    draw_xy_plane_var = tk.BooleanVar(value=True)
     xy_plane_fill_var = tk.StringVar(value="#7dd3fc")
     xy_plane_stroke_var = tk.StringVar(value="#0284c7")
     xy_plane_stroke_width_var = tk.StringVar(value="1.5")
@@ -3659,7 +3685,7 @@ def run_gui() -> int:
             tags.append("xyplane")
         if bool(depth_order_circles_var.get() or depth_order_lines_var.get() or depth_order_base_pairs_var.get()):
             tags.append("depth")
-        if bool(line_underlay_var.get()):
+        if bool(line_underlay_var.get() and depth_order_lines_var.get() and any_lines):
             tags.append("underlay")
         return tags
 
@@ -3869,7 +3895,7 @@ def run_gui() -> int:
             "atom_type": tk.StringVar(value=default_type_names[index] if index < len(default_type_names) else ""),
             "fill": tk.StringVar(value=""),
             "radius": tk.StringVar(value="3"),
-            "opacity": tk.StringVar(value="1.0"),
+            "opacity": tk.StringVar(value="0.2" if is_first_default_p else "1.0"),
             "stroke": tk.StringVar(value="#222222"),
             "stroke_width": tk.StringVar(value="0.6"),
             "draw_lines": tk.BooleanVar(value=is_first_default_p),
