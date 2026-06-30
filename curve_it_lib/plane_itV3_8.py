@@ -2106,6 +2106,12 @@ def write_projection_svg(
         return (depth_sort_value(xy_plane_depth_mean()), 0, -1)
 
     circle_id_counts: Dict[str, int] = {}
+    segment_id_counts: Dict[str, int] = {}
+
+    def unique_svg_object_id(object_name: str, counts: Dict[str, int]) -> str:
+        count = counts.get(object_name, 0)
+        counts[object_name] = count + 1
+        return object_name if count == 0 else "{0}_{1}".format(object_name, count + 1)
 
     def circle_lines(selected: SelectedAtom, proj_x: float, proj_y: float, depth: float, indent: str) -> List[str]:
         atom = selected.atom
@@ -2113,9 +2119,7 @@ def write_projection_svg(
         svg_x, svg_y = to_svg_xy(proj_x, proj_y, scale, x_offset, y_offset, invert_y)
         title = atom_title(selected, proj_x, proj_y, depth)
         object_name = atom_object_name(selected)
-        count = circle_id_counts.get(object_name, 0)
-        circle_id_counts[object_name] = count + 1
-        object_id = object_name if count == 0 else "{0}_{1}".format(object_name, count + 1)
+        object_id = unique_svg_object_id(object_name, circle_id_counts)
         out: List[str] = []
         out.append(
             indent + '<circle id="{object_id}" class="point" cx="{cx}" cy="{cy}" r="{r}" '
@@ -2177,17 +2181,23 @@ def write_projection_svg(
         opacity_value = float(getattr(args, "line_underlay_opacity", 1.0)) if underlay else style.line_opacity
         class_name = "neighbor-line-underlay" if underlay else "neighbor-line"
         mode = normalize_connection_mode(segment.connection_mode)
+        segment_name = "{0}_{1}".format(atom_object_name(selected1), atom_object_name(selected2))
+        object_name = "{0}_underlay".format(segment_name) if underlay else segment_name
+        object_id = unique_svg_object_id(object_name, segment_id_counts)
 
         if mode == "smooth":
             d_attr = smooth_segment_path(segment, scale, x_offset, y_offset, invert_y)
             out.append(
-                indent + '<path class="{class_name} smooth-curve" d="{d}" '
+                indent + '<path id="{object_id}" class="{class_name} smooth-curve" d="{d}" '
                 'stroke="{stroke}" stroke-width="{width}" opacity="{opacity}" '
+                'inkscape:label="{object_name}" data-name="{object_name}" '
                 'data-connection-mode="smooth" data-chain-closed="{closed}" data-model="{model}" data-chain="{chain}" data-atom-type="{atom_type}" '
                 'data-from-serial="{from_serial}" data-to-serial="{to_serial}" '
                 'data-from-line-number="{from_line}" data-to-line-number="{to_line}" '
                 'data-from-depth="{from_depth}" data-to-depth="{to_depth}" data-segment-depth="{segment_depth}" '
                 'data-projection-mode="{mode_name}" data-depth-front="{depth_front}">'.format(
+                    object_id=svg_escape(object_id),
+                    object_name=svg_escape(object_name),
                     class_name=svg_escape(class_name),
                     d=svg_escape(d_attr),
                     stroke=svg_escape(stroke),
@@ -2214,13 +2224,16 @@ def write_projection_svg(
             x1, y1 = to_svg_xy(proj_x1, proj_y1, scale, x_offset, y_offset, invert_y)
             x2, y2 = to_svg_xy(proj_x2, proj_y2, scale, x_offset, y_offset, invert_y)
             out.append(
-                indent + '<line class="{class_name} straight-line" x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
+                indent + '<line id="{object_id}" class="{class_name} straight-line" x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
                 'stroke="{stroke}" stroke-width="{width}" opacity="{opacity}" '
+                'inkscape:label="{object_name}" data-name="{object_name}" '
                 'data-connection-mode="straight" data-chain-closed="{closed}" data-model="{model}" data-chain="{chain}" data-atom-type="{atom_type}" '
                 'data-from-serial="{from_serial}" data-to-serial="{to_serial}" '
                 'data-from-line-number="{from_line}" data-to-line-number="{to_line}" '
                 'data-from-depth="{from_depth}" data-to-depth="{to_depth}" data-segment-depth="{segment_depth}" '
                 'data-projection-mode="{mode_name}" data-depth-front="{depth_front}">'.format(
+                    object_id=svg_escape(object_id),
+                    object_name=svg_escape(object_name),
                     class_name=svg_escape(class_name),
                     x1=svg_float(x1),
                     y1=svg_float(y1),
@@ -3638,7 +3651,7 @@ def run_gui() -> int:
     base_pair_width_var = tk.StringVar(value="3.0")
     base_pair_opacity_var = tk.StringVar(value="0.75")
     xy_only_var = tk.BooleanVar(value=False)
-    write_pca_pdb_var = tk.BooleanVar(value=False)
+    write_pca_pdb_var = tk.BooleanVar(value=True)
     n_types_var = tk.IntVar(value=1)
 
     atom_type_rows: List[dict] = []
@@ -4126,9 +4139,9 @@ def run_gui() -> int:
     label_with_help(draw_frame, "Color", "Color by", help_texts["color_by"]).grid(row=0, column=2, sticky="w", padx=(10, 4), pady=4)
     ttk.Combobox(draw_frame, textvariable=color_by_var, values=["chain", "atom-type"], width=10, state="readonly").grid(row=0, column=3, sticky="w", pady=4)
 
-    ttk.Label(draw_frame, text="W").grid(row=0, column=4, sticky="w", padx=(10, 3), pady=4)
+    ttk.Label(draw_frame, text="Width").grid(row=0, column=4, sticky="w", padx=(10, 3), pady=4)
     numeric_entry(draw_frame, width_var, 6).grid(row=0, column=5, sticky="w", pady=4)
-    ttk.Label(draw_frame, text="H").grid(row=0, column=6, sticky="w", padx=(10, 3), pady=4)
+    ttk.Label(draw_frame, text="Height").grid(row=0, column=6, sticky="w", padx=(10, 3), pady=4)
     numeric_entry(draw_frame, height_var, 6).grid(row=0, column=7, sticky="w", pady=4)
     ttk.Label(draw_frame, text="Pad").grid(row=0, column=8, sticky="w", padx=(10, 3), pady=4)
     numeric_entry(draw_frame, padding_var, 6).grid(row=0, column=9, sticky="w", pady=4)
@@ -4470,8 +4483,14 @@ def run_gui() -> int:
         output_text.insert("1.0", summary + "\n")
         messagebox.showinfo("Plane It", "Finished. See the run log for details.")
 
+    def handle_projection_mode_change(*_args) -> None:
+        desired = projection_mode_var.get() == "pca"
+        if bool(write_pca_pdb_var.get()) != desired:
+            write_pca_pdb_var.set(desired)
+        else:
+            update_gui_state()
+
     for var in [
-        projection_mode_var,
         flip_about_y_var,
         input_format_var,
         color_by_var,
@@ -4490,6 +4509,8 @@ def run_gui() -> int:
         draw_base_pairs_var,
     ]:
         trace_state(var)
+
+    projection_mode_var.trace_add("write", handle_projection_mode_change)
 
     pdb_var.trace_add("write", lambda *_args: update_default_paths(force=True, update_closed_chains=True))
     input_format_var.trace_add("write", lambda *_args: update_default_paths(force=True, update_closed_chains=True))
