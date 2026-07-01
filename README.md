@@ -194,7 +194,7 @@ python3 curve_it_lib/curved_connectorV3_0.py target.pdb template.pdb \
 
 The summary's `twist_mismatch_deg` is an endpoint base-pair orientation mismatch, not integrated geometric torsion or material twist energy.
 
-**Plane It...** opens the Plane It companion GUI. Plane It projects selected atoms or 3D points from PDB/XYZ/text files into 2D SVG using PCA or current XY coordinates. The stable launcher is `plane_it.py`; the versioned implementation lives in `curve_it_lib/` as `plane_itV*.py`.
+**Plane It...** opens the Plane It companion GUI. Plane It projects selected atoms or 3D points from PDB/XYZ/text files into 2D SVG using PCA or current XY coordinates. The stable launcher is `plane_it.py`; the current versioned implementation is `curve_it_lib/plane_itV3_8.py`.
 
 Launch the Plane It GUI:
 

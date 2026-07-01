@@ -6,6 +6,7 @@
 - Updated **Convert XYZ...** fake-PDB output so `LINK` records are written before `ATOM`/`TER` records and match the corrected LINK spacing example.
 - Changed **Convert XYZ...** fake-PDB options so **Close all chains with LINK records** is enabled by default.
 - Prevented in-process helper dialogs from changing Curve It's main window icon.
+- Removed older Plane It implementation snapshots, keeping `curve_it_lib/plane_itV3_8.py` as the single bundled Plane It implementation.
 
 ## V3_2 - 2026-06-26
 
