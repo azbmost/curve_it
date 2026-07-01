@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_2`
+Version: `V3_3`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -152,7 +152,7 @@ The GUI **View curve** window can show all parsed components or the currently se
 
 The GUI has a dedicated **Tools** area for utility tools.
 
-**Convert XYZ...** converts plain coordinate files to molecular XYZ and molecular XYZ back to plain coordinate files. Curve It can use either format as the curve input.
+**Convert XYZ...** opens a small conversion window for coordinate XYZ/txt, molecular XYZ, and fake-PDB output. Fake PDB output is meant for molecular visualization: each point becomes one atom in one residue, using residue `ALA` and atom `CA` by default. Blank-line-separated coordinate components become chains `A`, `B`, `C`, and so on; selected closed chains can be written with `LINK` records.
 
 **Generate helical curve...** opens `curve_it_lib/generate_helix_xyzV2.py`. This tool writes a plain-coordinate XYZ file for a circular helix:
 
@@ -262,11 +262,11 @@ PyInstaller is one common option:
 
 ```bash
 python3 -m pip install pyinstaller
-python3 -m PyInstaller --onefile --name curve_it --add-data "assets/icon.png:assets" --add-data "curve_it_lib:curve_it_lib" curve_it.py
-python3 -m PyInstaller --onefile --name plane_it --add-data "assets/plane_it_icon.png:assets" --add-data "curve_it_lib/plane_itV3_8.py:curve_it_lib" plane_it.py
+python3 -m PyInstaller --onefile --name curve_it --add-data "assets:assets" --add-data "curve_it_lib:curve_it_lib" curve_it.py
+python3 -m PyInstaller --onefile --name plane_it --add-data "assets:assets" --add-data "curve_it_lib/plane_itV3_8.py:curve_it_lib" plane_it.py
 ```
 
-For a GUI-style app bundle, you can add `--windowed`. On macOS, PyInstaller's `--icon` option expects an `.icns` file, so PNG files in `assets/` are included as GUI/task-menu assets but are not required for the scripts to run. `assets/plane_it_icon.png` is the supplied Plane It task-menu/GUI icon. If the Plane It implementation file is updated later, replace `plane_itV3_8.py` in the PyInstaller command with the current `plane_itV*.py` file.
+For a GUI-style app bundle, you can add `--windowed`. On macOS, PyInstaller's `--icon` option expects an `.icns` file, so PNG files in `assets/` are included as GUI/task-menu assets but are not required for the scripts to run. The `assets/` folder includes optional task-menu/window icons for Curve It, Plane It, and the helper tools. If the Plane It implementation file is updated later, replace `plane_itV3_8.py` in the PyInstaller command with the current `plane_itV*.py` file.
 
 The scripts check for their icons at runtime and continue normally if an icon is missing.
 

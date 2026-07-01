@@ -54,6 +54,29 @@ TOOL_VERSION = "V3_0"
 DEFAULT_OUTDIR = "curved_connectorV3_out"
 
 
+def resource_path(relative_path: str) -> str:
+    """Return a resource path that also works from a PyInstaller bundle."""
+    source_dir = os.path.dirname(os.path.abspath(__file__))
+    source_root = os.path.dirname(source_dir) if os.path.basename(source_dir) == "curve_it_lib" else source_dir
+    base_dir = getattr(sys, "_MEIPASS", source_root)
+    return os.path.join(base_dir, relative_path)
+
+
+def set_optional_window_icon(root, tk_module, icon_filenames: List[str], image_attr: str) -> None:
+    """Set a Tk window icon if one of the optional PNG assets is available."""
+    for icon_filename in icon_filenames:
+        icon_path = resource_path(os.path.join("assets", icon_filename))
+        if not os.path.isfile(icon_path):
+            continue
+        try:
+            icon_image = tk_module.PhotoImage(file=icon_path)
+            root.iconphoto(True, icon_image)
+            setattr(root, image_attr, icon_image)
+            return
+        except Exception:
+            continue
+
+
 def eprint(*args: object, **kwargs: object) -> None:
     print(*args, file=sys.stderr, **kwargs)
 
@@ -1569,6 +1592,7 @@ def launch_gui() -> int:
     root.title(f"{TOOL_NAME} {TOOL_VERSION}")
     root.geometry("980x700")
     root.minsize(920, 620)
+    set_optional_window_icon(root, tk, ["curved_connector_icon.png", "icon.png"], "_curved_connector_icon_image")
     root.rowconfigure(0, weight=1)
     root.columnconfigure(0, weight=1)
 

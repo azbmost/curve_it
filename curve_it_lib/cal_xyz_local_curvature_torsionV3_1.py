@@ -48,6 +48,30 @@ from scipy.interpolate import CubicSpline
 from scipy.integrate import quad
 from scipy.signal import savgol_filter
 
+
+def resource_path(relative_path: str) -> str:
+    """Return a resource path that also works from a PyInstaller bundle."""
+    source_dir = os.path.dirname(os.path.abspath(__file__))
+    source_root = os.path.dirname(source_dir) if os.path.basename(source_dir) == "curve_it_lib" else source_dir
+    base_dir = getattr(sys, "_MEIPASS", source_root)
+    return os.path.join(base_dir, relative_path)
+
+
+def set_optional_window_icon(root, tk_module, icon_filenames: List[str], image_attr: str) -> None:
+    """Set a Tk window icon if one of the optional PNG assets is available."""
+    for icon_filename in icon_filenames:
+        icon_path = resource_path(os.path.join("assets", icon_filename))
+        if not os.path.isfile(icon_path):
+            continue
+        try:
+            icon_image = tk_module.PhotoImage(file=icon_path)
+            root.iconphoto(True, icon_image)
+            setattr(root, image_attr, icon_image)
+            return
+        except Exception:
+            continue
+
+
 try:
     # Reuse the parser and closed-curve smoothing behavior from the companion
     # Curve It helper when this file is placed in curve_it_lib/.
@@ -1111,6 +1135,7 @@ def launch_gui() -> None:
     root = tk.Tk()
     root.title("Local Curvature, Torsion, and Writhe Density")
     root.geometry("860x700")
+    set_optional_window_icon(root, tk, ["local_curvature_icon.png", "icon.png"], "_local_curvature_icon_image")
 
     input_var = tk.StringVar()
     output_var = tk.StringVar()

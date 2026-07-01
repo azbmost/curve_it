@@ -44,6 +44,35 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 
+def resource_path(relative_path: str) -> str:
+    """Return a resource path that also works from a PyInstaller bundle."""
+    source_dir = os.path.dirname(os.path.abspath(__file__))
+    source_root = os.path.dirname(source_dir) if os.path.basename(source_dir) == "curve_it_lib" else source_dir
+    base_dir = getattr(sys, "_MEIPASS", source_root)
+    return os.path.join(base_dir, relative_path)
+
+
+def set_optional_window_icon(
+    root: Any,
+    tk_module: Any,
+    icon_filenames: List[str],
+    image_attr: str,
+    default_icon: bool = True,
+) -> None:
+    """Set a Tk window icon if one of the optional PNG assets is available."""
+    for icon_filename in icon_filenames:
+        icon_path = resource_path(os.path.join("assets", icon_filename))
+        if not os.path.isfile(icon_path):
+            continue
+        try:
+            icon_image = tk_module.PhotoImage(file=icon_path)
+            root.iconphoto(default_icon, icon_image)
+            setattr(root, image_attr, icon_image)
+            return
+        except Exception:
+            continue
+
+
 @dataclass
 class AtomRecord:
     """Container for a PDB atom/HETATM record and metadata used by Curve It."""
@@ -1593,6 +1622,13 @@ def run_gui(
     owns_mainloop = parent is None
     root = tk.Tk() if owns_mainloop else tk.Toplevel(parent)
     root.title("Curve It phase helper V5")
+    set_optional_window_icon(
+        root,
+        tk,
+        ["get_phase_icon.png", "icon.png"],
+        "_curve_it_phase_icon_image",
+        default_icon=owns_mainloop,
+    )
     if parent is not None:
         root.transient(parent)
 

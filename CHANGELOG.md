@@ -1,5 +1,12 @@
 # Changelog
 
+## V3_3 - 2026-07-01
+
+- Bumped Curve It version metadata to `V3_3`.
+- Updated **Convert XYZ...** fake-PDB output so `LINK` records are written before `ATOM`/`TER` records and match the corrected LINK spacing example.
+- Changed **Convert XYZ...** fake-PDB options so **Close all chains with LINK records** is enabled by default.
+- Prevented in-process helper dialogs from changing Curve It's main window icon.
+
 ## V3_2 - 2026-06-26
 
 - Added `curve_it_lib/curved_connectorV3_0.py` as a bundled **Curved Connector...** GUI/CLI tool.
@@ -9,6 +16,8 @@
 - Removed the white halo stroke from Plane It's scale-bar SVG text for cleaner Adobe Illustrator import.
 - Added `curve_it_lib/plane_itV3_8.py` with xy-plane and line-underlay enabled by default, first atom-type circle opacity defaulting to `0.2`, circle SVG object names such as `A36P`, and depth-ordered segment names such as `A36P_A37P`.
 - Refined the Plane It V3.8 GUI width/height labels and made the projection-basis PDB/XYZ checkbox follow the selected projection mode by default.
+- Added optional PNG icons for Curve It's helper-tool windows and dialogs.
+- Changed **Convert XYZ...** from a step-by-step prompt sequence into a single conversion window, including fake-PDB output with configurable residue/atom names and optional LINK records for closed chains.
 - Added a Curve It GUI Tools launcher and help entry for curved connector screening.
 - Incorporated the elastica note into the connector tool documentation/help: the centerline is a practical clamped Euler-elastica proxy, and `twist_mismatch_deg` is an endpoint orientation mismatch rather than physical torsion.
 - Updated README helper-module documentation and bumped Curve It version metadata to `V3_2`.

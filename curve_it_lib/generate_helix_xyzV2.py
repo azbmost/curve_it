@@ -56,6 +56,21 @@ def resource_path(relative_path: str) -> Path:
     return base_dir / relative_path
 
 
+def set_optional_window_icon(root, tk_module, icon_filenames: List[str], image_attr: str) -> None:
+    """Set a Tk window icon if one of the optional PNG assets is available."""
+    for icon_filename in icon_filenames:
+        icon_path = resource_path("assets/{0}".format(icon_filename))
+        if not icon_path.exists():
+            continue
+        try:
+            icon_image = tk_module.PhotoImage(file=str(icon_path))
+            root.iconphoto(True, icon_image)
+            setattr(root, image_attr, icon_image)
+            return
+        except Exception:
+            continue
+
+
 class ParameterResolutionError(ValueError):
     """Raised when R, c, and pitch angle cannot be resolved consistently."""
 
@@ -379,14 +394,7 @@ def run_gui() -> None:
     root.geometry("760x680")
     root.minsize(700, 620)
 
-    icon_path = resource_path("assets/icon.png")
-    if icon_path.exists():
-        try:
-            icon_image = tk.PhotoImage(file=str(icon_path))
-            root.iconphoto(True, icon_image)
-            root._curve_it_icon_image = icon_image
-        except Exception:
-            pass
+    set_optional_window_icon(root, tk, ["generate_helix_icon.png", "icon.png"], "_generate_helix_icon_image")
 
     style = ttk.Style(root)
     try:

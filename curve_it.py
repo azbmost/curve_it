@@ -139,7 +139,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_2"
+APP_VERSION = "V3_3"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -435,6 +435,59 @@ def read_xyz_curve_components_from_text(xyz_text: str) -> List[np.ndarray]:
     return components
 
 
+def read_xyz_curve_components_from_text_as(xyz_text: str, input_format: str = "auto") -> List[np.ndarray]:
+    """Read XYZ-like text as auto, coordinate XYZ/txt, or molecular XYZ."""
+    fmt = (input_format or "auto").strip().lower()
+    if fmt in {"auto", ""}:
+        return read_xyz_curve_components_from_text(xyz_text)
+    if fmt not in {"coordinate", "coordinate_xyz", "plain", "plain_xyz", "molecular", "molecular_xyz"}:
+        raise ValueError(f"Unsupported XYZ input format: {input_format}")
+
+    raw_lines = xyz_text.splitlines()
+    nonempty_indices = [i for i, line in enumerate(raw_lines) if line.strip()]
+    if not nonempty_indices:
+        raise ValueError("XYZ file does not contain readable lines.")
+
+    start_index = nonempty_indices[0]
+    if fmt in {"molecular", "molecular_xyz"}:
+        if not first_token_is_integer(raw_lines[start_index]):
+            raise ValueError("Molecular XYZ input must start with an atom-count line.")
+        atom_count = int(raw_lines[start_index].strip().split()[0])
+        data_lines = raw_lines[start_index + 2:start_index + 2 + atom_count]
+        pts: List[List[float]] = []
+        for line in data_lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or stripped.startswith("!"):
+                continue
+            point = parse_xyz_coordinate_line(stripped)
+            if point is not None:
+                pts.append(point)
+        if len(pts) < 2:
+            raise ValueError("Molecular XYZ input does not contain at least two 3D points.")
+        return [np.array(pts, dtype=float)]
+
+    components: List[np.ndarray] = []
+    current: List[List[float]] = []
+    for line in raw_lines[start_index:]:
+        stripped = line.strip()
+        if not stripped:
+            if current:
+                components.append(np.array(current, dtype=float))
+                current = []
+            continue
+        if stripped.startswith("#") or stripped.startswith("!"):
+            continue
+        point = parse_xyz_coordinate_line(stripped)
+        if point is not None:
+            current.append(point)
+    if current:
+        components.append(np.array(current, dtype=float))
+    components = [component for component in components if component.shape[0] > 0]
+    if not components or sum(component.shape[0] for component in components) < 2:
+        raise ValueError("Coordinate XYZ/txt input does not contain at least two 3D points.")
+    return components
+
+
 def read_xyz_curve_from_text(xyz_text: str) -> np.ndarray:
     """
     Read a 3D polyline from a generic XYZ-like text file.
@@ -477,6 +530,137 @@ def write_molecular_xyz_curve(path: str,
         f.write(f"{comment}\n")
         for p in pts:
             f.write(f"{elem:<2} {p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\n")
+
+
+FAKE_PDB_CHAIN_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+
+def sanitize_pdb_atom_name(atom_name: str) -> str:
+    """Return a compact PDB atom name for fake-PDB output."""
+    name = "".join(ch for ch in (atom_name or "CA").strip().upper() if ch.isalnum() or ch in {"'", "*"})
+    return (name or "CA")[:4]
+
+
+def sanitize_pdb_resname(resname: str) -> str:
+    """Return a compact PDB residue name for fake-PDB output."""
+    name = "".join(ch for ch in (resname or "ALA").strip().upper() if ch.isalnum())
+    return (name or "ALA")[:3]
+
+
+def sanitize_pdb_element(element: str, atom_name: str = "CA") -> str:
+    """Return a one- or two-letter element symbol for fake-PDB output."""
+    letters = "".join(ch for ch in (element or "").strip() if ch.isalpha())
+    if not letters:
+        letters = "".join(ch for ch in atom_name if ch.isalpha()) or "C"
+    return letters[:2].upper()
+
+
+def fake_pdb_chain_id(index: int) -> str:
+    """Return a single-character PDB chain ID for a component index."""
+    if index < 0 or index >= len(FAKE_PDB_CHAIN_IDS):
+        raise ValueError(f"Fake PDB output supports up to {len(FAKE_PDB_CHAIN_IDS)} components/chains.")
+    return FAKE_PDB_CHAIN_IDS[index]
+
+
+def format_fake_pdb_atom_line(
+    serial: int,
+    atom_name: str,
+    resname: str,
+    chain_id: str,
+    resseq: int,
+    coord: np.ndarray,
+    element: str,
+) -> str:
+    atom_field = sanitize_pdb_atom_name(atom_name).rjust(4)
+    res_field = sanitize_pdb_resname(resname).rjust(3)
+    elem_field = sanitize_pdb_element(element, atom_name).rjust(2)
+    x, y, z = [float(v) for v in coord]
+    return (
+        f"ATOM  {serial:5d} {atom_field} {res_field} {chain_id:1s}{resseq:4d}    "
+        f"{x:8.3f}{y:8.3f}{z:8.3f}{1.00:6.2f}{0.00:6.2f}          {elem_field}"
+    )
+
+
+def format_fake_pdb_link_line(atom_name: str, resname: str, chain_id: str, resseq1: int, resseq2: int) -> str:
+    atom_field = sanitize_pdb_atom_name(atom_name).rjust(4)
+    res_field = sanitize_pdb_resname(resname).rjust(3)
+    chars = list(" " * 80)
+    chars[0:6] = list("LINK  ")
+    chars[12:16] = list(atom_field)
+    chars[17:20] = list(res_field)
+    chars[21] = chain_id[:1] or " "
+    chars[22:26] = list(f"{int(resseq1):4d}")
+    chars[41:45] = list(atom_field)
+    chars[47:50] = list(res_field)
+    chars[51] = chain_id[:1] or " "
+    chars[52:56] = list(f"{int(resseq2):4d}")
+    return "".join(chars).rstrip()
+
+
+def write_fake_pdb_from_components(
+    path: str,
+    components: List[np.ndarray],
+    atom_name: str = "CA",
+    resname: str = "ALA",
+    element: str = "C",
+    start_resseq: int = 1,
+    closed_chain_indices: Optional[List[int]] = None,
+) -> int:
+    """Write XYZ components as a fake PDB with one atom per residue."""
+    if start_resseq < 1:
+        raise ValueError("Starting residue number must be at least 1.")
+    if not components:
+        raise ValueError("No XYZ components are available for fake PDB output.")
+    atom_name = sanitize_pdb_atom_name(atom_name)
+    resname = sanitize_pdb_resname(resname)
+    element = sanitize_pdb_element(element, atom_name)
+    closed_set = set(closed_chain_indices or [])
+    total_atoms = int(sum(np.asarray(component).shape[0] for component in components))
+    if total_atoms > 99999:
+        raise ValueError("Fake PDB output supports up to 99999 atoms.")
+
+    lines: List[str] = [
+        f"REMARK Generated by {APP_NAME} {APP_VERSION} Convert XYZ fake-PDB output.",
+        "REMARK Each XYZ point is represented as one atom in one residue.",
+        "REMARK Blank-line-separated coordinate components are written as separate chains.",
+    ]
+    link_lines: List[str] = []
+    atom_lines: List[str] = []
+    serial = 1
+    for component_index, component in enumerate(components):
+        chain_id = fake_pdb_chain_id(component_index)
+        pts = np.asarray(component, dtype=float)
+        if pts.ndim != 2 or pts.shape[1] != 3:
+            raise ValueError(f"Component {curve_component_label(component_index)} is not an N x 3 coordinate array.")
+        if pts.shape[0] < 1:
+            continue
+        if start_resseq + pts.shape[0] - 1 > 9999:
+            raise ValueError("Fake PDB output supports residue numbers up to 9999 per component.")
+        first_resseq = start_resseq
+        last_resseq = start_resseq + pts.shape[0] - 1
+        if component_index in closed_set and pts.shape[0] >= 2:
+            link_lines.append(format_fake_pdb_link_line(atom_name, resname, chain_id, last_resseq, first_resseq))
+        for offset, point in enumerate(pts):
+            atom_lines.append(
+                format_fake_pdb_atom_line(
+                    serial,
+                    atom_name,
+                    resname,
+                    chain_id,
+                    start_resseq + offset,
+                    point,
+                    element,
+                )
+            )
+            serial += 1
+        atom_lines.append(f"TER   {serial:5d}      {resname:>3s} {chain_id:1s}{last_resseq:4d}")
+        serial += 1
+    lines.extend(link_lines)
+    lines.extend(atom_lines)
+    lines.append("END")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    return total_atoms
 
 
 def generate_ring_curve(num_points: int = 200, radius: float = 10.0) -> np.ndarray:
@@ -1745,7 +1929,7 @@ def launch_gui() -> None:
     """
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox, simpledialog, ttk
+        from tkinter import filedialog, messagebox, ttk
     except Exception as e:
         raise SystemExit(f"Tkinter GUI not available: {e}")
 
@@ -1762,14 +1946,31 @@ def launch_gui() -> None:
 
     root = tk.Tk()
     root.title(f"{APP_NAME} {APP_VERSION} - {APP_TITLE}")
-    icon_path = resource_path(os.path.join("assets", "icon.png"))
-    if os.path.isfile(icon_path):
+    loaded_gui_images: List[Any] = []
+
+    def load_optional_icon(icon_filenames: List[str], subsample: int = 1) -> Optional[Any]:
+        for icon_filename in icon_filenames:
+            icon_path = resource_path(os.path.join("assets", icon_filename))
+            if not os.path.isfile(icon_path):
+                continue
+            try:
+                icon_image = tk.PhotoImage(file=icon_path)
+                if subsample > 1:
+                    icon_image = icon_image.subsample(subsample, subsample)
+                loaded_gui_images.append(icon_image)
+                return icon_image
+            except Exception:
+                continue
+        return None
+
+    icon_image = load_optional_icon(["icon.png"])
+    if icon_image is not None:
         try:
-            icon_image = tk.PhotoImage(file=icon_path)
             root.iconphoto(True, icon_image)
             root._curve_it_icon_image = icon_image
         except Exception:
             pass
+    root._curve_it_loaded_gui_images = loaded_gui_images
 
     # --- Variables ---
     helix_path_var = tk.StringVar()
@@ -1850,7 +2051,7 @@ def launch_gui() -> None:
         ),
         "xyz_convert": (
             "XYZ Converter",
-            "Convert curve coordinate files between two common formats.\n\n"
+            "Convert curve coordinate files in one window.\n\n"
             "Coordinate XYZ/plain format:\n"
             "x y z\n"
             "x y z\n\n"
@@ -1859,7 +2060,7 @@ def launch_gui() -> None:
             "comment line\n"
             "X x y z\n"
             "X x y z\n\n"
-            "Curve It can use either format as a curve input."
+            "Fake PDB output writes one atom per residue for molecular visualization. By default each point becomes atom CA in residue ALA; blank-line-separated coordinate components become chains A, B, C, and so on. Closed chains can be marked with LINK records."
         ),
         "local_curvature_torsion": (
             "Local Curvature/Torsion",
@@ -2418,129 +2619,302 @@ def launch_gui() -> None:
             traceback.print_exc()
             messagebox.showerror("Plot error", f"Failed to plot curve:\n{e}")
 
-    def _default_xyz_conversion_path(input_path: str, suffix: str) -> str:
+    def _default_xyz_conversion_path(input_path: str, suffix: str, extension: Optional[str] = None) -> str:
         d = os.path.dirname(input_path)
         base = os.path.basename(input_path)
         stem, ext = os.path.splitext(base)
         if not ext:
             ext = ".xyz"
+        if extension:
+            ext = extension if extension.startswith(".") else "." + extension
         return os.path.join(d, f"{stem}_{suffix}{ext}")
 
-    def choose_xyz_conversion_direction() -> Optional[bool]:
-        """Return True for plain->molecular, False for molecular->plain."""
-        choice: Dict[str, Optional[bool]] = {"value": None}
-
+    def convert_xyz_file_dialog() -> None:
         dialog = tk.Toplevel(root)
         dialog.title("Convert XYZ")
         dialog.transient(root)
-        dialog.resizable(False, False)
+        dialog.minsize(720, 430)
+        dialog.columnconfigure(1, weight=1)
+        dialog_icon = load_optional_icon(["xyz_convert_icon.png"])
+        if dialog_icon is not None:
+            try:
+                dialog.iconphoto(False, dialog_icon)
+                dialog._xyz_convert_icon_image = dialog_icon
+            except Exception:
+                pass
 
-        tk.Label(
-            dialog,
-            text="Choose conversion direction",
-            font=section_font,
-            anchor="w",
-        ).grid(row=0, column=0, columnspan=2, sticky="we", padx=12, pady=(12, 6))
+        input_path_var = tk.StringVar()
+        output_path_var = tk.StringVar()
+        input_format_var = tk.StringVar(value="Auto")
+        output_format_var = tk.StringVar(value="Molecular XYZ")
+        molecular_element_var = tk.StringVar(value="X")
+        pdb_atom_name_var = tk.StringVar(value="CA")
+        pdb_element_var = tk.StringVar(value="C")
+        pdb_resname_var = tk.StringVar(value="ALA")
+        pdb_start_resseq_var = tk.StringVar(value="1")
+        close_all_chains_var = tk.BooleanVar(value=True)
+        closed_chains_var = tk.StringVar(value="")
+        component_summary_var = tk.StringVar(value="Choose an input file to preview components.")
+        status_convert_var = tk.StringVar(value="Ready.")
+        last_default_output = {"path": ""}
 
-        tk.Label(
-            dialog,
-            text="Coordinate XYZ/txt: x y z rows\nMolecular XYZ: atom count, comment line, then element x y z rows",
-            justify="left",
-            anchor="w",
-        ).grid(row=1, column=0, columnspan=2, sticky="we", padx=12, pady=(0, 10))
+        input_format_labels = {
+            "Auto": "auto",
+            "Coordinate XYZ/txt": "coordinate",
+            "Molecular XYZ": "molecular",
+        }
+        output_format_specs = {
+            "Molecular XYZ": ("molecular", "molecular", ".xyz"),
+            "Coordinate XYZ/txt": ("coordinate", "coordinates", ".xyz"),
+            "Fake PDB": ("fake_pdb", "fake", ".pdb"),
+        }
 
-        def pick(value: bool) -> None:
-            choice["value"] = value
-            dialog.destroy()
+        def input_format_key() -> str:
+            return input_format_labels.get(input_format_var.get(), "auto")
 
-        tk.Button(
-            dialog,
-            text="Coordinate XYZ -> Molecular XYZ",
-            width=34,
-            command=lambda: pick(True),
-        ).grid(row=2, column=0, columnspan=2, sticky="we", padx=12, pady=3)
+        def output_format_key() -> str:
+            return output_format_specs.get(output_format_var.get(), output_format_specs["Molecular XYZ"])[0]
 
-        tk.Button(
-            dialog,
-            text="Molecular XYZ -> Coordinate XYZ",
-            width=34,
-            command=lambda: pick(False),
-        ).grid(row=3, column=0, columnspan=2, sticky="we", padx=12, pady=3)
+        def default_output_path() -> str:
+            input_path = input_path_var.get().strip()
+            if not input_path:
+                return ""
+            _mode, suffix, ext = output_format_specs.get(output_format_var.get(), output_format_specs["Molecular XYZ"])
+            return _default_xyz_conversion_path(input_path, suffix, extension=ext)
 
-        tk.Button(dialog, text="Cancel", width=12, command=dialog.destroy).grid(
-            row=4, column=1, sticky="e", padx=12, pady=(8, 12)
-        )
+        def refresh_default_output(force: bool = False) -> None:
+            new_default = default_output_path()
+            if not new_default:
+                return
+            current = output_path_var.get().strip()
+            if force or not current or current == last_default_output.get("path", ""):
+                output_path_var.set(new_default)
+            last_default_output["path"] = new_default
 
-        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
-        dialog.bind("<Escape>", lambda _event: dialog.destroy())
-        dialog.grab_set()
-        dialog.wait_window()
-        return choice["value"]
-
-    def convert_xyz_file_dialog() -> None:
-        direction = choose_xyz_conversion_direction()
-        if direction is None:
-            return
-
-        if direction:
-            title = "Select coordinate XYZ/txt file"
-            default_suffix = "molecular"
-        else:
-            title = "Select molecular XYZ file"
-            default_suffix = "coordinates"
-
-        input_path = filedialog.askopenfilename(
-            title=title,
-            filetypes=[("XYZ / text files", "*.xyz *.XYZ *.txt *.TXT"), ("All files", "*.*")]
-        )
-        if not input_path:
-            return
-
-        try:
+        def read_conversion_components() -> List[np.ndarray]:
+            input_path = input_path_var.get().strip()
+            if not input_path:
+                raise ValueError("Choose an input XYZ/txt file first.")
             with open(input_path, "r") as f:
                 xyz_text = f.read()
-            pts = read_xyz_curve_from_text(xyz_text)
-        except Exception as e:
-            messagebox.showerror("Conversion error", f"Failed to read coordinates:\n{e}")
-            return
+            return read_xyz_curve_components_from_text_as(xyz_text, input_format=input_format_key())
 
-        initial_output = _default_xyz_conversion_path(input_path, default_suffix)
-        output_path = filedialog.asksaveasfilename(
-            title="Save converted XYZ file",
-            defaultextension=".xyz",
-            filetypes=[("XYZ files", "*.xyz"), ("Text files", "*.txt"), ("All files", "*.*")],
-            initialdir=os.path.dirname(initial_output),
-            initialfile=os.path.basename(initial_output),
-        )
-        if not output_path:
-            return
+        def update_component_summary() -> None:
+            input_path = input_path_var.get().strip()
+            if not input_path:
+                component_summary_var.set("Choose an input file to preview components.")
+                return
+            try:
+                components = read_conversion_components()
+                total_points = int(sum(component.shape[0] for component in components))
+                component_summary_var.set(
+                    f"{len(components)} component(s), {total_points} point(s): {describe_curve_components(components)}"
+                )
+            except Exception as exc:
+                component_summary_var.set(f"Preview error: {exc}")
 
-        try:
-            if direction:
-                element = simpledialog.askstring(
-                    "Molecular XYZ atom symbol",
-                    "Atom symbol to write for each curve point:",
-                    initialvalue="X",
-                    parent=root,
-                )
-                if element is None:
-                    return
-                write_molecular_xyz_curve(
-                    output_path,
-                    pts,
-                    element=element,
-                    comment=f"Curve points converted by {APP_NAME} {APP_VERSION}",
-                )
-                mode_label = "coordinate XYZ to molecular XYZ"
-            else:
-                write_plain_xyz_curve(output_path, pts)
-                mode_label = "molecular XYZ to coordinate XYZ"
-            messagebox.showinfo(
-                "Conversion finished",
-                f"Converted {pts.shape[0]} points ({mode_label}).\nOutput: {output_path}",
+        def set_widget_enabled(widget: Any, enabled: bool, readonly: bool = False) -> None:
+            try:
+                widget.configure(state=("readonly" if readonly and enabled else "normal" if enabled else "disabled"))
+            except Exception:
+                pass
+
+        molecular_widgets: List[Any] = []
+        fake_pdb_widgets: List[Any] = []
+        closed_chains_widgets: List[Any] = []
+
+        def update_conversion_state(*_args: Any) -> None:
+            mode = output_format_key()
+            molecular_on = mode == "molecular"
+            fake_pdb_on = mode == "fake_pdb"
+            for widget in molecular_widgets:
+                set_widget_enabled(widget, molecular_on)
+            for widget in fake_pdb_widgets:
+                set_widget_enabled(widget, fake_pdb_on)
+            closed_entry_on = fake_pdb_on and not bool(close_all_chains_var.get())
+            for widget in closed_chains_widgets:
+                set_widget_enabled(widget, closed_entry_on)
+            refresh_default_output(force=False)
+
+        def browse_input() -> None:
+            path = filedialog.askopenfilename(
+                title="Select XYZ/txt input",
+                filetypes=[("XYZ / text files", "*.xyz *.XYZ *.txt *.TXT *.dat *.DAT *.csv *.CSV"), ("All files", "*.*")],
+                parent=dialog,
             )
-        except Exception as e:
-            messagebox.showerror("Conversion error", f"Failed to write converted file:\n{e}")
+            if not path:
+                return
+            input_path_var.set(path)
+            refresh_default_output(force=False)
+            update_component_summary()
+
+        def browse_output() -> None:
+            _mode, _suffix, ext = output_format_specs.get(output_format_var.get(), output_format_specs["Molecular XYZ"])
+            initial_output = output_path_var.get().strip() or default_output_path()
+            output_path = filedialog.asksaveasfilename(
+                title="Save converted file",
+                defaultextension=ext,
+                filetypes=[
+                    ("PDB files", "*.pdb"),
+                    ("XYZ files", "*.xyz"),
+                    ("Text files", "*.txt"),
+                    ("All files", "*.*"),
+                ],
+                initialdir=os.path.dirname(initial_output) if initial_output else "",
+                initialfile=os.path.basename(initial_output) if initial_output else "",
+                parent=dialog,
+            )
+            if output_path:
+                output_path_var.set(output_path)
+
+        def closed_chain_indices(n_components: int) -> List[int]:
+            if output_format_key() != "fake_pdb":
+                return []
+            if bool(close_all_chains_var.get()):
+                return list(range(n_components))
+            text = closed_chains_var.get().strip()
+            if not text:
+                return []
+            return parse_curve_component_selection(text, n_components)
+
+        def run_conversion() -> None:
+            try:
+                components = read_conversion_components()
+                output_path = output_path_var.get().strip()
+                if not output_path:
+                    raise ValueError("Choose an output path.")
+                mode = output_format_key()
+                total_points = int(sum(component.shape[0] for component in components))
+                if mode == "molecular":
+                    points = combine_curve_components(components)
+                    write_molecular_xyz_curve(
+                        output_path,
+                        points,
+                        element=molecular_element_var.get(),
+                        comment=f"Curve points converted by {APP_NAME} {APP_VERSION}",
+                    )
+                    mode_label = "molecular XYZ"
+                    count = int(points.shape[0])
+                elif mode == "coordinate":
+                    points = combine_curve_components(components)
+                    write_plain_xyz_curve(output_path, points)
+                    mode_label = "coordinate XYZ/txt"
+                    count = int(points.shape[0])
+                else:
+                    closed_indices = closed_chain_indices(len(components))
+                    count = write_fake_pdb_from_components(
+                        output_path,
+                        components,
+                        atom_name=pdb_atom_name_var.get(),
+                        resname=pdb_resname_var.get(),
+                        element=pdb_element_var.get(),
+                        start_resseq=int(pdb_start_resseq_var.get().strip() or "1"),
+                        closed_chain_indices=closed_indices,
+                    )
+                    closed_label = format_curve_component_selection(closed_indices) if closed_indices else "none"
+                    mode_label = f"fake PDB; closed chains: {closed_label}"
+                status_convert_var.set(f"Wrote {count} point(s) as {mode_label}: {output_path}")
+                component_summary_var.set(
+                    f"{len(components)} component(s), {total_points} point(s): {describe_curve_components(components)}"
+                )
+            except Exception as exc:
+                status_convert_var.set(f"ERROR: {exc}")
+                messagebox.showerror("Conversion error", str(exc), parent=dialog)
+
+        ttk.Label(
+            dialog,
+            text="Convert XYZ",
+            font=section_font,
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=3, sticky="we", padx=12, pady=(12, 6))
+
+        ttk.Label(
+            dialog,
+            text="Convert coordinate XYZ/txt or molecular XYZ to another XYZ form, or write a fake PDB for visualization.",
+            justify="left",
+            anchor="w",
+        ).grid(row=1, column=0, columnspan=3, sticky="we", padx=12, pady=(0, 10))
+
+        ttk.Label(dialog, text="Input file:").grid(row=2, column=0, sticky="e", padx=12, pady=4)
+        ttk.Entry(dialog, textvariable=input_path_var).grid(row=2, column=1, sticky="we", padx=4, pady=4)
+        ttk.Button(dialog, text="Browse...", command=browse_input).grid(row=2, column=2, sticky="w", padx=12, pady=4)
+
+        ttk.Label(dialog, text="Input format:").grid(row=3, column=0, sticky="e", padx=12, pady=4)
+        input_combo = ttk.Combobox(dialog, textvariable=input_format_var, values=list(input_format_labels.keys()), width=22, state="readonly")
+        input_combo.grid(row=3, column=1, sticky="w", padx=4, pady=4)
+        ttk.Button(dialog, text="Preview components", command=update_component_summary).grid(row=3, column=2, sticky="w", padx=12, pady=4)
+
+        ttk.Label(dialog, text="Convert to:").grid(row=4, column=0, sticky="e", padx=12, pady=4)
+        output_combo = ttk.Combobox(dialog, textvariable=output_format_var, values=list(output_format_specs.keys()), width=22, state="readonly")
+        output_combo.grid(row=4, column=1, sticky="w", padx=4, pady=4)
+
+        ttk.Label(dialog, text="Output file:").grid(row=5, column=0, sticky="e", padx=12, pady=4)
+        ttk.Entry(dialog, textvariable=output_path_var).grid(row=5, column=1, sticky="we", padx=4, pady=4)
+        ttk.Button(dialog, text="Browse...", command=browse_output).grid(row=5, column=2, sticky="w", padx=12, pady=4)
+
+        ttk.Label(dialog, text="Components:").grid(row=6, column=0, sticky="ne", padx=12, pady=4)
+        ttk.Label(dialog, textvariable=component_summary_var, wraplength=540, justify="left").grid(row=6, column=1, columnspan=2, sticky="we", padx=4, pady=4)
+
+        molecular_frame = ttk.LabelFrame(dialog, text="Molecular XYZ output", padding=8)
+        molecular_frame.grid(row=7, column=0, columnspan=3, sticky="we", padx=12, pady=(8, 4))
+        molecular_frame.columnconfigure(1, weight=1)
+        molecular_label = ttk.Label(molecular_frame, text="Atom symbol:")
+        molecular_label.grid(row=0, column=0, sticky="e", padx=(0, 6), pady=2)
+        molecular_entry = ttk.Entry(molecular_frame, textvariable=molecular_element_var, width=8)
+        molecular_entry.grid(row=0, column=1, sticky="w", pady=2)
+        molecular_widgets.extend([molecular_label, molecular_entry])
+
+        fake_pdb_frame = ttk.LabelFrame(dialog, text="Fake PDB output", padding=8)
+        fake_pdb_frame.grid(row=8, column=0, columnspan=3, sticky="we", padx=12, pady=4)
+        for col in range(6):
+            fake_pdb_frame.columnconfigure(col, weight=0)
+        fake_pdb_frame.columnconfigure(5, weight=1)
+
+        atom_label = ttk.Label(fake_pdb_frame, text="Atom name:")
+        atom_label.grid(row=0, column=0, sticky="e", padx=(0, 6), pady=2)
+        atom_entry = ttk.Entry(fake_pdb_frame, textvariable=pdb_atom_name_var, width=8)
+        atom_entry.grid(row=0, column=1, sticky="w", padx=(0, 12), pady=2)
+        element_label = ttk.Label(fake_pdb_frame, text="Element:")
+        element_label.grid(row=0, column=2, sticky="e", padx=(0, 6), pady=2)
+        element_entry = ttk.Entry(fake_pdb_frame, textvariable=pdb_element_var, width=8)
+        element_entry.grid(row=0, column=3, sticky="w", padx=(0, 12), pady=2)
+        res_label = ttk.Label(fake_pdb_frame, text="Residue name:")
+        res_label.grid(row=0, column=4, sticky="e", padx=(0, 6), pady=2)
+        res_entry = ttk.Entry(fake_pdb_frame, textvariable=pdb_resname_var, width=8)
+        res_entry.grid(row=0, column=5, sticky="w", pady=2)
+
+        start_label = ttk.Label(fake_pdb_frame, text="Start res #:")
+        start_label.grid(row=1, column=0, sticky="e", padx=(0, 6), pady=2)
+        start_entry = ttk.Entry(fake_pdb_frame, textvariable=pdb_start_resseq_var, width=8)
+        start_entry.grid(row=1, column=1, sticky="w", padx=(0, 12), pady=2)
+        close_all_check = ttk.Checkbutton(fake_pdb_frame, text="Close all chains with LINK records", variable=close_all_chains_var)
+        close_all_check.grid(row=1, column=2, columnspan=3, sticky="w", pady=2)
+        closed_label = ttk.Label(fake_pdb_frame, text="Closed chains:")
+        closed_label.grid(row=2, column=0, sticky="e", padx=(0, 6), pady=2)
+        closed_entry = ttk.Entry(fake_pdb_frame, textvariable=closed_chains_var, width=20)
+        closed_entry.grid(row=2, column=1, columnspan=2, sticky="w", padx=(0, 12), pady=2)
+        closed_hint = ttk.Label(fake_pdb_frame, text="Example: A,C or A-C. Leave blank for open chains.")
+        closed_hint.grid(row=2, column=3, columnspan=3, sticky="w", pady=2)
+        fake_pdb_widgets.extend([
+            atom_label, atom_entry, element_label, element_entry, res_label, res_entry,
+            start_label, start_entry, close_all_check, closed_label, closed_hint,
+        ])
+        closed_chains_widgets.extend([closed_label, closed_entry, closed_hint])
+
+        status_label = ttk.Label(dialog, textvariable=status_convert_var, wraplength=660, justify="left")
+        status_label.grid(row=9, column=0, columnspan=3, sticky="we", padx=12, pady=(8, 4))
+
+        button_frame = ttk.Frame(dialog)
+        button_frame.grid(row=10, column=0, columnspan=3, sticky="e", padx=12, pady=(4, 12))
+        ttk.Button(button_frame, text="Convert", command=run_conversion).pack(side="left", padx=(0, 6))
+        ttk.Button(button_frame, text="Close", command=dialog.destroy).pack(side="left")
+
+        input_path_var.trace_add("write", lambda *_args: refresh_default_output(force=False))
+        input_format_var.trace_add("write", lambda *_args: update_component_summary())
+        output_format_var.trace_add("write", update_conversion_state)
+        close_all_chains_var.trace_add("write", update_conversion_state)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        update_conversion_state()
 
     def launch_local_curvature_torsion_tool() -> None:
         script_path = resource_path(
@@ -2907,9 +3281,7 @@ def launch_gui() -> None:
     phase_tool_frame = tk.Frame(param_frame)
     phase_tool_frame.grid(row=2, column=2, sticky="w", padx=(0, 8), pady=2)
     help_button(phase_tool_frame, "helix_phase").pack(side="left")
-    tk.Button(phase_tool_frame, text="Get phase", command=launch_get_phase_tool).pack(
-        side="left", padx=(4, 0)
-    )
+    tk.Button(phase_tool_frame, text="Get phase", command=launch_get_phase_tool).pack(side="left", padx=(4, 0))
 
     tk.Label(param_frame, text="Twist (deg):").grid(row=2, column=3, sticky="e", padx=4, pady=2)
     twist_entry = tk.Entry(param_frame, textvariable=twist_var, width=10)
