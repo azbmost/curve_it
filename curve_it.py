@@ -139,7 +139,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_3"
+APP_VERSION = "V3_4"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -506,6 +506,14 @@ def read_xyz_curve_from_text(xyz_text: str) -> np.ndarray:
     """
     components = read_xyz_curve_components_from_text(xyz_text)
     return combine_curve_components(components)
+
+
+def scale_xyz_components(components: List[np.ndarray], scale_factor: float) -> List[np.ndarray]:
+    """Return XYZ components with every coordinate multiplied by scale_factor."""
+    factor = float(scale_factor)
+    if not np.isfinite(factor):
+        raise ValueError("Scale factor must be a finite number.")
+    return [np.asarray(component, dtype=float) * factor for component in components]
 
 
 def write_plain_xyz_curve(path: str, points: np.ndarray) -> None:
@@ -2060,7 +2068,8 @@ def launch_gui() -> None:
             "comment line\n"
             "X x y z\n"
             "X x y z\n\n"
-            "Fake PDB output writes one atom per residue for molecular visualization. By default each point becomes atom CA in residue ALA; blank-line-separated coordinate components become chains A, B, C, and so on. Closed chains can be marked with LINK records."
+            "Fake PDB output writes one atom per residue for molecular visualization. By default each point becomes atom CA in residue ALA; blank-line-separated coordinate components become chains A, B, C, and so on. Closed chains can be marked with LINK records.\n\n"
+            "The scale factor multiplies every output x/y/z coordinate before writing."
         ),
         "local_curvature_torsion": (
             "Local Curvature/Torsion",
@@ -2084,6 +2093,7 @@ def launch_gui() -> None:
             "Curved Connector",
             "Open the curved nucleic-acid connector screening tool.\n\n"
             "It screens connector lengths from a straight duplex template, bends each candidate along a practical clamped Euler-elastica proxy centerline, and writes ranked PDB assemblies plus connector_summary.tsv.\n\n"
+            "The V3_4 tool can optionally enforce a sampled maximum local curvature limit during centerline optimization and includes the endpoint twist mismatch in output PDB filenames.\n\n"
             "The reported twist_mismatch_deg is an endpoint base-pair orientation mismatch, not integrated curve torsion or material twist energy."
         ),
         "path_type": (
@@ -2647,6 +2657,7 @@ def launch_gui() -> None:
         output_path_var = tk.StringVar()
         input_format_var = tk.StringVar(value="Auto")
         output_format_var = tk.StringVar(value="Molecular XYZ")
+        scale_factor_var = tk.StringVar(value="1.0")
         molecular_element_var = tk.StringVar(value="X")
         pdb_atom_name_var = tk.StringVar(value="CA")
         pdb_element_var = tk.StringVar(value="C")
@@ -2783,6 +2794,8 @@ def launch_gui() -> None:
                 output_path = output_path_var.get().strip()
                 if not output_path:
                     raise ValueError("Choose an output path.")
+                scale_factor = float(scale_factor_var.get().strip() or "1.0")
+                components = scale_xyz_components(components, scale_factor)
                 mode = output_format_key()
                 total_points = int(sum(component.shape[0] for component in components))
                 if mode == "molecular":
@@ -2813,7 +2826,8 @@ def launch_gui() -> None:
                     )
                     closed_label = format_curve_component_selection(closed_indices) if closed_indices else "none"
                     mode_label = f"fake PDB; closed chains: {closed_label}"
-                status_convert_var.set(f"Wrote {count} point(s) as {mode_label}: {output_path}")
+                scale_note = f"; scale factor: {scale_factor:g}"
+                status_convert_var.set(f"Wrote {count} point(s) as {mode_label}{scale_note}: {output_path}")
                 component_summary_var.set(
                     f"{len(components)} component(s), {total_points} point(s): {describe_curve_components(components)}"
                 )
@@ -2852,11 +2866,15 @@ def launch_gui() -> None:
         ttk.Entry(dialog, textvariable=output_path_var).grid(row=5, column=1, sticky="we", padx=4, pady=4)
         ttk.Button(dialog, text="Browse...", command=browse_output).grid(row=5, column=2, sticky="w", padx=12, pady=4)
 
-        ttk.Label(dialog, text="Components:").grid(row=6, column=0, sticky="ne", padx=12, pady=4)
-        ttk.Label(dialog, textvariable=component_summary_var, wraplength=540, justify="left").grid(row=6, column=1, columnspan=2, sticky="we", padx=4, pady=4)
+        ttk.Label(dialog, text="Scale factor:").grid(row=6, column=0, sticky="e", padx=12, pady=4)
+        ttk.Entry(dialog, textvariable=scale_factor_var, width=12).grid(row=6, column=1, sticky="w", padx=4, pady=4)
+        ttk.Label(dialog, text="All output coordinates are multiplied by this value.").grid(row=6, column=2, sticky="w", padx=12, pady=4)
+
+        ttk.Label(dialog, text="Components:").grid(row=7, column=0, sticky="ne", padx=12, pady=4)
+        ttk.Label(dialog, textvariable=component_summary_var, wraplength=540, justify="left").grid(row=7, column=1, columnspan=2, sticky="we", padx=4, pady=4)
 
         molecular_frame = ttk.LabelFrame(dialog, text="Molecular XYZ output", padding=8)
-        molecular_frame.grid(row=7, column=0, columnspan=3, sticky="we", padx=12, pady=(8, 4))
+        molecular_frame.grid(row=8, column=0, columnspan=3, sticky="we", padx=12, pady=(8, 4))
         molecular_frame.columnconfigure(1, weight=1)
         molecular_label = ttk.Label(molecular_frame, text="Atom symbol:")
         molecular_label.grid(row=0, column=0, sticky="e", padx=(0, 6), pady=2)
@@ -2865,7 +2883,7 @@ def launch_gui() -> None:
         molecular_widgets.extend([molecular_label, molecular_entry])
 
         fake_pdb_frame = ttk.LabelFrame(dialog, text="Fake PDB output", padding=8)
-        fake_pdb_frame.grid(row=8, column=0, columnspan=3, sticky="we", padx=12, pady=4)
+        fake_pdb_frame.grid(row=9, column=0, columnspan=3, sticky="we", padx=12, pady=4)
         for col in range(6):
             fake_pdb_frame.columnconfigure(col, weight=0)
         fake_pdb_frame.columnconfigure(5, weight=1)
@@ -2902,10 +2920,10 @@ def launch_gui() -> None:
         closed_chains_widgets.extend([closed_label, closed_entry, closed_hint])
 
         status_label = ttk.Label(dialog, textvariable=status_convert_var, wraplength=660, justify="left")
-        status_label.grid(row=9, column=0, columnspan=3, sticky="we", padx=12, pady=(8, 4))
+        status_label.grid(row=10, column=0, columnspan=3, sticky="we", padx=12, pady=(8, 4))
 
         button_frame = ttk.Frame(dialog)
-        button_frame.grid(row=10, column=0, columnspan=3, sticky="e", padx=12, pady=(4, 12))
+        button_frame.grid(row=11, column=0, columnspan=3, sticky="e", padx=12, pady=(4, 12))
         ttk.Button(button_frame, text="Convert", command=run_conversion).pack(side="left", padx=(0, 6))
         ttk.Button(button_frame, text="Close", command=dialog.destroy).pack(side="left")
 
@@ -3064,7 +3082,7 @@ def launch_gui() -> None:
             messagebox.showerror("Tool launch error", f"Failed to launch Plane It:\n{e}")
 
     def launch_curved_connector_tool() -> None:
-        script_path = resource_path(os.path.join("curve_it_lib", "curved_connectorV3_0.py"))
+        script_path = resource_path(os.path.join("curve_it_lib", "curved_connectorV3_4.py"))
         if not os.path.isfile(script_path):
             messagebox.showerror(
                 "Tool not found",

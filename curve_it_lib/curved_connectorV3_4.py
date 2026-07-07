@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-curved_connectorV3_0.py
+curved_connectorV3_4.py
 
 Screen and build curved nucleic-acid connectors between two helical end base-pairs.
 
-Main features in V3_0
+Main features in V3_4
 ---------------------
 1. Free residue matching at both source and destination base-pairs:
    swapping A33,B1 <-> B1,A33 or E1,F33 <-> F33,E1 gives the same result.
@@ -13,26 +13,47 @@ Main features in V3_0
 3. Preserve *all* atoms from the first input PDB in the final output assemblies.
 4. Renumber connector residues chain-by-chain from 5' -> 3'.
 5. Report the maximum local curvature of the centerline in connector_summary.tsv.
-6. Provide an optional Tk GUI; if run with no arguments or with --gui, the GUI
-   opens and can suggest likely helix-end residues after loading the target PDB.
+6. Optionally enforce a sampled maximum local curvature during centerline optimization
+   via --max-local-curvature (A^-1).
+7. With --max-local-curvature, screen candidate lengths from long to short by
+   default and stop after the first shorter curvature-infeasible candidate.
+8. Add quick bounded-curvature feasibility checks plus optimizer iteration/start
+   limits and a soft timeout to avoid very long infeasible solves.
+9. Include endpoint twist mismatch in output PDB filenames as TwMm.
+10. Stream GUI Run log messages during long runs by executing the build in a
+    worker thread. The GUI remains responsive while the optimizer is running.
+11. Provide an optional Tk GUI; if run with no arguments or with --gui, the GUI
+    opens and can suggest likely helix-end residues after loading the target PDB.
 
 Geometry note
 -------------
 The connector centerline is a practical clamped Euler-elastica proxy. It matches
 the two endpoint positions and tangent directions, then screens template lengths
-using an efficient cubic clamped centerline, optionally fairing-refined. The
-reported twist_mismatch_deg is an endpoint base-pair orientation mismatch, not
-integrated curve torsion and not material twist energy.
+using an efficient cubic clamped centerline, optionally fairing-refined. In V3_4,
+if --max-local-curvature is supplied, the script first applies cheap necessary
+bounded-curvature feasibility checks, accepts the fast cubic solution when it
+already satisfies the limit, otherwise runs a capped bounded-curvature
+elastica-proxy solve and verifies the sampled output centerline against the
+requested curvature limit. With a curvature limit, the default screening order
+is long-to-short, so once a shorter candidate becomes curvature-infeasible the
+remaining shorter candidates can be skipped. The reported
+twist_mismatch_deg is an endpoint base-pair orientation mismatch, not integrated
+curve torsion and not material twist energy.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import math
 import os
+import queue
 import re
 import shlex
 import sys
+import threading
+import time
+import traceback
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -50,8 +71,12 @@ SUGAR_ATOMS = ["C1'", "C2'", "C3'", "C4'", "O5'", "C5'"]
 CHAIN_ID_POOL = list("XYZUVWQRSTMNOPLKJIHGFEDCBA0123456789")
 EPS = 1.0e-8
 TOOL_NAME = "Curved Connector"
-TOOL_VERSION = "V3_0"
-DEFAULT_OUTDIR = "curved_connectorV3_out"
+TOOL_VERSION = "V3_4"
+DEFAULT_OUTDIR = "curved_connectorV3_4_out"
+DEFAULT_CURVATURE_OPT_MAXITER = 200
+DEFAULT_CURVATURE_OPT_STARTS = 5
+DEFAULT_CURVATURE_CONSTRAINT_SAMPLES = 120
+DEFAULT_CURVATURE_OPT_TIMEOUT_SEC = 0.0
 
 
 def resource_path(relative_path: str) -> str:
@@ -78,7 +103,32 @@ def set_optional_window_icon(root, tk_module, icon_filenames: List[str], image_a
 
 
 def eprint(*args: object, **kwargs: object) -> None:
+    kwargs.setdefault("flush", True)
     print(*args, file=sys.stderr, **kwargs)
+
+
+class CurvatureOptimizationTimeout(RuntimeError):
+    """Raised when one bounded-curvature solve exceeds its configured time budget."""
+
+
+class CenterlineInfeasibleError(ValueError):
+    """Raised when quick checks or the bounded optimizer rule out a centerline."""
+
+
+def parse_tri_state_bool(value: object, default: Optional[bool] = None) -> Optional[bool]:
+    """Parse yes/no/auto values used by the GUI and argparse Namespace."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    if s in ("", "auto", "default", "none"):
+        return default
+    if s in ("1", "true", "t", "yes", "y", "on", "stop"):
+        return True
+    if s in ("0", "false", "f", "no", "n", "off", "continue"):
+        return False
+    raise ValueError(f"Could not parse boolean/auto value '{value}'. Use auto, yes, or no.")
 
 
 @dataclass(frozen=True)
@@ -817,6 +867,496 @@ def bezier_length_and_energy(P0: np.ndarray, P1: np.ndarray, P2: np.ndarray, P3:
     return length, energy, pts
 
 
+
+
+def bezier_curvature_values(P0: np.ndarray, P1: np.ndarray, P2: np.ndarray, P3: np.ndarray, t: np.ndarray) -> np.ndarray:
+    """Return the continuous cubic-Bezier curvature at parameter values t."""
+    d1, d2 = bezier_derivatives(P0, P1, P2, P3, np.asarray(t, dtype=float))
+    speed = np.linalg.norm(d1, axis=1)
+    speed = np.maximum(speed, 1.0e-12)
+    cross = np.cross(d1, d2)
+    return np.linalg.norm(cross, axis=1) / (speed ** 3)
+
+
+def bezier_max_curvature_global(
+    P0: np.ndarray,
+    P1: np.ndarray,
+    P2: np.ndarray,
+    P3: np.ndarray,
+    n_grid: int = 1200,
+) -> float:
+    """Estimate the global max curvature of a cubic Bezier using dense sampling plus local polishing."""
+    n_grid = max(50, int(n_grid))
+    t_grid = np.linspace(0.0, 1.0, n_grid)
+    vals = bezier_curvature_values(P0, P1, P2, P3, t_grid)
+    best = float(np.max(vals)) if vals.size else 0.0
+
+    if not HAVE_SCIPY or vals.size < 3:
+        return best
+
+    candidate_indices: List[int] = []
+    for i in range(1, vals.size - 1):
+        if vals[i] >= vals[i - 1] and vals[i] >= vals[i + 1]:
+            candidate_indices.append(i)
+    if not candidate_indices:
+        candidate_indices = [int(np.argmax(vals))]
+    candidate_indices = sorted(candidate_indices, key=lambda i: vals[i], reverse=True)[:12]
+
+    def neg_kappa(u: float) -> float:
+        return -float(bezier_curvature_values(P0, P1, P2, P3, np.array([u], dtype=float))[0])
+
+    for idx in candidate_indices:
+        lo = float(t_grid[max(0, idx - 1)])
+        hi = float(t_grid[min(vals.size - 1, idx + 1)])
+        if hi <= lo:
+            continue
+        try:
+            opt = minimize_scalar(neg_kappa, bounds=(lo, hi), method="bounded", options={"xatol": 1.0e-12})
+            if opt.success:
+                best = max(best, -float(opt.fun))
+        except Exception:
+            continue
+    return best
+
+
+
+
+def bezier_general_points(ctrl: np.ndarray, t: np.ndarray) -> np.ndarray:
+    """Evaluate a Bezier curve of arbitrary degree at parameter values t."""
+    ctrl = np.asarray(ctrl, dtype=float)
+    t = np.asarray(t, dtype=float)
+    work = np.broadcast_to(ctrl, (t.size,) + ctrl.shape).copy()
+    omt = (1.0 - t)[:, None]
+    tt = t[:, None]
+    degree = ctrl.shape[0] - 1
+    for r in range(1, degree + 1):
+        count = degree + 1 - r
+        work[:, :count, :] = omt[:, None, :] * work[:, :count, :] + tt[:, None, :] * work[:, 1:count + 1, :]
+    return work[:, 0, :]
+
+
+def bezier_general_derivatives(ctrl: np.ndarray, t: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Evaluate first and second derivatives of a Bezier curve of arbitrary degree."""
+    ctrl = np.asarray(ctrl, dtype=float)
+    degree = ctrl.shape[0] - 1
+    if degree < 2:
+        raise ValueError("Need degree >= 2 for curvature.")
+    d_ctrl = degree * (ctrl[1:] - ctrl[:-1])
+    dd_ctrl = (degree - 1) * (d_ctrl[1:] - d_ctrl[:-1])
+    d1 = bezier_general_points(d_ctrl, t)
+    d2 = bezier_general_points(dd_ctrl, t)
+    return d1, d2
+
+
+def bezier_general_length_energy(ctrl: np.ndarray, n_eval: int = 800) -> Tuple[float, float, np.ndarray]:
+    """Return arc length, bending energy, and dense samples for a Bezier curve."""
+    t = np.linspace(0.0, 1.0, int(n_eval))
+    pts = bezier_general_points(ctrl, t)
+    d1, d2 = bezier_general_derivatives(ctrl, t)
+    speed = np.linalg.norm(d1, axis=1)
+    speed = np.maximum(speed, 1.0e-12)
+    cross = np.cross(d1, d2)
+    k2_ds_dt = np.sum(cross * cross, axis=1) / (speed ** 5)
+    length = float(np.trapz(speed, t))
+    energy = float(np.trapz(k2_ds_dt, t))
+    return length, energy, pts
+
+
+def bezier_general_curvature_values(ctrl: np.ndarray, t: np.ndarray) -> np.ndarray:
+    """Return curvature values for a Bezier curve of arbitrary degree."""
+    d1, d2 = bezier_general_derivatives(ctrl, np.asarray(t, dtype=float))
+    speed = np.linalg.norm(d1, axis=1)
+    speed = np.maximum(speed, 1.0e-12)
+    return np.linalg.norm(np.cross(d1, d2), axis=1) / (speed ** 3)
+
+
+def bezier_general_speed_values(ctrl: np.ndarray, t: np.ndarray) -> np.ndarray:
+    """Return Bezier parameter-speed values |dr/dt|."""
+    d1, _d2 = bezier_general_derivatives(ctrl, np.asarray(t, dtype=float))
+    return np.linalg.norm(d1, axis=1)
+
+
+def bezier_general_max_curvature_global(ctrl: np.ndarray, n_grid: int = 1200) -> float:
+    """Estimate global max curvature by dense sampling plus local scalar polishing."""
+    n_grid = max(50, int(n_grid))
+    t_grid = np.linspace(0.0, 1.0, n_grid)
+    vals = bezier_general_curvature_values(ctrl, t_grid)
+    best = float(np.max(vals)) if vals.size else 0.0
+
+    if not HAVE_SCIPY or vals.size < 3:
+        return best
+
+    candidate_indices: List[int] = []
+    for i in range(1, vals.size - 1):
+        if vals[i] >= vals[i - 1] and vals[i] >= vals[i + 1]:
+            candidate_indices.append(i)
+    if not candidate_indices:
+        candidate_indices = [int(np.argmax(vals))]
+    candidate_indices = sorted(candidate_indices, key=lambda i: vals[i], reverse=True)[:12]
+
+    def neg_kappa(u: float) -> float:
+        return -float(bezier_general_curvature_values(ctrl, np.array([u], dtype=float))[0])
+
+    for idx in candidate_indices:
+        lo = float(t_grid[max(0, idx - 1)])
+        hi = float(t_grid[min(vals.size - 1, idx + 1)])
+        if hi <= lo:
+            continue
+        try:
+            opt = minimize_scalar(neg_kappa, bounds=(lo, hi), method="bounded", options={"xatol": 1.0e-12})
+            if opt.success:
+                best = max(best, -float(opt.fun))
+        except Exception:
+            continue
+    return best
+
+
+def _connector_auxiliary_frame(p0: np.ndarray, p1: np.ndarray, t0: np.ndarray, t1: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Construct a stable local frame for internal Bezier control-point guesses."""
+    chord = np.asarray(p1, dtype=float) - np.asarray(p0, dtype=float)
+    if np.linalg.norm(chord) > 1.0e-8:
+        e0 = normalize(chord)
+    else:
+        e0 = normalize(t0)
+    n0 = np.cross(t0, t1)
+    if np.linalg.norm(n0) < 1.0e-8:
+        n0 = np.cross(e0, t0)
+    if np.linalg.norm(n0) < 1.0e-8:
+        tmp = np.array([1.0, 0.0, 0.0])
+        if abs(float(np.dot(tmp, e0))) > 0.9:
+            tmp = np.array([0.0, 1.0, 0.0])
+        n0 = np.cross(e0, tmp)
+    n0 = normalize(n0)
+    b0 = normalize(np.cross(e0, n0))
+    return e0, n0, b0
+
+
+
+def _max_projection_one_end_with_curvature_bound(length: float, angle_rad: float, max_curvature: float) -> float:
+    """Necessary one-end chord projection bound under a curvature cap."""
+    L = float(length)
+    k = float(max_curvature)
+    a = float(np.clip(angle_rad, 0.0, math.pi))
+    if L <= 0.0:
+        return 0.0
+    if k <= 0.0:
+        return L * math.cos(a)
+    turn_len = a / k
+    if L <= turn_len:
+        return (math.sin(a) - math.sin(a - k * L)) / k
+    return (math.sin(a) / k) + (L - turn_len)
+
+
+def bounded_curvature_feasibility_message(
+    p0: np.ndarray,
+    p1: np.ndarray,
+    t0: np.ndarray,
+    t1: np.ndarray,
+    length_target: float,
+    max_curvature: float,
+    tol: float = 1.0e-6,
+) -> Optional[str]:
+    """Return None when quick necessary bounded-curvature tests pass.
+
+    A returned message means the candidate should be skipped before running the
+    expensive constrained optimizer. Passing these checks does not prove that a
+    bounded solution exists.
+    """
+    p0 = np.asarray(p0, dtype=float)
+    p1 = np.asarray(p1, dtype=float)
+    t0 = normalize(t0)
+    t1 = normalize(t1)
+    L = float(length_target)
+    k = float(max_curvature)
+    chord_vec = p1 - p0
+    chord = float(np.linalg.norm(chord_vec))
+
+    if not np.isfinite(L) or L <= 0.0:
+        return f"non-positive target length L={L:.6g} A"
+    if not np.isfinite(k) or k <= 0.0:
+        return f"invalid curvature limit kappa_max={k:.6g} A^-1"
+    if L < chord - max(1.0e-3, tol):
+        return f"length L={L:.3f} A is shorter than endpoint distance d={chord:.3f} A"
+
+    tangent_angle = math.acos(float(np.clip(np.dot(t0, t1), -1.0, 1.0)))
+    if tangent_angle > k * L + max(1.0e-6, 10.0 * tol):
+        return (
+            f"endpoint tangent rotation {tangent_angle:.4f} rad exceeds "
+            f"kappa_max*L={k * L:.4f} rad"
+        )
+
+    if chord > 1.0e-8:
+        u = chord_vec / chord
+        alpha0 = math.acos(float(np.clip(np.dot(t0, u), -1.0, 1.0)))
+        alpha1 = math.acos(float(np.clip(np.dot(t1, u), -1.0, 1.0)))
+        max_proj0 = _max_projection_one_end_with_curvature_bound(L, alpha0, k)
+        max_proj1 = _max_projection_one_end_with_curvature_bound(L, alpha1, k)
+        slack = max(1.0e-3, 2.0e-5 * max(L, chord, 1.0))
+        if chord > max_proj0 + slack:
+            return (
+                f"source tangent/chord geometry needs more length: chord={chord:.3f} A, "
+                f"one-end projection upper bound={max_proj0:.3f} A"
+            )
+        if chord > max_proj1 + slack:
+            return (
+                f"destination tangent/chord geometry needs more length: chord={chord:.3f} A, "
+                f"one-end projection upper bound={max_proj1:.3f} A"
+            )
+
+    return None
+
+
+def _smooth_max(values: np.ndarray, softness: float) -> float:
+    """Differentiable conservative approximation of max(values)."""
+    vals = np.asarray(values, dtype=float)
+    if vals.size == 0:
+        return 0.0
+    tau = float(max(softness, 1.0e-12))
+    m = float(np.max(vals))
+    return float(m + tau * math.log(float(np.sum(np.exp((vals - m) / tau)))))
+
+def solve_bounded_bezier_centerline(
+    p0: np.ndarray,
+    p1: np.ndarray,
+    t0: np.ndarray,
+    t1: np.ndarray,
+    length_target: float,
+    max_curvature: float,
+    n_points: int = 240,
+    initial_ab: Optional[Tuple[float, float]] = None,
+    opt_maxiter: int = DEFAULT_CURVATURE_OPT_MAXITER,
+    opt_starts: int = DEFAULT_CURVATURE_OPT_STARTS,
+    constraint_samples: int = DEFAULT_CURVATURE_CONSTRAINT_SAMPLES,
+    opt_timeout_sec: float = DEFAULT_CURVATURE_OPT_TIMEOUT_SEC,
+) -> Tuple[np.ndarray, Dict[str, float]]:
+    """Solve a clamped quintic Bezier centerline with a sampled curvature bound.
+
+    The endpoint tangent directions are fixed by the first and last Bezier
+    handles. Two interior control points are optimized as shape variables. The
+    objective is bending energy, with equality-constrained arc length and
+    sampled inequality constraints kappa(t) <= max_curvature.
+
+    V3_4 keeps the quick necessary feasibility checks plus caps on starting guesses,
+    SLSQP iterations, curvature samples, and wall-clock time per candidate.
+    """
+    if not HAVE_SCIPY:
+        raise RuntimeError("SciPy is required for --max-local-curvature constrained centerlines.")
+
+    p0 = np.asarray(p0, dtype=float)
+    p1 = np.asarray(p1, dtype=float)
+    t0 = normalize(t0)
+    t1 = normalize(t1)
+    length_target = float(length_target)
+    k_limit_user = float(max_curvature)
+    if k_limit_user <= 0.0 or not np.isfinite(k_limit_user):
+        raise ValueError("max_curvature must be a positive finite value in A^-1.")
+
+    reason = bounded_curvature_feasibility_message(p0, p1, t0, t1, length_target, k_limit_user)
+    if reason is not None:
+        raise CenterlineInfeasibleError("No bounded-curvature solution is possible for this length: " + reason)
+
+    chord_vec = p1 - p0
+    chord = float(np.linalg.norm(chord_vec))
+    k_limit_solver = k_limit_user * 0.997
+    n_points = int(n_points)
+    opt_maxiter = max(1, int(opt_maxiter))
+    opt_starts = max(1, int(opt_starts))
+    constraint_samples = max(40, min(720, int(constraint_samples)))
+    timeout = float(opt_timeout_sec) if opt_timeout_sec is not None else 0.0
+    if timeout < 0.0:
+        timeout = 0.0
+
+    n_eval_constraint = constraint_samples
+    t_constraint = np.linspace(0.0, 1.0, n_eval_constraint)
+    n_eval_length = max(120, min(600, 2 * n_eval_constraint))
+    n_eval_final = max(240, min(900, max(3 * n_points, 3 * n_eval_constraint)))
+    min_speed = max(1.0e-8, 1.0e-7 * max(length_target, 1.0))
+    smooth_softness = max(1.0e-7, 2.5e-4 * k_limit_user)
+    solve_t0 = time.monotonic()
+
+    def _check_timeout() -> None:
+        if timeout > 0.0 and (time.monotonic() - solve_t0) > timeout:
+            raise CurvatureOptimizationTimeout(
+                f"bounded-curvature optimizer exceeded timeout_sec={timeout:.3g} for L={length_target:.3f} A"
+            )
+
+    a0 = max(chord / 5.0, min(length_target / 4.0, 8.0))
+    b0 = a0
+    initial_handle: Optional[Tuple[float, float]] = None
+    if initial_ab is not None:
+        ia, ib = float(initial_ab[0]), float(initial_ab[1])
+        if ia > 0.0 and ib > 0.0 and np.isfinite(ia) and np.isfinite(ib):
+            initial_handle = (ia, ib)
+
+    e_chord, n_aux, b_aux = _connector_auxiliary_frame(p0, p1, t0, t1)
+    if chord > 1.0e-8:
+        base2 = p0 + 0.35 * chord_vec
+        base3 = p0 + 0.65 * chord_vec
+    else:
+        base2 = p0 + (length_target / 3.0) * t0
+        base3 = p0 + (2.0 * length_target / 3.0) * t0
+
+    extra = max(length_target - chord, 0.0)
+    amp0 = 0.0
+    if extra > 1.0e-6:
+        amp0 = min(0.60 * length_target, max(0.15 * length_target, math.sqrt(max(length_target * length_target - chord * chord, 0.0)) / 2.0))
+
+    shape_dirs = [n_aux, -n_aux, b_aux, -b_aux]
+    amp_values = [amp0, 0.5 * amp0, 1.25 * amp0]
+    if amp0 <= 1.0e-8:
+        amp_values = [0.0, 0.10 * max(length_target, 1.0)]
+
+    guesses: List[Tuple[float, float, np.ndarray, np.ndarray]] = []
+    handle_guesses = [
+        (a0, b0),
+        (max(length_target / 5.0, 1.0e-3), max(length_target / 5.0, 1.0e-3)),
+        (max(length_target / 3.5, 1.0e-3), max(length_target / 5.5, 1.0e-3)),
+        (max(length_target / 5.5, 1.0e-3), max(length_target / 3.5, 1.0e-3)),
+    ]
+    if initial_handle is not None:
+        handle_guesses.append(initial_handle)
+    for a_guess, b_guess in handle_guesses:
+        for amp in amp_values:
+            if amp <= 1.0e-12:
+                guesses.append((a_guess, b_guess, base2.copy(), base3.copy()))
+            else:
+                for direction in shape_dirs:
+                    guesses.append((a_guess, b_guess, base2 + amp * direction, base3 + amp * direction))
+
+    # Deduplicate by rounded variables.
+    seen: set[Tuple[float, ...]] = set()
+    uniq_guesses: List[Tuple[float, float, np.ndarray, np.ndarray]] = []
+    for a_guess, b_guess, q2, q3 in guesses:
+        key = tuple(np.round(np.r_[a_guess, b_guess, q2, q3], 6).tolist())
+        if key not in seen:
+            seen.add(key)
+            uniq_guesses.append((a_guess, b_guess, q2, q3))
+
+    lower_log = math.log(1.0e-4)
+    upper_log = math.log(max(8.0 * length_target, 10.0))
+    coord_radius = max(3.0 * length_target, chord + length_target, 10.0)
+    coord_bounds = [(float(min(p0[j], p1[j]) - coord_radius), float(max(p0[j], p1[j]) + coord_radius)) for j in range(3)]
+    bounds = [(lower_log, upper_log), (lower_log, upper_log)] + coord_bounds + coord_bounds
+
+    def pack(a: float, b: float, q2: np.ndarray, q3: np.ndarray) -> np.ndarray:
+        return np.r_[math.log(max(a, 1.0e-4)), math.log(max(b, 1.0e-4)), q2, q3]
+
+    def controls_from_x(x: np.ndarray) -> Tuple[np.ndarray, float, float]:
+        a = float(np.exp(x[0]))
+        b = float(np.exp(x[1]))
+        q2 = np.asarray(x[2:5], dtype=float)
+        q3 = np.asarray(x[5:8], dtype=float)
+        ctrl = np.vstack([p0, p0 + a * t0, q2, q3, p1 - b * t1, p1])
+        return ctrl, a, b
+
+    def objective(x: np.ndarray) -> float:
+        _check_timeout()
+        ctrl, a, b = controls_from_x(x)
+        _length, energy, _dense = bezier_general_length_energy(ctrl, n_eval=n_eval_length)
+        scale = max(length_target, 1.0)
+        # Penalize far-away internal controls just enough to suppress pathological loops.
+        q2 = x[2:5]
+        q3 = x[5:8]
+        shape_penalty = (np.sum((q2 - base2) ** 2) + np.sum((q3 - base3) ** 2)) / (scale * scale)
+        handle_penalty = (a / scale) ** 2 + (b / scale) ** 2
+        return float(energy + 1.0e-8 * handle_penalty + 1.0e-7 * shape_penalty)
+
+    def length_eq(x: np.ndarray) -> np.ndarray:
+        _check_timeout()
+        ctrl, _a, _b = controls_from_x(x)
+        length, _energy, _dense = bezier_general_length_energy(ctrl, n_eval=n_eval_length)
+        return np.array([(length - length_target) / max(length_target, 1.0)], dtype=float)
+
+    def curvature_ineq(x: np.ndarray) -> np.ndarray:
+        _check_timeout()
+        ctrl, _a, _b = controls_from_x(x)
+        kappas = bezier_general_curvature_values(ctrl, t_constraint)
+        smooth_kmax = _smooth_max(kappas, smooth_softness)
+        return np.array([k_limit_solver - smooth_kmax], dtype=float)
+
+    def speed_ineq(x: np.ndarray) -> np.ndarray:
+        _check_timeout()
+        ctrl, _a, _b = controls_from_x(x)
+        speeds = bezier_general_speed_values(ctrl, t_constraint)
+        return np.array([float(np.min(speeds)) - min_speed], dtype=float)
+
+    constraints = [
+        {"type": "eq", "fun": length_eq},
+        {"type": "ineq", "fun": curvature_ineq},
+        {"type": "ineq", "fun": speed_ineq},
+    ]
+
+    best_payload: Optional[Tuple[float, np.ndarray, Dict[str, float]]] = None
+    diagnostics: List[str] = []
+    starts_to_try = min(len(uniq_guesses), opt_starts)
+    for a_guess, b_guess, q2_guess, q3_guess in uniq_guesses[:starts_to_try]:
+        _check_timeout()
+        x0 = pack(a_guess, b_guess, q2_guess, q3_guess)
+        try:
+            res = minimize(
+                objective,
+                x0=x0,
+                method="SLSQP",
+                bounds=bounds,
+                constraints=constraints,
+                options={"maxiter": opt_maxiter, "ftol": 1.0e-7, "disp": False},
+            )
+        except CurvatureOptimizationTimeout:
+            raise
+        except Exception as exc:
+            diagnostics.append(f"start a={a_guess:.3g},b={b_guess:.3g}: {exc}")
+            continue
+
+        ctrl, a_opt, b_opt = controls_from_x(res.x)
+        length, energy, dense = bezier_general_length_energy(ctrl, n_eval=n_eval_length)
+        length_error = float(length - length_target)
+        max_k_cont = bezier_general_max_curvature_global(ctrl, n_grid=n_eval_final)
+        curve = resample_polyline(dense, n_points)
+        max_k_disc = float(np.max(estimate_local_curvature(curve)))
+        speed_min = float(np.min(bezier_general_speed_values(ctrl, t_constraint)))
+        feasible = (
+            abs(length_error) <= max(2.0e-3, 2.0e-5 * length_target)
+            and max_k_cont <= k_limit_user + max(1.0e-7, 5.0e-5 * k_limit_user)
+            and max_k_disc <= k_limit_user + max(1.0e-7, 5.0e-5 * k_limit_user)
+            and speed_min >= 0.5 * min_speed
+        )
+        diagnostics.append(
+            f"start a={a_guess:.3g},b={b_guess:.3g}: success={res.success} "
+            f"Lerr={length_error:.3g} k_cont={max_k_cont:.6g} k_disc={max_k_disc:.6g} msg={res.message}"
+        )
+        if feasible:
+            meta = {
+                "method": "bounded_bezier5",
+                "a": float(a_opt),
+                "b": float(b_opt),
+                "curve_length": float(compute_arc_lengths(curve)[-1]),
+                "length_error": float(length_error),
+                "bend_energy": float(energy),
+                "curvature_limit": float(k_limit_user),
+                "max_curvature_continuous": float(max_k_cont),
+                "max_curvature_sampled": float(max_k_disc),
+                "opt_success": 1.0 if res.success else 0.0,
+                "opt_status": float(getattr(res, "status", 0)),
+                "opt_iterations": float(getattr(res, "nit", np.nan)),
+                "opt_starts_tried": float(starts_to_try),
+                "curvature_constraint_samples": float(n_eval_constraint),
+            }
+            score = float(energy)
+            if best_payload is None or score < best_payload[0]:
+                best_payload = (score, curve, meta)
+
+    if best_payload is None:
+        joined = " | ".join(diagnostics[-5:]) if diagnostics else "no optimizer diagnostics"
+        raise CenterlineInfeasibleError(
+            f"Could not find a centerline satisfying max_local_curvature={k_limit_user:.6g} A^-1 "
+            f"within starts={starts_to_try}, maxiter={opt_maxiter}. "
+            f"This usually means the candidate length is too short for the curvature cap. "
+            f"Diagnostics: {joined}"
+        )
+
+    _score, curve, meta = best_payload
+    return curve, meta
+
 def solve_bezier_centerline(
     p0: np.ndarray,
     p1: np.ndarray,
@@ -955,13 +1495,67 @@ def solve_centerline(
     length_target: float,
     method: str = "auto",
     n_points: int = 240,
+    max_local_curvature: Optional[float] = None,
+    curvature_opt_maxiter: int = DEFAULT_CURVATURE_OPT_MAXITER,
+    curvature_opt_starts: int = DEFAULT_CURVATURE_OPT_STARTS,
+    curvature_constraint_samples: int = DEFAULT_CURVATURE_CONSTRAINT_SAMPLES,
+    curvature_opt_timeout_sec: float = DEFAULT_CURVATURE_OPT_TIMEOUT_SEC,
 ) -> Tuple[np.ndarray, Dict[str, float]]:
     method = method.lower()
     curve_bez, meta_bez = solve_bezier_centerline(p0, p1, t0, t1, length_target, n_points=n_points)
+
+    if max_local_curvature is not None:
+        k_limit = float(max_local_curvature)
+        reason = bounded_curvature_feasibility_message(p0, p1, t0, t1, length_target, k_limit)
+        if reason is not None:
+            raise CenterlineInfeasibleError("No bounded-curvature solution is possible for this length: " + reason)
+
+        initial_ab = (float(meta_bez.get("a", 0.0)), float(meta_bez.get("b", 0.0)))
+        if initial_ab[0] > 0.0 and initial_ab[1] > 0.0:
+            P0 = np.asarray(p0, dtype=float)
+            P3 = np.asarray(p1, dtype=float)
+            tt0 = normalize(t0)
+            tt1 = normalize(t1)
+            P1 = P0 + initial_ab[0] * tt0
+            P2 = P3 - initial_ab[1] * tt1
+            t_check = np.linspace(0.0, 1.0, max(200, min(700, 3 * int(n_points))))
+            k_cubic = float(np.max(bezier_curvature_values(P0, P1, P2, P3, t_check)))
+            k_poly = float(np.max(estimate_local_curvature(curve_bez)))
+            length_err = abs(float(meta_bez.get("length_error", np.inf)))
+            handle_floor = max(0.05, 0.01 * float(length_target))
+            if (
+                length_err <= max(3.0e-3, 3.0e-5 * float(length_target))
+                and max(k_cubic, k_poly) <= 0.985 * k_limit
+                and min(initial_ab) >= handle_floor
+            ):
+                meta_fast = dict(meta_bez)
+                meta_fast["method"] = "bezier_within_limit"
+                meta_fast["curvature_limit"] = k_limit
+                meta_fast["max_curvature_continuous"] = k_cubic
+                meta_fast["max_curvature_sampled"] = k_poly
+                return curve_bez, meta_fast
+
+        return solve_bounded_bezier_centerline(
+            p0,
+            p1,
+            t0,
+            t1,
+            length_target,
+            max_curvature=k_limit,
+            n_points=n_points,
+            initial_ab=initial_ab,
+            opt_maxiter=curvature_opt_maxiter,
+            opt_starts=curvature_opt_starts,
+            constraint_samples=curvature_constraint_samples,
+            opt_timeout_sec=curvature_opt_timeout_sec,
+        )
+
     if method in {"bezier", "auto"}:
         return curve_bez, meta_bez
+    if method in {"bounded", "constrained"}:
+        raise ValueError("centerline_method='constrained' requires --max-local-curvature.")
     if method != "discrete":
-        raise ValueError("centerline method must be one of: auto, discrete, bezier")
+        raise ValueError("centerline method must be one of: auto, discrete, bezier, constrained")
     if not HAVE_SCIPY:
         return curve_bez, meta_bez
     try:
@@ -1281,6 +1875,8 @@ def summary_header() -> List[str]:
         "curve_length_error_A",
         "bend_energy",
         "max_local_curvature_Ainv",
+        "curvature_limit_Ainv",
+        "curvature_margin_Ainv",
         "start_rmsd_A",
         "start_twist_deg",
         "start_axis_dot",
@@ -1351,10 +1947,75 @@ def screen_connectors(args: argparse.Namespace, log: Callable[..., None] = eprin
     used_chain_ids = {a.chain_id for a in target_atoms_out}
     connector_chain_ids = tuple(choose_unused_chain_ids(used_chain_ids, n=2))
 
-    results: List[Dict[str, object]] = []
-    log(f"[INFO] Screening bp lengths {min_bp}..{max_bp} in the canonical template direction only")
+    max_local_curvature = getattr(args, "max_local_curvature", None)
+    curvature_opt_maxiter = int(getattr(args, "curvature_opt_maxiter", DEFAULT_CURVATURE_OPT_MAXITER))
+    curvature_opt_starts = int(getattr(args, "curvature_opt_starts", DEFAULT_CURVATURE_OPT_STARTS))
+    curvature_constraint_samples = int(getattr(args, "curvature_constraint_samples", DEFAULT_CURVATURE_CONSTRAINT_SAMPLES))
+    curvature_opt_timeout_sec = float(getattr(args, "curvature_opt_timeout_sec", DEFAULT_CURVATURE_OPT_TIMEOUT_SEC))
+    if curvature_opt_timeout_sec < 0.0:
+        log("[ERROR] --curvature-opt-timeout-sec must be >= 0. Use 0 to disable the timeout.")
+        return 1
+    if curvature_opt_maxiter < 1 or curvature_opt_starts < 1 or curvature_constraint_samples < 40:
+        log("[ERROR] Curvature optimizer settings must satisfy: maxiter>=1, starts>=1, constraint_samples>=40.")
+        return 1
 
-    for n_bp in range(min_bp, max_bp + 1):
+    if max_local_curvature is not None:
+        max_local_curvature = float(max_local_curvature)
+        if max_local_curvature <= 0.0 or not np.isfinite(max_local_curvature):
+            log("[ERROR] --max-local-curvature must be a positive finite value in A^-1.")
+            return 1
+        if not HAVE_SCIPY:
+            log("[ERROR] --max-local-curvature requires SciPy because it uses constrained optimization.")
+            return 1
+        setattr(args, "max_local_curvature", max_local_curvature)
+        log(f"[INFO] Maximum local curvature constraint (A^-1): {max_local_curvature:.6f}")
+        log(f"[INFO] Equivalent minimum bend radius (A): {1.0 / max_local_curvature:.3f}")
+        log(
+            "[INFO] Curvature optimizer caps: "
+            f"starts={curvature_opt_starts}, maxiter={curvature_opt_maxiter}, "
+            f"constraint_samples={curvature_constraint_samples}, "
+            f"timeout_sec={curvature_opt_timeout_sec:g} (0 disables)"
+        )
+
+    screen_order = str(getattr(args, "screen_order", "auto") or "auto").strip().lower()
+    if screen_order in {"long-to-short", "long_to_short"}:
+        screen_order = "descending"
+    if screen_order in {"short-to-long", "short_to_long"}:
+        screen_order = "ascending"
+    if screen_order not in {"auto", "ascending", "descending"}:
+        log("[ERROR] --screen-order must be one of: auto, ascending, descending")
+        return 1
+    descending_screen = (max_local_curvature is not None) if screen_order == "auto" else (screen_order == "descending")
+    stop_setting = getattr(args, "stop_after_first_curvature_fail", None)
+    if stop_setting is None and hasattr(args, "stop_on_first_shorter_fail"):
+        stop_setting = getattr(args, "stop_on_first_shorter_fail")
+    stop_on_curv_fail = parse_tri_state_bool(stop_setting, default=None)
+    if stop_on_curv_fail is None:
+        stop_on_curv_fail = bool(descending_screen and max_local_curvature is not None)
+
+    bp_values = list(range(min_bp, max_bp + 1))
+    if descending_screen:
+        bp_values.reverse()
+    order_label = "descending/long-to-short" if descending_screen else "ascending/short-to-long"
+
+    results: List[Dict[str, object]] = []
+    bounded_success_seen = False
+    log(
+        f"[INFO] Screening bp lengths {min_bp}..{max_bp} in the canonical template direction only "
+        f"({order_label})"
+    )
+    if max_local_curvature is not None:
+        log(
+            "[INFO] Stop after first curvature/length infeasible shorter candidate: "
+            + ("yes" if stop_on_curv_fail else "no")
+        )
+
+    def should_stop_after_shorter_failure(bp_position: int) -> bool:
+        # Position 0 is the longest tested length. The requested early stop
+        # begins only after the scan has moved to a shorter candidate.
+        return descending_screen and stop_on_curv_fail and max_local_curvature is not None and bp_position > 0
+
+    for bp_position, n_bp in enumerate(bp_values):
         try:
             fragment = extract_fragment(template_idx, template_start_ep, n_bp, start_label=template_label)
             aligned_fragment, align_meta, aligned_frame = align_fragment_to_source_free(
@@ -1371,7 +2032,30 @@ def screen_connectors(args: argparse.Namespace, log: Callable[..., None] = eprin
                 log(
                     f"[SKIP] n={n_bp:2d} axis_len={axis_length:7.3f} < endpoint distance {endpoint_distance:7.3f}"
                 )
+                if should_stop_after_shorter_failure(bp_position):
+                    log("[STOP] This shorter candidate cannot satisfy the endpoint-distance/length requirement; remaining shorter lengths are skipped.")
+                    break
                 continue
+
+            if max_local_curvature is not None:
+                reason = bounded_curvature_feasibility_message(
+                    source_origin,
+                    dest_origin,
+                    source_tangent,
+                    dest_tangent,
+                    axis_length,
+                    max_local_curvature,
+                )
+                if reason is not None:
+                    log(f"[SKIP] n={n_bp:2d}  L={axis_length:7.3f} violates curvature bound: {reason}")
+                    if should_stop_after_shorter_failure(bp_position):
+                        log("[STOP] First shorter bounded-curvature infeasibility reached; remaining shorter lengths are skipped.")
+                        break
+                    continue
+                log(
+                    f"[TRY]  n={n_bp:2d}  L={axis_length:7.3f}  "
+                    f"bounded curvature solve kmax={max_local_curvature:.6g} A^-1"
+                )
 
             curve_points, curve_meta = solve_centerline(
                 source_origin,
@@ -1381,8 +2065,20 @@ def screen_connectors(args: argparse.Namespace, log: Callable[..., None] = eprin
                 axis_length,
                 method=args.centerline_method,
                 n_points=max(80, args.curve_points),
+                max_local_curvature=max_local_curvature,
+                curvature_opt_maxiter=curvature_opt_maxiter,
+                curvature_opt_starts=curvature_opt_starts,
+                curvature_constraint_samples=curvature_constraint_samples,
+                curvature_opt_timeout_sec=curvature_opt_timeout_sec,
             )
             max_curv = float(np.max(estimate_local_curvature(curve_points)))
+            if max_local_curvature is not None:
+                tol = max(1.0e-7, 5.0e-5 * max_local_curvature)
+                if max_curv > max_local_curvature + tol:
+                    raise CenterlineInfeasibleError(
+                        f"Constrained centerline verification failed: sampled kmax={max_curv:.6g} A^-1 "
+                        f"> limit={max_local_curvature:.6g} A^-1"
+                    )
 
             bent_atoms = bend_fragment_on_curve(aligned_fragment, aligned_frame, curve_points)
             start_score = score_connector_bp_free(
@@ -1417,6 +2113,8 @@ def screen_connectors(args: argparse.Namespace, log: Callable[..., None] = eprin
                 "curve_length_error_A": f"{float(curve_meta.get('length_error', np.nan)):.3f}",
                 "bend_energy": f"{float(curve_meta.get('bend_energy', np.nan)):.6f}",
                 "max_local_curvature_Ainv": f"{max_curv:.6f}",
+                "curvature_limit_Ainv": "" if max_local_curvature is None else f"{max_local_curvature:.6f}",
+                "curvature_margin_Ainv": "" if max_local_curvature is None else f"{(max_local_curvature - max_curv):.6f}",
                 "start_rmsd_A": f"{float(start_score['rmsd']):.3f}",
                 "start_twist_deg": f"{float(align_meta['start_twist_deg']):.3f}",
                 "start_axis_dot": f"{float(align_meta['start_axis_dot']):.4f}",
@@ -1438,11 +2136,25 @@ def screen_connectors(args: argparse.Namespace, log: Callable[..., None] = eprin
                 "_connector_atoms": bent_atoms_relab,
             }
             results.append(result)
+            if max_local_curvature is not None:
+                bounded_success_seen = True
             log(
                 f"[OK]   n={n_bp:2d}  L={axis_length:7.3f}  method={result['curve_method']:>8s}  "
                 f"startRMSD={float(start_score['rmsd']):6.3f}  endRMSD={float(end_score['rmsd']):6.3f}  "
-                f"twist_mismatch={float(end_score['twist_mismatch_deg']):7.3f}  kmax={max_curv:8.5f}"
+                f"twist_mismatch={float(end_score['twist_mismatch_deg']):7.3f}  "
+                f"kmax={max_curv:8.5f}"
+                + ("" if max_local_curvature is None else f"/{max_local_curvature:8.5f}")
             )
+        except CenterlineInfeasibleError as exc:
+            log(f"[SKIP] n={n_bp:2d}  {exc}")
+            if should_stop_after_shorter_failure(bp_position):
+                log("[STOP] First shorter bounded-curvature optimizer infeasibility reached; remaining shorter lengths are skipped.")
+                break
+        except CurvatureOptimizationTimeout as exc:
+            log(f"[TIMEOUT] n={n_bp:2d}  {exc}")
+            if should_stop_after_shorter_failure(bp_position):
+                log("[STOP] Bounded-curvature solve timed out for a shorter candidate; remaining shorter lengths are skipped.")
+                break
         except Exception as exc:
             log(f"[FAIL] n={n_bp:2d}  {exc}")
 
@@ -1454,9 +2166,10 @@ def screen_connectors(args: argparse.Namespace, log: Callable[..., None] = eprin
 
     top_k = min(args.top_k, len(results))
     for rank, row in enumerate(results[:top_k], start=1):
+        twist_mismatch = float(row["twist_mismatch_deg"])
         out_name = (
             f"rank{rank:02d}_{str(row['template_start_bp']).replace(',', '_')}_bp{int(row['n_bp']):02d}_"
-            f"rmsd{float(row['_sort_end_rmsd']):.3f}.pdb"
+            f"rmsd{float(row['_sort_end_rmsd']):.3f}_TwMm{twist_mismatch:+.3f}deg.pdb"
         )
         out_path = os.path.join(args.outdir, out_name)
         write_assembly_pdb(out_path, target_atoms_out, row["_connector_atoms"])
@@ -1540,15 +2253,22 @@ GUI_PARAM_HELP: Dict[str, str] = {
     "max_bp": "Largest connector length to screen. Leave blank to use the full available template length.",
     "top_k": "How many best-ranked connector PDB files to write at the end.",
     "outdir": "Directory where the ranked PDBs and connector_summary.tsv will be saved.",
-    "centerline_method": "Centerline generator: auto uses the robust cubic clamped-elastica proxy, bezier forces that cubic proxy, and discrete tries the refined discrete solver.",
+    "centerline_method": "Centerline generator: auto uses the robust cubic clamped-elastica proxy. If max local curvature is set, auto/bezier/constrained use the bounded-curvature optimizer. discrete tries the refined discrete solver only when no curvature limit is set.",
     "curve_points": "Number of sampled points used to represent the centerline during bending.",
     "tangent_k": "How many inward base-pairs are used to estimate the local helix direction at each endpoint. Larger values average over a longer helical segment; 11 bp is about one turn for B-form DNA.",
     "length_slack": "Reject a candidate if its straightened axis is shorter than the endpoint distance by more than this tolerance in angstrom.",
     "min_direction_dot": "Minimum allowed dot product for strand and helix direction agreement. 0 rejects opposite directions.",
+    "max_local_curvature": "Optional maximum sampled local centerline curvature in A^-1. Use 0 or leave blank to disable this constraint. R_min = 1 / kappa_max. For reference, the curvature of an 84 bp dsDNA ring is approximately 0.022 A^-1.",
+    "curvature_opt_maxiter": "Maximum SLSQP iterations per bounded-curvature starting guess. Lower values fail faster; higher values may rescue difficult feasible cases.",
+    "curvature_opt_starts": "Number of initial guesses tried for each bounded-curvature centerline. Lower values are faster; higher values are more thorough.",
+    "curvature_constraint_samples": "Number of Bezier-parameter samples used inside the curvature constraint. Final verification still uses a denser check.",
+    "curvature_opt_timeout_sec": "Soft timeout per candidate bounded-curvature solve. Use 0 to disable.",
+    "screen_order": "Length screening order. auto means descending/long-to-short when a max curvature is set, otherwise ascending.",
+    "stop_after_first_curvature_fail": "auto/yes/no. In auto mode, a descending bounded-curvature scan stops after the first shorter curvature- or length-infeasible candidate.",
 }
 
 
-def namespace_to_cli_command(ns: argparse.Namespace, script_name: str = "curved_connectorV3_0.py") -> str:
+def namespace_to_cli_command(ns: argparse.Namespace, script_name: str = "curved_connectorV3_4.py") -> str:
     parts: List[str] = [
         "python",
         script_name,
@@ -1577,6 +2297,23 @@ def namespace_to_cli_command(ns: argparse.Namespace, script_name: str = "curved_
     ]
     if ns.max_bp is not None:
         parts.extend(["--max-bp", str(ns.max_bp)])
+    if getattr(ns, "max_local_curvature", None) is not None:
+        parts.extend(["--max-local-curvature", str(ns.max_local_curvature)])
+    if hasattr(ns, "curvature_opt_maxiter"):
+        parts.extend(["--curvature-opt-maxiter", str(ns.curvature_opt_maxiter)])
+    if hasattr(ns, "curvature_opt_starts"):
+        parts.extend(["--curvature-opt-starts", str(ns.curvature_opt_starts)])
+    if hasattr(ns, "curvature_constraint_samples"):
+        parts.extend(["--curvature-constraint-samples", str(ns.curvature_constraint_samples)])
+    if hasattr(ns, "curvature_opt_timeout_sec"):
+        parts.extend(["--curvature-opt-timeout-sec", str(ns.curvature_opt_timeout_sec)])
+    if hasattr(ns, "screen_order") and str(ns.screen_order).strip().lower() != "auto":
+        parts.extend(["--screen-order", str(ns.screen_order)])
+    if hasattr(ns, "stop_after_first_curvature_fail") and ns.stop_after_first_curvature_fail is not None:
+        if bool(ns.stop_after_first_curvature_fail):
+            parts.append("--stop-after-first-curvature-fail")
+        else:
+            parts.append("--continue-after-curvature-fail")
     return " ".join(shlex.quote(str(part)) for part in parts)
 
 
@@ -1601,15 +2338,22 @@ def launch_gui() -> int:
         "template_pdb": tk.StringVar(value=""),
         "source_bp": tk.StringVar(value="A33,B1"),
         "dest_bp": tk.StringVar(value="E1,F33"),
-        "min_bp": tk.StringVar(value="2"),
+        "min_bp": tk.StringVar(value="15"),
         "max_bp": tk.StringVar(value=""),
-        "top_k": tk.StringVar(value="5"),
+        "top_k": tk.StringVar(value="10"),
         "outdir": tk.StringVar(value=DEFAULT_OUTDIR),
         "centerline_method": tk.StringVar(value="auto"),
         "curve_points": tk.StringVar(value="240"),
         "tangent_k": tk.StringVar(value="11"),
         "length_slack": tk.StringVar(value="0.25"),
         "min_direction_dot": tk.StringVar(value="0.0"),
+        "max_local_curvature": tk.StringVar(value="0"),
+        "curvature_opt_maxiter": tk.StringVar(value=str(DEFAULT_CURVATURE_OPT_MAXITER)),
+        "curvature_opt_starts": tk.StringVar(value=str(DEFAULT_CURVATURE_OPT_STARTS)),
+        "curvature_constraint_samples": tk.StringVar(value=str(DEFAULT_CURVATURE_CONSTRAINT_SAMPLES)),
+        "curvature_opt_timeout_sec": tk.StringVar(value="0"),
+        "screen_order": tk.StringVar(value="auto"),
+        "stop_after_first_curvature_fail": tk.StringVar(value="auto"),
     }
 
     main = ttk.Frame(root, padding=10)
@@ -1700,6 +2444,13 @@ def launch_gui() -> int:
     add_row(options_box, 5, "Tangent k", "tangent_k", width=12)
     add_row(options_box, 6, "Length slack (Å)", "length_slack", width=12)
     add_row(options_box, 7, "Min direction dot", "min_direction_dot", width=12)
+    add_row(options_box, 8, "Max curvature (A^-1)", "max_local_curvature", width=12)
+    add_row(options_box, 9, "Curv opt maxiter", "curvature_opt_maxiter", width=12)
+    add_row(options_box, 10, "Curv opt starts", "curvature_opt_starts", width=12)
+    add_row(options_box, 11, "Curv samples", "curvature_constraint_samples", width=12)
+    add_row(options_box, 12, "Curv timeout sec", "curvature_opt_timeout_sec", width=12)
+    add_row(options_box, 13, "Screen order", "screen_order", width=12)
+    add_row(options_box, 14, "Stop after curv fail", "stop_after_first_curvature_fail", width=12)
 
     buttons = ttk.Frame(main)
     buttons.grid(row=2, column=0, sticky="w", pady=(10, 0))
@@ -1722,6 +2473,32 @@ def launch_gui() -> int:
     notebook.add(log_tab, text="Run log")
 
     run_counter = [0]
+    log_queue = queue.Queue()
+    run_state = {"running": False}
+
+    class QueueTextWriter:
+        """File-like object that forwards stdout/stderr lines to the GUI log queue."""
+
+        def __init__(self, emit_line):
+            self.emit_line = emit_line
+            self.buffer = ""
+
+        def write(self, text: object) -> int:
+            if text is None:
+                return 0
+            chunk = str(text)
+            if not chunk:
+                return 0
+            self.buffer += chunk
+            while "\n" in self.buffer:
+                line, self.buffer = self.buffer.split("\n", 1)
+                self.emit_line(line)
+            return len(chunk)
+
+        def flush(self) -> None:
+            if self.buffer:
+                self.emit_line(self.buffer)
+                self.buffer = ""
 
     def gui_log(*parts: object) -> None:
         msg = " ".join(str(p) for p in parts)
@@ -1729,6 +2506,50 @@ def launch_gui() -> int:
         log_text.see(tk.END)
         notebook.select(log_tab)
         root.update_idletasks()
+
+    def queue_log(*parts: object) -> None:
+        log_queue.put(("log", " ".join(str(p) for p in parts)))
+
+    def finish_run(rc: int, outdir: str) -> None:
+        run_state["running"] = False
+        try:
+            root.configure(cursor="")
+            run_button.configure(state="normal")
+        except Exception:
+            pass
+        if rc == 0:
+            messagebox.showinfo("Done", f"Finished. Results were written to:\n{outdir}")
+        else:
+            messagebox.showwarning("Finished with no valid result", f"Return code: {rc}")
+
+    def drain_log_queue() -> None:
+        try:
+            while True:
+                kind, payload = log_queue.get_nowait()
+                if kind == "log":
+                    gui_log(payload)
+                elif kind == "done":
+                    rc, outdir = payload
+                    finish_run(int(rc), str(outdir))
+                elif kind == "exception":
+                    err_msg, tb_text = payload
+                    run_state["running"] = False
+                    try:
+                        root.configure(cursor="")
+                        run_button.configure(state="normal")
+                    except Exception:
+                        pass
+                    gui_log(f"[ERROR] {err_msg}")
+                    if tb_text:
+                        for line in str(tb_text).rstrip().splitlines():
+                            gui_log(line)
+                    messagebox.showerror("Run failed", str(err_msg))
+        except queue.Empty:
+            pass
+        try:
+            root.after(100, drain_log_queue)
+        except Exception:
+            pass
 
     def load_target_hints() -> None:
         target_pdb = vars_s["target_pdb"].get().strip()
@@ -1744,11 +2565,21 @@ def launch_gui() -> int:
             messagebox.showerror("Target PDB parse error", str(exc))
 
     def run_now() -> None:
+        if run_state["running"]:
+            messagebox.showinfo("Run already active", "A connector screening run is already active.")
+            return
         try:
             target_pdb = vars_s["target_pdb"].get().strip()
             template_pdb = vars_s["template_pdb"].get().strip()
             if not target_pdb or not template_pdb:
                 raise ValueError("Please choose both the target PDB and the template PDB.")
+            max_local_curvature_text = vars_s["max_local_curvature"].get().strip()
+            max_local_curvature = None
+            if max_local_curvature_text:
+                parsed_max_local_curvature = float(max_local_curvature_text)
+                if parsed_max_local_curvature > 0.0:
+                    max_local_curvature = parsed_max_local_curvature
+
             ns = argparse.Namespace(
                 target_pdb=target_pdb,
                 template_pdb=template_pdb,
@@ -1763,23 +2594,55 @@ def launch_gui() -> int:
                 tangent_k=int(vars_s["tangent_k"].get().strip()),
                 length_slack=float(vars_s["length_slack"].get().strip()),
                 min_direction_dot=float(vars_s["min_direction_dot"].get().strip()),
+                max_local_curvature=max_local_curvature,
+                curvature_opt_maxiter=int(vars_s["curvature_opt_maxiter"].get().strip()),
+                curvature_opt_starts=int(vars_s["curvature_opt_starts"].get().strip()),
+                curvature_constraint_samples=int(vars_s["curvature_constraint_samples"].get().strip()),
+                curvature_opt_timeout_sec=float(vars_s["curvature_opt_timeout_sec"].get().strip()),
+                screen_order=vars_s["screen_order"].get().strip().lower() or "auto",
+                stop_after_first_curvature_fail=parse_tri_state_bool(
+                    vars_s["stop_after_first_curvature_fail"].get().strip(), default=None
+                ),
             )
             run_counter[0] += 1
             gui_log("")
             gui_log("=" * 88)
             gui_log(f"[GUI] Run {run_counter[0]}")
             gui_log(f"[GUI] CLI: {namespace_to_cli_command(ns)}")
-            rc = screen_connectors(ns, log=gui_log)
-            if rc == 0:
-                messagebox.showinfo("Done", f"Finished. Results were written to:\n{ns.outdir}")
-            else:
-                messagebox.showwarning("Finished with no valid result", f"Return code: {rc}")
+            run_state["running"] = True
+            run_button.configure(state="disabled")
+            root.configure(cursor="watch")
+            root.update_idletasks()
+
+            def worker() -> None:
+                writer = QueueTextWriter(queue_log)
+                try:
+                    with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
+                        rc = screen_connectors(ns, log=queue_log)
+                    writer.flush()
+                    log_queue.put(("done", (rc, ns.outdir)))
+                except Exception as exc:
+                    try:
+                        writer.flush()
+                    except Exception:
+                        pass
+                    log_queue.put(("exception", (str(exc), traceback.format_exc())))
+
+            threading.Thread(target=worker, name="curved_connector_worker", daemon=True).start()
         except Exception as exc:
+            run_state["running"] = False
+            try:
+                root.configure(cursor="")
+                run_button.configure(state="normal")
+            except Exception:
+                pass
             messagebox.showerror("Run failed", str(exc))
 
     ttk.Button(buttons, text="Load target hints", command=load_target_hints).pack(side="left", padx=(0, 6))
-    ttk.Button(buttons, text="Run", command=run_now).pack(side="left", padx=(0, 6))
+    run_button = ttk.Button(buttons, text="Run", command=run_now)
+    run_button.pack(side="left", padx=(0, 6))
     ttk.Button(buttons, text="Quit", command=root.destroy).pack(side="left")
+    root.after(100, drain_log_queue)
 
     root.mainloop()
     return 0
@@ -1798,15 +2661,15 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("template_pdb", help="PDB with one straight duplex helix to use as the connector template.")
     p.add_argument("--source-bp", required=True, help="Source end base-pair in the target PDB, e.g. A33,B1")
     p.add_argument("--dest-bp", required=True, help="Destination end base-pair in the target PDB, e.g. E1,F33")
-    p.add_argument("--min-bp", type=int, default=2, help="Minimum connector length to screen (bp)")
+    p.add_argument("--min-bp", type=int, default=15, help="Minimum connector length to screen (bp)")
     p.add_argument("--max-bp", type=int, default=None, help="Maximum connector length to screen (bp)")
-    p.add_argument("--top-k", type=int, default=5, help="How many top-ranked PDBs to write")
+    p.add_argument("--top-k", type=int, default=10, help="How many top-ranked PDBs to write")
     p.add_argument("--outdir", default=DEFAULT_OUTDIR, help="Output directory")
     p.add_argument(
         "--centerline-method",
-        choices=["auto", "discrete", "bezier"],
+        choices=["auto", "discrete", "bezier", "bounded", "constrained"],
         default="auto",
-        help="Centerline generator: auto uses the robust cubic clamped-elastica proxy; discrete tries a SciPy-refined centerline.",
+        help="Centerline generator. If --max-local-curvature is supplied, auto/bezier/bounded/constrained use the bounded-curvature optimizer.",
     )
     p.add_argument("--curve-points", type=int, default=240, help="Number of centerline points used for bending")
     p.add_argument("--tangent-k", type=int, default=11, help="How many inward base-pairs to use when estimating endpoint tangents")
@@ -1822,6 +2685,61 @@ def build_argparser() -> argparse.ArgumentParser:
         default=0.0,
         help="Minimum allowed dot product for strand-direction and helix-direction agreement. 0 rejects opposite directions.",
     )
+    p.add_argument(
+        "--max-local-curvature",
+        type=float,
+        default=None,
+        help="Optional maximum sampled local centerline curvature in A^-1. Equivalent minimum bend radius is 1/value A.",
+    )
+    p.add_argument(
+        "--curvature-opt-maxiter",
+        type=int,
+        default=DEFAULT_CURVATURE_OPT_MAXITER,
+        help="Maximum SLSQP iterations per starting guess when --max-local-curvature is active.",
+    )
+    p.add_argument(
+        "--curvature-opt-starts",
+        type=int,
+        default=DEFAULT_CURVATURE_OPT_STARTS,
+        help="Number of bounded-curvature initial guesses tried per screened length.",
+    )
+    p.add_argument(
+        "--curvature-constraint-samples",
+        type=int,
+        default=DEFAULT_CURVATURE_CONSTRAINT_SAMPLES,
+        help="Number of samples used inside the bounded-curvature optimizer constraint; final verification is denser.",
+    )
+    p.add_argument(
+        "--curvature-opt-timeout-sec",
+        type=float,
+        default=DEFAULT_CURVATURE_OPT_TIMEOUT_SEC,
+        help="Soft timeout per screened length for bounded-curvature optimization. Use 0 to disable.",
+    )
+    p.add_argument(
+        "--screen-order",
+        choices=["auto", "short_to_long", "long_to_short", "short-to-long", "long-to-short", "ascending", "descending"],
+        default="auto",
+        help=(
+            "Order for screening bp lengths. auto uses long_to_short when --max-local-curvature "
+            "is set, otherwise short_to_long. ascending/descending are accepted aliases."
+        ),
+    )
+    p.add_argument(
+        "--stop-on-first-shorter-fail",
+        "--stop-after-first-curvature-fail",
+        dest="stop_after_first_curvature_fail",
+        action="store_true",
+        default=None,
+        help="Stop a long_to_short bounded-curvature scan after the first shorter length that is curvature/length infeasible.",
+    )
+    p.add_argument(
+        "--no-stop-on-first-shorter-fail",
+        "--continue-after-curvature-fail",
+        dest="stop_after_first_curvature_fail",
+        action="store_false",
+        help="Keep screening shorter lengths after a bounded-curvature infeasibility or timeout.",
+    )
+    p.set_defaults(stop_after_first_curvature_fail=None)
     p.add_argument("--gui", action="store_true", help="Launch the GUI.")
     return p
 

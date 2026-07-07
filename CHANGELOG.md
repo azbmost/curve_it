@@ -1,5 +1,15 @@
 # Changelog
 
+## V3_4 - 2026-07-05
+
+- Replaced the bundled **Curved Connector...** implementation with `curve_it_lib/curved_connectorV3_4.py`.
+- Added optional sampled maximum local-curvature enforcement for connector centerline optimization via `--max-local-curvature`.
+- Added bounded-curvature feasibility checks, long-to-short constrained screening, stop/continue controls for curvature-infeasible shorter candidates, optimizer iteration/start/sample controls, and an optional soft timeout for difficult constrained solves.
+- Updated connector outputs so ranked PDB filenames include endpoint twist mismatch as `TwMm`, and `connector_summary.tsv` includes curvature limit and margin columns when a limit is used.
+- Improved the connector GUI with V3_4 curvature controls, new default screening values, streamed run-log output from a worker thread, and a responsive window during long optimizer runs.
+- Set the connector GUI **Max curvature** default to `0` as the disabled state and noted that an 84 bp dsDNA ring has curvature of about `0.022 A^-1`.
+- Bumped Curve It version metadata to `V3_4`.
+
 ## V3_3 - 2026-07-01
 
 - Bumped Curve It version metadata to `V3_3`.
@@ -7,6 +17,7 @@
 - Changed **Convert XYZ...** fake-PDB options so **Close all chains with LINK records** is enabled by default.
 - Prevented in-process helper dialogs from changing Curve It's main window icon.
 - Removed older Plane It implementation snapshots, keeping `curve_it_lib/plane_itV3_8.py` as the single bundled Plane It implementation.
+- Added a **Convert XYZ...** scale factor field that multiplies all output coordinates before writing.
 
 ## V3_2 - 2026-06-26
 
