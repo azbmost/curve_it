@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_4`
+Version: `V3_5`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -152,6 +152,17 @@ The GUI **View curve** window can show all parsed components or the currently se
 
 The GUI has a dedicated **Tools** area for utility tools.
 
+**Get phase** beside the main **Phase (deg)** field opens `curve_it_lib/get_curve_it_phaseV5_1.py`. Its atom-selection area can use a single real PDB atom, the centroid of multiple individually selected real atoms, or a virtual source-space `x,y,z` point that does not exist in the PDB. Choose **Real atom(s)** and set the number of selection rows, or choose **Virtual atom** and enter coordinates in Angstrom. The computed phase transfers back to the main GUI automatically.
+
+The helper can also be run directly. Repeat `--real-atom CHAIN:RESSEQ:ATOM_NAME` to use a centroid; use `_` for a blank chain. Supplying `--virtual-atom` selects virtual-atom mode automatically.
+
+```bash
+python3 curve_it_lib/get_curve_it_phaseV5_1.py input.pdb curve.xyz \
+    --virtual-atom 10,5,3 --target-mode curvature_angle
+python3 curve_it_lib/get_curve_it_phaseV5_1.py input.pdb curve.xyz \
+    --real-atom A:12:P --real-atom B:12:P --target-mode curvature_angle
+```
+
 **Convert XYZ...** opens a small conversion window for coordinate XYZ/txt, molecular XYZ, and fake-PDB output. An optional scale factor multiplies every output coordinate before writing. Fake PDB output is meant for molecular visualization: each point becomes one atom in one residue, using residue `ALA` and atom `CA` by default. Blank-line-separated coordinate components become chains `A`, `B`, `C`, and so on; selected closed chains can be written with `LINK` records.
 
 **Generate helical curve...** opens `curve_it_lib/generate_helix_xyzV2.py`. This tool writes a plain-coordinate XYZ file for a circular helix:
@@ -285,6 +296,7 @@ Supporting scripts live in `curve_it_lib/`:
 - `cal_xyz_total_curvature_writheV2.py`
 - `cal_xyz_local_curvature_torsionV3_1.py`
 - `generate_helix_xyzV2.py`
+- `get_curve_it_phaseV5_1.py`
 - `curved_connectorV3_4.py`
 - `plane_itV3_8.py` (versioned Plane It implementation; use `plane_it.py` as the stable launcher)
 - `view_xyzV3.py`

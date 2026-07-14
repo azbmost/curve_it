@@ -1,5 +1,13 @@
 # Changelog
 
+## V3_5 - 2026-07-14
+
+- Added `curve_it_lib/get_curve_it_phaseV5_1.py` for the integrated **Get phase** helper.
+- Added a real-atom/virtual-atom selector to Get phase. Virtual atoms are arbitrary source-space `x,y,z` points and do not need to exist in the input PDB.
+- Added a real-atom count field with dynamic per-atom selection rows; when more than one real atom is selected, Get phase uses their centroid.
+- Added CLI support for `--virtual-atom x,y,z` and repeated `--real-atom CHAIN:RESSEQ:ATOM_NAME` selections.
+- Bumped Curve It version metadata to `V3_5`.
+
 ## V3_4 - 2026-07-05
 
 - Replaced the bundled **Curved Connector...** implementation with `curve_it_lib/curved_connectorV3_4.py`.

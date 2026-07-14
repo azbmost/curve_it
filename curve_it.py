@@ -139,7 +139,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_4"
+APP_VERSION = "V3_5"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -2973,7 +2973,7 @@ def launch_gui() -> None:
             return
 
         try:
-            from curve_it_lib import get_curve_it_phaseV5 as get_curve_it_phase
+            from curve_it_lib import get_curve_it_phaseV5_1 as get_curve_it_phase
         except Exception as e:
             messagebox.showerror("Tool not found", f"Failed to load the phase helper:\n{e}")
             return
@@ -3023,6 +3023,11 @@ def launch_gui() -> None:
             curve_xyz=curve_path,
             curve_it_dir=None,
             output=output_report,
+            selection_mode="real",
+            virtual_atom=None,
+            real_atom=None,
+            real_atom_selections=None,
+            real_atom_count=1,
             atom_serial=None,
             atom_index0=None,
             atom_name=None,

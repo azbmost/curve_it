@@ -11,21 +11,21 @@
 # the script opens a compact Tkinter GUI for entering these parameters.
 #
 # Example CLI, local curvature-normal target:
-#   python get_curve_it_phaseV5.py BC220_oriented_placed.pdb curve.xyz \
+#   python get_curve_it_phaseV5_1.py BC220_oriented_placed.pdb curve.xyz \
 #       --chain A --resseq 1 --atom-name P --scale-mode none --path-type open \
 #       --target-mode curvature_angle --curvature-angle-deg 0
 #
 # Example CLI, target toward a point:
-#   python get_curve_it_phaseV5.py BC220_oriented_placed.pdb curve.xyz \
+#   python get_curve_it_phaseV5_1.py BC220_oriented_placed.pdb curve.xyz \
 #       --chain A --resseq 1 --atom-name P --target-mode toward_point \
 #       --target-point 0,0,0
 #
 # Example GUI:
-#   python get_curve_it_phaseV5.py
-#   python get_curve_it_phaseV5.py --gui
+#   python get_curve_it_phaseV5_1.py
+#   python get_curve_it_phaseV5_1.py --gui
 #
 # Notes:
-#   V5 is self-contained for PDB/XYZ parsing and Curve-It-compatible geometry.
+#   V5_1 is self-contained for PDB/XYZ parsing and Curve-It-compatible geometry.
 #   It does not require importing curve_it.py, but the final value is intended
 #   for Curve It's --helix_phase option.
 #   A phase rotation can only control the atom direction after projecting the
@@ -86,6 +86,17 @@ class AtomRecord:
     res_seq: int
     i_code: str
     element: str
+
+
+@dataclass
+class SelectionPoint:
+    """A source-space point used to determine the Curve It phase."""
+
+    coord: np.ndarray
+    label: str
+    kind: str
+    atom_indices: List[int]
+    source_atom_index: Optional[int] = None
 
 
 STANDARD_NA = {
@@ -1061,6 +1072,139 @@ def select_atom_index(atoms: List[AtomRecord], args: argparse.Namespace) -> int:
     raise SystemExit("\n".join(lines))
 
 
+def _select_atom_by_metadata(
+    atoms: List[AtomRecord],
+    atom_name: Optional[str],
+    resseq: Optional[int],
+    chain: Optional[str] = None,
+    icode: Optional[str] = None,
+    resname: Optional[str] = None,
+    context: str = "Atom selection",
+) -> int:
+    """Select exactly one atom using the metadata fields exposed in the GUI."""
+    if atom_name is None or resseq is None:
+        raise SystemExit("{} needs both Atom name and ResNumber.".format(context))
+
+    atom_name_norm = normalize_atom_name(atom_name)
+    matches: List[int] = []
+    for i, atom in enumerate(atoms):
+        if atom.atom_name_norm != atom_name_norm:
+            continue
+        if int(atom.res_seq) != int(resseq):
+            continue
+        if chain is not None and atom.chain_id != chain:
+            continue
+        if icode is not None and atom.i_code != icode:
+            continue
+        if resname is not None and atom.res_name.upper() != resname.upper():
+            continue
+        matches.append(i)
+
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) == 0:
+        raise SystemExit("{} did not match any atom.".format(context))
+
+    lines = ["{} matched multiple atoms. Please refine the selection:".format(context)]
+    for i in matches[:20]:
+        lines.append("  " + atom_label(atoms[i], i))
+    if len(matches) > 20:
+        lines.append("  ... {} more".format(len(matches) - 20))
+    raise SystemExit("\n".join(lines))
+
+
+def parse_real_atom_spec(spec: str) -> Dict[str, Any]:
+    """Parse one repeated CLI real-atom selection: CHAIN:RESSEQ:ATOM_NAME."""
+    parts = [part.strip() for part in str(spec).split(":")]
+    if len(parts) != 3 or not parts[1] or not parts[2]:
+        raise argparse.ArgumentTypeError(
+            "--real-atom must be CHAIN:RESSEQ:ATOM_NAME, for example A:12:P. "
+            "Use _:12:P for a blank chain."
+        )
+    try:
+        resseq = int(parts[1])
+    except ValueError:
+        raise argparse.ArgumentTypeError("--real-atom residue number must be an integer.")
+    chain = None if parts[0] in ("", "-", "_") else parts[0]
+    return {"chain": chain, "resseq": resseq, "atom_name": parts[2]}
+
+
+def _selection_mode(args: argparse.Namespace) -> str:
+    """Get a selection mode, retaining convenient CLI auto-detection."""
+    mode = getattr(args, "selection_mode", None)
+    if mode is None or not str(mode).strip():
+        return "virtual" if getattr(args, "virtual_atom", None) is not None else "real"
+    mode = str(mode).strip().lower()
+    if mode not in {"real", "virtual"}:
+        raise ValueError("Selection mode must be 'real' or 'virtual'.")
+    return mode
+
+
+def select_phase_point(atoms: List[AtomRecord], args: argparse.Namespace) -> SelectionPoint:
+    """Resolve a real atom, a real-atom centroid, or a virtual point."""
+    mode = _selection_mode(args)
+    if mode == "virtual":
+        value = getattr(args, "virtual_atom", None)
+        if value is None:
+            raise SystemExit("Virtual atom selection needs x,y,z coordinates.")
+        try:
+            coord = np.asarray(value, dtype=float).reshape(3)
+        except (TypeError, ValueError):
+            raise SystemExit("Virtual atom coordinates must be x,y,z.")
+        if not np.all(np.isfinite(coord)):
+            raise SystemExit("Virtual atom coordinates must be finite numbers.")
+        return SelectionPoint(
+            coord=coord,
+            label="Virtual atom at {}".format(format_vec3(coord)),
+            kind="virtual atom",
+            atom_indices=[],
+        )
+
+    selections = getattr(args, "real_atom_selections", None)
+    if selections is None:
+        selections = getattr(args, "real_atom", None)
+
+    if selections:
+        selected_indices: List[int] = []
+        for row_number, selection in enumerate(selections, start=1):
+            if isinstance(selection, str):
+                selection = parse_real_atom_spec(selection)
+            if not isinstance(selection, dict):
+                raise SystemExit("Real atom selection {} is invalid.".format(row_number))
+            selected_indices.append(
+                _select_atom_by_metadata(
+                    atoms,
+                    selection.get("atom_name"),
+                    selection.get("resseq"),
+                    selection.get("chain"),
+                    selection.get("icode"),
+                    selection.get("resname"),
+                    context="Real atom selection {}".format(row_number),
+                )
+            )
+    else:
+        selected_indices = [select_atom_index(atoms, args)]
+
+    if len(selected_indices) == 1:
+        atom_idx = selected_indices[0]
+        atom = atoms[atom_idx]
+        return SelectionPoint(
+            coord=atom.coord.copy(),
+            label=atom_label(atom, atom_idx),
+            kind="real atom",
+            atom_indices=selected_indices,
+            source_atom_index=atom_idx,
+        )
+
+    coord = np.vstack([atoms[index].coord for index in selected_indices]).mean(axis=0)
+    return SelectionPoint(
+        coord=coord,
+        label="Centroid of {} real atoms".format(len(selected_indices)),
+        kind="real-atom centroid",
+        atom_indices=selected_indices,
+    )
+
+
 def parse_scale_mode(scale_mode: str) -> Tuple[str, Optional[float]]:
     """Parse Curve It scale mode into an internal mode and optional target length."""
     text = str(scale_mode).strip()
@@ -1203,8 +1347,7 @@ def format_vec3(vec: Optional[np.ndarray], digits: int = 6) -> str:
 
 def build_phase_report(
     args: argparse.Namespace,
-    atom: AtomRecord,
-    atom_idx: int,
+    selection: SelectionPoint,
     phase_deg: float,
     phase_signed_deg: float,
     target_angle_deg: float,
@@ -1224,7 +1367,12 @@ def build_phase_report(
     lines.append("Curve It --helix_phase (deg): {:.6f}".format(phase_deg))
     lines.append("Helix phase signed (deg): {:.6f}".format(phase_signed_deg))
     lines.append("")
-    lines.append("Selected atom: {}".format(atom_label(atom, atom_idx)))
+    if selection.source_atom_index is not None:
+        lines.append("Selected atom: {}".format(selection.label))
+    else:
+        lines.append("Selected point: {}".format(selection.label))
+    lines.append("Selection kind: {}".format(selection.kind))
+    lines.append("Selected source-space coordinate (A): {}".format(format_vec3(selection.coord)))
     lines.append("Target mode: {}".format(target_info.get("mode", "NA")))
     lines.append("Target definition: {}".format(target_info.get("angle_definition", "NA")))
     if "angle_deg" in target_info:
@@ -1258,7 +1406,7 @@ def build_phase_report(
     lines.append("Equivalent Curve It command:")
     lines.append(curve_command)
     lines.append("")
-    lines.append("Implementation note: V5 computes a target direction for any sufficiently smooth sampled space curve.")
+    lines.append("Implementation note: V5_1 computes a target direction for any sufficiently smooth sampled space curve.")
     lines.append("In curvature_angle mode the target is cos(angle)*curvature_normal + sin(angle)*curvature_binormal.")
     lines.append("In axis/point/vector modes the target is projected into the plane perpendicular to the local tangent,")
     lines.append("matching Curve It's cross-section phase convention.")
@@ -1273,16 +1421,20 @@ def compute_phase(args: argparse.Namespace) -> str:
     if not atoms:
         raise SystemExit("No ATOM/HETATM records found in input PDB.")
 
-    selected_idx = select_atom_index(atoms, args)
-    selected_atom = atoms[selected_idx]
+    selection = select_phase_point(atoms, args)
 
     coords = np.vstack([a.coord for a in atoms])
-    center, axis, basis, s_vals, local = compute_helix_local_coords(coords)
+    center, axis, basis, s_vals, _local = compute_helix_local_coords(coords)
     s_min = float(s_vals.min())
     s_max = float(s_vals.max())
     helix_len = s_max - s_min
     if helix_len <= 1e-6:
         raise SystemExit("PDB principal-axis length is too small.")
+
+    selection_rel = np.asarray(selection.coord, dtype=float) - center
+    selection_s = float(np.dot(selection_rel, axis))
+    selection_radial = selection_rel - selection_s * axis
+    selection_local = selection_radial @ basis
 
     curve_points = read_curve_points(args.curve_xyz, args.curve_components)
     closed_for_interp = args.path_type.strip().lower() == "closed"
@@ -1313,16 +1465,24 @@ def compute_phase(args: argparse.Namespace) -> str:
         s_mat = r0.T @ rend
         holonomy_angle = float(math.atan2(s_mat[1, 0], s_mat[0, 0]))
 
-    group_atom_indices, group_s = build_atom_groups(atoms, s_vals)
-    atom_to_group = np.full(len(atoms), -1, dtype=int)
-    for gid_loop, idx_list in enumerate(group_atom_indices):
-        for idx_loop in idx_list:
-            atom_to_group[idx_loop] = gid_loop
-    gid = int(atom_to_group[selected_idx])
-    if gid < 0:
-        raise SystemExit("Internal error: selected atom was not assigned to a Curve It atom group.")
+    if selection.source_atom_index is not None:
+        # Retain Curve It's existing rigid-group placement for a single real atom.
+        group_atom_indices, group_s = build_atom_groups(atoms, s_vals)
+        atom_to_group = np.full(len(atoms), -1, dtype=int)
+        for gid_loop, idx_list in enumerate(group_atom_indices):
+            for idx_loop in idx_list:
+                atom_to_group[idx_loop] = gid_loop
+        gid = int(atom_to_group[selection.source_atom_index])
+        if gid < 0:
+            raise SystemExit("Internal error: selected atom was not assigned to a Curve It atom group.")
+        s_group = float(group_s[gid])
+        w_axis = float(s_vals[selection.source_atom_index] - s_group)
+    else:
+        # A virtual point and a centroid are not PDB atoms, so map the point as
+        # its own group at its principal-axis coordinate.
+        s_group = selection_s
+        w_axis = 0.0
 
-    s_group = float(group_s[gid])
     group_s_query, group_phi_lap, lap = group_query_like_curve_it(
         mode, closed, total, helix_len, s_min, s_group, holonomy_angle
     )
@@ -1332,9 +1492,8 @@ def compute_phase(args: argparse.Namespace) -> str:
 
     # Curve It places atoms in a rigid group at:
     #   group_pos + u*N + v*B + (s_atom - s_group)*T
-    # The local-axis point corresponding to the selected atom is therefore the
-    # group center shifted by w_axis along the tangent.
-    w_axis = float(s_vals[selected_idx] - s_group)
+    # For a selected real atom, the local-axis point is its group center shifted
+    # by w_axis. Virtual points and centroids use a one-point group, so w_axis=0.
     local_axis_point = group_pos + w_axis * group_T
 
     target_info = compute_target_direction(
@@ -1359,15 +1518,15 @@ def compute_phase(args: argparse.Namespace) -> str:
 
     # Curve It first applies linear twist, then global helix_phase, then closed-loop
     # lap/holonomy correction if applicable. We solve for the global helix_phase.
-    u0 = float(local[selected_idx, 0])
-    v0 = float(local[selected_idx, 1])
+    u0 = float(selection_local[0])
+    v0 = float(selection_local[1])
     if math.hypot(u0, v0) < 1e-8:
         raise SystemExit(
-            "The selected atom is too close to the PDB principal axis; its radial direction is ill-defined."
+            "The selected point is too close to the PDB principal axis; its radial direction is ill-defined."
         )
 
     twist_rad = math.radians(float(args.twist))
-    t_norm_atom = float((s_vals[selected_idx] - s_min) / helix_len)
+    t_norm_atom = float((selection_s - s_min) / helix_len)
     u_twist, v_twist = rotate_xy(u0, v0, twist_rad * t_norm_atom)
     atom_angle = math.atan2(v_twist, u_twist)
 
@@ -1407,8 +1566,7 @@ def compute_phase(args: argparse.Namespace) -> str:
 
     return build_phase_report(
         args=args,
-        atom=selected_atom,
-        atom_idx=selected_idx,
+        selection=selection,
         phase_deg=phase_deg,
         phase_signed_deg=phase_signed_deg,
         target_angle_deg=math.degrees(target_angle),
@@ -1427,7 +1585,8 @@ def compute_phase(args: argparse.Namespace) -> str:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Compute Curve It's --helix_phase angle so a selected atom faces a "
+            "Compute Curve It's --helix_phase angle so a selected real atom, "
+            "real-atom centroid, or virtual point faces a "
             "specified direction along any sufficiently smooth sampled space curve."
         )
     )
@@ -1440,7 +1599,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Open the Tkinter GUI. GUI mode is also used automatically when no arguments are given.",
     )
 
-    # Kept for compatibility with V2/V3 GUIs/scripts. V5 does not need to import curve_it.py.
+    # Kept for compatibility with V2/V3 GUIs/scripts. V5_1 does not need to import curve_it.py.
     parser.add_argument(
         "--curve-it-dir",
         default=None,
@@ -1448,6 +1607,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     sel = parser.add_argument_group("atom selection")
+    sel.add_argument(
+        "--selection-mode",
+        choices=["real", "virtual"],
+        default=None,
+        help=(
+            "Select real PDB atom(s) or a virtual x,y,z point. Default: virtual when "
+            "--virtual-atom is supplied; otherwise real."
+        ),
+    )
+    sel.add_argument(
+        "--virtual-atom",
+        type=lambda s: parse_vec3(s, "--virtual-atom"),
+        default=None,
+        help="Virtual source-space point x,y,z in Angstrom, used with --selection-mode virtual.",
+    )
+    sel.add_argument(
+        "--real-atom",
+        action="append",
+        default=None,
+        metavar="CHAIN:RESSEQ:ATOM_NAME",
+        help=(
+            "Repeat to select real atoms whose centroid is used for phase calculation, "
+            "for example --real-atom A:12:P --real-atom B:12:P. Use _ for a blank chain."
+        ),
+    )
     sel.add_argument("--atom-serial", type=int, default=None, help="PDB atom serial number, columns 7-11.")
     sel.add_argument("--atom-index0", type=int, default=None, help="Zero-based ATOM/HETATM index after PDB parsing.")
     sel.add_argument("--atom-name", default=None, help="Atom name, e.g. P, C1', N1, C6.")
@@ -1621,7 +1805,7 @@ def run_gui(
 
     owns_mainloop = parent is None
     root = tk.Tk() if owns_mainloop else tk.Toplevel(parent)
-    root.title("Curve It phase helper V5")
+    root.title("Curve It phase helper V5_1")
     set_optional_window_icon(
         root,
         tk,
@@ -1667,6 +1851,21 @@ def run_gui(
         "atom_name": (
             "Atom name",
             "PDB atom name whose radial direction should be aimed. Examples: P, C1', N1, C6."
+        ),
+        "selection_mode": (
+            "Selection type",
+            "Choose Real atom(s) to select one or more PDB atoms, or Virtual atom to enter an arbitrary x,y,z point. "
+            "When multiple real atoms are selected, their centroid is used for the phase calculation."
+        ),
+        "real_atom_count": (
+            "Number of real atoms",
+            "Number of individual real-atom selection rows to show. Each row must identify exactly one PDB atom using ChainID, "
+            "ResNumber, and Atom name. With more than one row, the selected atoms' centroid is used."
+        ),
+        "virtual_atom": (
+            "Virtual atom (A)",
+            "An arbitrary source-space x,y,z point in Angstrom, not required to exist in the input PDB. "
+            "It is mapped as its own point when calculating the phase."
         ),
         "scale_mode": (
             "Scale mode",
@@ -1806,15 +2005,124 @@ def run_gui(
     row = add_path_row(frame, row, "Output report", "output", _namespace_value(initial, "output", ""), browse="save")
 
     row = add_section(frame, row, "Atom selection")
-    row = add_compact_row(
-        frame,
-        row,
-        [
-            ("ChainID", "chain", _namespace_value(initial, "chain", ""), "entry", None, 8, "chain"),
-            ("ResNumber", "resseq", _namespace_value(initial, "resseq", ""), "entry", None, 10, "resseq"),
-            ("Atom name", "atom_name", _namespace_value(initial, "atom_name", ""), "entry", None, 12, "atom_name"),
-        ],
+    atom_selection_frame = tk.Frame(frame)
+    atom_selection_frame.grid(row=row, column=0, columnspan=9, sticky="ew", padx=4, pady=2)
+    atom_selection_frame.columnconfigure(6, weight=1)
+    row += 1
+
+    selection_mode_default = _namespace_value(initial, "selection_mode", "real")
+    if str(selection_mode_default).strip().lower() not in {"real", "virtual"}:
+        selection_mode_default = "real"
+    selection_mode_var = tk.StringVar(value=str(selection_mode_default).strip().lower())
+    vars_dict["selection_mode"] = selection_mode_var
+    tk.Label(atom_selection_frame, text="Choose", anchor="w").grid(row=0, column=0, sticky="w", padx=(0, 2), pady=2)
+    tk.Radiobutton(
+        atom_selection_frame, text="Real atom(s)", variable=selection_mode_var, value="real"
+    ).grid(row=0, column=1, sticky="w", padx=(2, 8), pady=2)
+    tk.Radiobutton(
+        atom_selection_frame, text="Virtual atom", variable=selection_mode_var, value="virtual"
+    ).grid(row=0, column=2, sticky="w", padx=(2, 8), pady=2)
+    help_button(atom_selection_frame, "selection_mode").grid(row=0, column=3, sticky="w", padx=(0, 8), pady=2)
+
+    initial_real_rows = _namespace_value(initial, "real_atom_selections", [])
+    if not isinstance(initial_real_rows, list):
+        initial_real_rows = []
+    if not initial_real_rows:
+        initial_real_rows = [{
+            "chain": _namespace_value(initial, "chain", ""),
+            "resseq": _namespace_value(initial, "resseq", ""),
+            "atom_name": _namespace_value(initial, "atom_name", ""),
+        }]
+    initial_real_count = _namespace_value(initial, "real_atom_count", len(initial_real_rows))
+    try:
+        initial_real_count = max(1, int(initial_real_count))
+    except (TypeError, ValueError):
+        initial_real_count = max(1, len(initial_real_rows))
+
+    tk.Label(atom_selection_frame, text="Number of real atoms", anchor="w").grid(
+        row=1, column=0, sticky="w", padx=(0, 2), pady=2
     )
+    real_atom_count_var = tk.StringVar(value=str(initial_real_count))
+    vars_dict["real_atom_count"] = real_atom_count_var
+    real_atom_count_entry = tk.Entry(atom_selection_frame, textvariable=real_atom_count_var, width=6)
+    widgets_dict["real_atom_count"] = real_atom_count_entry
+    real_atom_count_entry.grid(row=1, column=1, sticky="w", padx=(2, 8), pady=2)
+    help_button(atom_selection_frame, "real_atom_count").grid(row=1, column=2, sticky="w", padx=(0, 8), pady=2)
+
+    tk.Label(atom_selection_frame, text="Virtual atom (x,y,z A)", anchor="w").grid(
+        row=1, column=3, sticky="w", padx=(4, 2), pady=2
+    )
+    virtual_atom_var = tk.StringVar(
+        value=_vec3_to_text(_namespace_value(initial, "virtual_atom", np.array([0.0, 0.0, 0.0])), "0,0,0")
+    )
+    vars_dict["virtual_atom"] = virtual_atom_var
+    virtual_atom_entry = tk.Entry(atom_selection_frame, textvariable=virtual_atom_var, width=22)
+    widgets_dict["virtual_atom"] = virtual_atom_entry
+    virtual_atom_entry.grid(row=1, column=4, sticky="w", padx=(2, 8), pady=2)
+    help_button(atom_selection_frame, "virtual_atom").grid(row=1, column=5, sticky="w", padx=(0, 8), pady=2)
+
+    real_rows_frame = tk.Frame(atom_selection_frame)
+    real_rows_frame.grid(row=2, column=0, columnspan=7, sticky="ew", pady=(2, 0))
+    real_atom_rows: List[Dict[str, Any]] = []
+    real_atom_row_widgets: List[Any] = []
+    saved_real_atom_values: List[Dict[str, str]] = []
+    for initial_row in initial_real_rows:
+        if isinstance(initial_row, dict):
+            saved_real_atom_values.append({
+                "chain": "" if initial_row.get("chain") is None else str(initial_row.get("chain")),
+                "resseq": "" if initial_row.get("resseq") is None else str(initial_row.get("resseq")),
+                "atom_name": "" if initial_row.get("atom_name") is None else str(initial_row.get("atom_name")),
+            })
+
+    def rebuild_real_atom_rows(*_args: Any) -> None:
+        nonlocal saved_real_atom_values
+        try:
+            count = int(real_atom_count_var.get().strip())
+        except ValueError:
+            return
+        if count < 1 or count > 100:
+            return
+
+        if real_atom_rows:
+            current_values = [
+                {key: row_vars[key].get() for key in ("chain", "resseq", "atom_name")}
+                for row_vars in real_atom_rows
+            ]
+            for index, values in enumerate(current_values):
+                if index < len(saved_real_atom_values):
+                    saved_real_atom_values[index] = values
+                else:
+                    saved_real_atom_values.append(values)
+        for child in real_rows_frame.winfo_children():
+            child.destroy()
+        real_atom_rows.clear()
+        real_atom_row_widgets.clear()
+
+        headers = ("#", "ChainID", "ResNumber", "Atom name")
+        for column, header in enumerate(headers):
+            tk.Label(real_rows_frame, text=header, anchor="w").grid(
+                row=0, column=column, sticky="w", padx=(0, 6), pady=(0, 1)
+            )
+        for index in range(count):
+            values = saved_real_atom_values[index] if index < len(saved_real_atom_values) else {}
+            tk.Label(real_rows_frame, text=str(index + 1), anchor="w").grid(
+                row=index + 1, column=0, sticky="w", padx=(0, 6), pady=1
+            )
+            row_vars: Dict[str, Any] = {}
+            for column, key, width in ((1, "chain", 8), (2, "resseq", 10), (3, "atom_name", 12)):
+                var = tk.StringVar(value=values.get(key, ""))
+                entry = tk.Entry(real_rows_frame, textvariable=var, width=width)
+                entry.grid(row=index + 1, column=column, sticky="w", padx=(0, 6), pady=1)
+                row_vars[key] = var
+                real_atom_row_widgets.append(entry)
+            real_atom_rows.append(row_vars)
+
+        is_real = selection_mode_var.get() == "real"
+        for widget in real_atom_row_widgets:
+            widget.config(state="normal" if is_real else "disabled")
+
+    real_atom_count_var.trace_add("write", rebuild_real_atom_rows)
+    rebuild_real_atom_rows()
 
     row = add_section(frame, row, "Curve It mapping options")
     row = add_compact_row(
@@ -1927,6 +2235,13 @@ def run_gui(
             return False
 
     def update_dynamic_fields(*_args: Any) -> None:
+        selection_mode = (vars_dict["selection_mode"].get() or "real").strip().lower()
+        is_real_selection = selection_mode == "real"
+        set_widget_enabled("real_atom_count", is_real_selection)
+        set_widget_enabled("virtual_atom", selection_mode == "virtual")
+        for widget in real_atom_row_widgets:
+            widget.config(state="normal" if is_real_selection else "disabled")
+
         interp_mode = (vars_dict["interp_mode"].get() or "none").strip().lower()
         set_widget_enabled("interp_n", interp_mode == "n")
         set_widget_enabled("interp_p", interp_mode == "p")
@@ -1945,7 +2260,7 @@ def run_gui(
         set_widget_enabled("target_point", target_mode == "toward_point")
         set_widget_enabled("custom_vector", target_mode == "custom_vector")
 
-    for dynamic_key in ("interp_mode", "path_type", "scale_mode", "target_mode"):
+    for dynamic_key in ("selection_mode", "interp_mode", "path_type", "scale_mode", "target_mode"):
         vars_dict[dynamic_key].trace_add("write", update_dynamic_fields)
     update_dynamic_fields()
 
@@ -1961,19 +2276,53 @@ def run_gui(
             custom_vector = parse_vec3(vars_dict["custom_vector"].get(), "custom-vector")
         except argparse.ArgumentTypeError as exc:
             raise ValueError(str(exc))
+
+        selection_mode = (vars_dict["selection_mode"].get() or "real").strip().lower()
+        real_atom_selections: Optional[List[Dict[str, Any]]] = None
+        virtual_atom: Optional[np.ndarray] = None
+        if selection_mode == "real":
+            try:
+                real_atom_count = int(vars_dict["real_atom_count"].get().strip())
+            except ValueError:
+                raise ValueError("Number of real atoms must be a positive integer.")
+            if real_atom_count < 1 or real_atom_count > 100:
+                raise ValueError("Number of real atoms must be between 1 and 100.")
+            if real_atom_count != len(real_atom_rows):
+                raise ValueError("Update the number of real atoms to show all selection rows.")
+            real_atom_selections = []
+            for row_number, row_vars in enumerate(real_atom_rows, start=1):
+                atom_name = _optional_text(row_vars["atom_name"].get())
+                resseq = _optional_int(row_vars["resseq"].get(), "ResNumber for real atom {}".format(row_number))
+                if atom_name is None or resseq is None:
+                    raise ValueError("Real atom {} needs both ResNumber and Atom name.".format(row_number))
+                real_atom_selections.append({
+                    "chain": _optional_text(row_vars["chain"].get()),
+                    "resseq": resseq,
+                    "atom_name": atom_name,
+                })
+        elif selection_mode == "virtual":
+            try:
+                virtual_atom = parse_vec3(vars_dict["virtual_atom"].get(), "Virtual atom")
+            except argparse.ArgumentTypeError as exc:
+                raise ValueError(str(exc))
+        else:
+            raise ValueError("Choose either Real atom(s) or Virtual atom.")
+
         return argparse.Namespace(
             gui=True,
             input_pdb=_required_path(vars_dict["input_pdb"].get(), "Input PDB"),
             curve_xyz=_required_path(vars_dict["curve_xyz"].get(), "Curve XYZ/text"),
             curve_it_dir=None,
             output=_optional_text(vars_dict["output"].get()),
-            # The compact GUI intentionally uses only ChainID, ResNumber, and Atom name.
-            # CLI mode still supports atom serial/index0/insertion-code/resname for batch scripts.
+            selection_mode=selection_mode,
+            virtual_atom=virtual_atom,
+            real_atom=None,
+            real_atom_selections=real_atom_selections,
             atom_serial=None,
             atom_index0=None,
-            atom_name=_optional_text(vars_dict["atom_name"].get()),
-            chain=_optional_text(vars_dict["chain"].get()),
-            resseq=_optional_int(vars_dict["resseq"].get(), "ResNumber"),
+            atom_name=None,
+            chain=None,
+            resseq=None,
             icode=None,
             resname=None,
             scale_mode=vars_dict["scale_mode"].get().strip() or "none",
