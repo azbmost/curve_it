@@ -2,7 +2,7 @@
 """
 cal_xyz_total_curvature_writheV2.py
 
-Compute the total curvature and approximate writhe of a closed 3D curve.
+Compute total curvature and exact mapped-polyline writhe of a closed 3D curve.
 
 This script can read both:
 
@@ -24,12 +24,12 @@ Input:
 Output:
   - total curvature
   - total curvature divided by pi
-  - approximate writhe
+  - exact writhe of the closed polyline through the input points
 
 Examples:
   python curve_it_lib/cal_xyz_total_curvature_writheV2.py curve_coords.txt
   python curve_it_lib/cal_xyz_total_curvature_writheV2.py curve.xyz --molecule
-  python curve_it_lib/cal_xyz_total_curvature_writheV2.py curve.xyz --format auto --nsamples 800
+  python curve_it_lib/cal_xyz_total_curvature_writheV2.py curve.xyz --format auto
 """
 
 import argparse
@@ -292,6 +292,100 @@ def fit_spline_and_calculate_curvature(points: np.ndarray) -> float:
     return total_curvature
 
 
+def solid_angle_between_segments(
+    r1: np.ndarray,
+    r2: np.ndarray,
+    r3: np.ndarray,
+    r4: np.ndarray,
+) -> np.ndarray:
+    """Return half the signed solid angle between two oriented segments.
+
+    The two-atan formula integrates the Gauss kernel exactly for the segment
+    pair.  The returned half-angle convention is convenient for the symmetric
+    polygonal-writhe sum in :func:`calculate_polyline_writhe`.
+    """
+    r1 = np.asarray(r1, dtype=float)
+    r2 = np.asarray(r2, dtype=float)
+    r3 = np.asarray(r3, dtype=float)
+    r4 = np.asarray(r4, dtype=float)
+
+    a = r3 - r1
+    b = r3 - r2
+    c = r4 - r2
+    d = r4 - r1
+    c_cross_a = np.cross(c, a)
+    abs_a = np.linalg.norm(a, axis=-1)
+    abs_c = np.linalg.norm(c, axis=-1)
+    ac2 = abs_a * abs_c + np.sum(a * c, axis=-1)
+    ac2_vector = a * np.expand_dims(abs_c, axis=-1) + c * np.expand_dims(
+        abs_a, axis=-1
+    )
+
+    first = np.arctan2(
+        np.sum(b * c_cross_a, axis=-1),
+        ac2 * np.linalg.norm(b, axis=-1) + np.sum(b * ac2_vector, axis=-1),
+    )
+    second = np.arctan2(
+        np.sum(d * c_cross_a, axis=-1),
+        ac2 * np.linalg.norm(d, axis=-1) + np.sum(d * ac2_vector, axis=-1),
+    )
+    return first - second
+
+
+def calculate_polyline_writhe(points: np.ndarray) -> float:
+    """Return the writhe of the exact closed polyline through ``points``.
+
+    Each nonadjacent segment-pair Gauss integral is evaluated analytically as
+    a signed solid angle.  Coincident and adjacent pairs, including the pair
+    adjacent across the closing seam, contribute zero and are excluded.  This
+    is the appropriate writhe for Curve It's piecewise-linear mapping path.
+    """
+    pts = strip_duplicate_endpoint(np.asarray(points, dtype=float))
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        raise ValueError("Polyline writhe expects an N x 3 coordinate array.")
+    if len(pts) < 4:
+        raise ValueError("Polyline writhe needs at least four distinct points.")
+    if not np.all(np.isfinite(pts)):
+        raise ValueError("Polyline writhe received non-finite coordinates.")
+
+    # Translation and uniform scaling leave writhe invariant.  Normalization
+    # improves the conditioning of the solid-angle calculation.
+    pts = pts - np.mean(pts, axis=0)
+    coordinate_span = float(np.max(np.ptp(pts, axis=0)))
+    if not math.isfinite(coordinate_span) or coordinate_span <= 1.0e-15:
+        raise ValueError("Polyline coordinates are degenerate.")
+    pts = pts / coordinate_span
+
+    segments = np.roll(pts, -1, axis=0) - pts
+    if np.any(np.linalg.norm(segments, axis=1) <= 1.0e-14):
+        raise ValueError("Polyline writhe cannot use zero-length segments.")
+
+    half_angle_sum = 0.0
+    segment_count = len(pts)
+    for first_index in range(segment_count - 2):
+        # j >= i+2 excludes the same and immediately adjacent segments.  For
+        # i=0, segment n-1 is also adjacent across the periodic seam.
+        stop = segment_count - 1 if first_index == 0 else segment_count
+        second_indices = np.arange(first_index + 2, stop, dtype=int)
+        if second_indices.size == 0:
+            continue
+        half_angles = solid_angle_between_segments(
+            pts[first_index],
+            pts[(first_index + 1) % segment_count],
+            pts[second_indices],
+            pts[(second_indices + 1) % segment_count],
+        )
+        if not np.all(np.isfinite(half_angles)):
+            raise ValueError(
+                "Polyline writhe is undefined for intersecting or degenerate segments."
+            )
+        half_angle_sum += float(np.sum(half_angles))
+
+    # The omitted lower triangle contributes the same value.  Each helper
+    # result is half a solid angle, so both factors of two cancel against 2*pi.
+    return half_angle_sum / math.pi
+
+
 def calculate_writhe(points: np.ndarray, n_samples: int = 400) -> float:
     """
     Approximate writhe using the Gauss double integral on a spline sample.
@@ -374,12 +468,18 @@ def parse_args() -> argparse.Namespace:
         "--nsamples",
         type=int,
         default=400,
-        help="Number of samples used for writhe approximation. Default: 400."
+        help=(
+            "Deprecated compatibility option. Mapped-polyline writhe uses all "
+            "input segments exactly."
+        ),
     )
     parser.add_argument(
         "--no-smooth",
         action="store_true",
-        help="Disable Savitzky-Golay smoothing and use raw input points."
+        help=(
+            "Disable Savitzky-Golay smoothing for curvature. Writhe always "
+            "uses the exact raw closed polyline."
+        ),
     )
     return parser.parse_args()
 
@@ -401,18 +501,21 @@ def main() -> None:
 
     print("[INFO] Reading points from: {}".format(filename))
     print("[INFO] Input format: {}".format(file_format))
-    print("[INFO] Smoothing: {}".format("off" if args.no_smooth else "on"))
+    print("[INFO] Curvature smoothing: {}".format("off" if args.no_smooth else "on"))
 
-    points = read_xyz_like(filename, file_format=file_format, smooth=(not args.no_smooth))
-    print("[INFO] Loaded {} points.".format(len(points)))
+    raw_points = read_xyz_like(filename, file_format=file_format, smooth=False)
+    curvature_points = (
+        raw_points if args.no_smooth else smooth_closed_points(raw_points)
+    )
+    print("[INFO] Loaded {} points.".format(len(raw_points)))
 
-    total_curvature = fit_spline_and_calculate_curvature(points)
+    total_curvature = fit_spline_and_calculate_curvature(curvature_points)
     print("\nTotal Curvature of the Curve:")
     print(total_curvature)
     print("({} * pi)".format(total_curvature / math.pi))
 
-    writhe = calculate_writhe(points, n_samples=args.nsamples)
-    print("\nApproximate Writhe of the Curve:")
+    writhe = calculate_polyline_writhe(raw_points)
+    print("\nMapped Closed-Polyline Writhe:")
     print(writhe)
 
 

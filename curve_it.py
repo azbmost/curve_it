@@ -139,7 +139,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_5"
+APP_VERSION = "V3_8"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -154,8 +154,8 @@ except Exception:
 # Optional import of curvature & writhe utilities + smoothing support
 try:
     from curve_it_lib.cal_xyz_total_curvature_writheV2 import (
+        calculate_polyline_writhe,
         fit_spline_and_calculate_curvature,
-        calculate_writhe,
     )
     from scipy.signal import savgol_filter
     HAVE_CURVATURE_WRITHE = True
@@ -1009,6 +1009,41 @@ def smooth_closed_curve_force(points: np.ndarray) -> np.ndarray:
     smoothed = smoothed_ext[half_window:-half_window]
     return smoothed
 
+def rotate_by_minimal_tangent_rotation(
+    vector: np.ndarray,
+    tangent_from: np.ndarray,
+    tangent_to: np.ndarray,
+    fallback_axis: Optional[np.ndarray] = None,
+    eps: float = 1e-8,
+) -> np.ndarray:
+    """Rotate ``vector`` by the smallest rotation from one unit tangent to another."""
+    rotation_axis = np.cross(tangent_from, tangent_to)
+    sin_angle = float(np.linalg.norm(rotation_axis))
+    cos_angle = float(np.clip(np.dot(tangent_from, tangent_to), -1.0, 1.0))
+
+    if sin_angle < eps:
+        if cos_angle >= 0.0:
+            return np.asarray(vector, dtype=float).copy()
+        axis = (
+            np.asarray(fallback_axis, dtype=float).copy()
+            if fallback_axis is not None
+            else np.asarray(vector, dtype=float).copy()
+        )
+        axis -= np.dot(axis, tangent_from) * tangent_from
+        axis_norm = float(np.linalg.norm(axis))
+        if axis_norm < eps:
+            raise ValueError("Could not choose an axis for a 180-degree curve turn.")
+        axis /= axis_norm
+        return -vector + 2.0 * np.dot(axis, vector) * axis
+
+    rotation_axis /= sin_angle
+    return (
+        cos_angle * vector
+        + sin_angle * np.cross(rotation_axis, vector)
+        + (1.0 - cos_angle) * np.dot(rotation_axis, vector) * rotation_axis
+    )
+
+
 def compute_parallel_transport_frames(points: np.ndarray,
                                       eps: float = 1e-8
                                       ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -1016,9 +1051,9 @@ def compute_parallel_transport_frames(points: np.ndarray,
     Compute a discrete parallel-transport (Bishop) frame along a polyline.
 
     Returns three (M,3) arrays: N, B, T at each point, where T is the unit
-    tangent, and N,B span the normal plane. The frame is propagated by
-    projecting the previous normal onto the new normal plane, which closely
-    approximates a rotation-minimizing frame.
+    tangent, and N,B span the normal plane. The frame is propagated by the
+    exact minimal rotation between neighboring segment tangents. This avoids
+    the spurious accumulated twist produced by repeated normal projection.
     """
     M = points.shape[0]
     if M < 2:
@@ -1055,22 +1090,21 @@ def compute_parallel_transport_frames(points: np.ndarray,
         Ti = v / np.linalg.norm(v)
         T[i] = Ti
 
+        t_prev = T[i - 1]
         n_prev = N[i - 1]
-        n_i = n_prev - np.dot(n_prev, Ti) * Ti
-        n_norm = np.linalg.norm(n_i)
+        n_i = rotate_by_minimal_tangent_rotation(
+            n_prev,
+            t_prev,
+            Ti,
+            fallback_axis=B[i - 1],
+            eps=eps,
+        )
 
+        # Remove roundoff only; the exact rotation keeps n_i normal to Ti.
+        n_i -= np.dot(n_i, Ti) * Ti
+        n_norm = float(np.linalg.norm(n_i))
         if n_norm < eps:
-            b_prev = B[i - 1]
-            n_i = b_prev - np.dot(b_prev, Ti) * Ti
-            n_norm = np.linalg.norm(n_i)
-
-            if n_norm < eps:
-                tmp = np.array([1.0, 0.0, 0.0])
-                if abs(np.dot(tmp, Ti)) > 0.9:
-                    tmp = np.array([0.0, 1.0, 0.0])
-                n_i = tmp - np.dot(tmp, Ti) * Ti
-                n_norm = np.linalg.norm(n_i)
-
+            raise ValueError("Could not propagate a stable frame across a curve turn.")
         n_i /= n_norm
         b_i = np.cross(Ti, n_i)
         b_i /= np.linalg.norm(b_i)
@@ -1583,11 +1617,41 @@ def embed_helix_on_curve(atoms: List[AtomRecord],
     # ---- Holonomy per loop (for closed curves) ----
     holonomy_angle = 0.0
     if closed:
-        R0 = np.column_stack((Nf[0], Bf[0], Tf[0]))
-        Rend = np.column_stack((Nf[-1], Bf[-1], Tf[-1]))
-        S = R0.T @ Rend  # rotation from start frame to end frame in body coords
-        holonomy_angle = float(np.arctan2(S[1, 0], S[0, 0]))
-        print(f"[INFO] Approximate holonomy per loop (deg): {np.degrees(holonomy_angle):.3f}")
+        # Complete the final-to-initial tangent turn before comparing normals.
+        # This measures one full traversal of the exact closed polyline.
+        end_normal_aligned = rotate_by_minimal_tangent_rotation(
+            Nf[-1],
+            Tf[-1],
+            Tf[0],
+            fallback_axis=Bf[-1],
+        )
+        holonomy_angle = float(
+            np.arctan2(
+                np.dot(Bf[0], end_normal_aligned),
+                np.dot(Nf[0], end_normal_aligned),
+            )
+        )
+        mapped_writhe = float(calculate_polyline_writhe(pts))
+        writhe_residual_angle = float(
+            2.0 * np.pi * (mapped_writhe - np.rint(mapped_writhe))
+        )
+        consistency_delta = float(
+            np.arctan2(
+                np.sin(holonomy_angle - writhe_residual_angle),
+                np.cos(holonomy_angle - writhe_residual_angle),
+            )
+        )
+        print(f"[INFO] Exact mapped-polyline writhe: {mapped_writhe:.6f}")
+        print(f"[INFO] Exact frame holonomy per loop (deg): {np.degrees(holonomy_angle):.3f}")
+        print(
+            "[INFO] Holonomy/writhe consistency delta (deg): "
+            f"{np.degrees(consistency_delta):+.6f}"
+        )
+        if abs(consistency_delta) > 1.0e-4:
+            raise ValueError(
+                "Closed-frame holonomy is inconsistent with the writhe of the "
+                "mapped polyline; refusing to report or map mismatched geometry."
+            )
     else:
         print("[INFO] Path is open; holonomy angle not used.")
 
@@ -1817,16 +1881,23 @@ def compute_curve_metrics(points: np.ndarray,
         curvature_mode:
             - 'auto' (default): detect polygon-like curves and use a robust
               polyline total curvature for cornered curves; otherwise use the
-              periodic spline curvature.
+              periodic spline curvature of the supplied coordinates without
+              changing the geometry.
             - 'polyline': always use polyline total curvature (sum of turning angles).
             - 'spline': always use periodic spline curvature (requires curvature tools);
               for sharp corners this can overestimate total curvature.
 
     Notes:
-        - Length is always computed from the *given* polyline points.
+        - Length is computed from the given polyline points. For a closed
+          curve, it includes the final-to-first closing segment unless that
+          segment is already represented by a duplicated endpoint.
         - Total curvature and writhe are only meaningful for closed curves.
     """
-    length = float(compute_arc_lengths(points)[-1])
+    points_for_length = np.asarray(points, dtype=float)
+    if closed and len(points_for_length) >= 2:
+        if np.linalg.norm(points_for_length[-1] - points_for_length[0]) > 1.0e-12:
+            points_for_length = np.vstack((points_for_length, points_for_length[0]))
+    length = float(compute_arc_lengths(points_for_length)[-1])
 
     if not closed:
         return length, None, None
@@ -1859,8 +1930,8 @@ def compute_curve_metrics(points: np.ndarray,
     elif use_spline:
         try:
             # If the user explicitly requested spline mode, smooth even for polygon-like curves.
-            pts_smooth = smooth_closed_curve_force(points) if force_spline else smooth_closed_curve(points)
-            total_curv = fit_spline_and_calculate_curvature(pts_smooth)
+            points_for_spline = smooth_closed_curve_force(points) if force_spline else points
+            total_curv = fit_spline_and_calculate_curvature(points_for_spline)
         except Exception as e:
             print(f"[WARNING] compute_curve_metrics failed for spline curvature: {e}")
             total_curv = None
@@ -1868,13 +1939,9 @@ def compute_curve_metrics(points: np.ndarray,
     # --- Writhe ---
     if HAVE_CURVATURE_WRITHE:
         try:
-            if force_spline:
-                pts_for_writhe = smooth_closed_curve_force(points)
-            elif force_polyline or polygonal:
-                pts_for_writhe = points
-            else:
-                pts_for_writhe = smooth_closed_curve(points)
-            wr = calculate_writhe(pts_for_writhe, n_samples=400)
+            # Curvature mode never changes writhe: every Curve It report uses
+            # the exact closed polyline supplied for mapping.
+            wr = calculate_polyline_writhe(points)
         except Exception as e:
             print(f"[WARNING] compute_curve_metrics failed for writhe: {e}")
             wr = None
@@ -2049,7 +2116,10 @@ def launch_gui() -> None:
         ),
         "curve_metrics": (
             "Curve Metrics",
-            "Curve length is the polyline arc length. Total curvature and writhe are reported for closed curves only.\n\n"
+            "Curve length is the polyline arc length. Writhe is calculated from "
+            "that exact closed polyline, which is also the mapping path; changing "
+            "curvature mode does not change the writhe calculation. Total curvature "
+            "and writhe are reported for closed curves only.\n\n"
             "Use these as geometry checks before running the fit."
         ),
         "curve_components": (
@@ -2083,6 +2153,12 @@ def launch_gui() -> None:
             "Generate Helical Curve",
             "Open the circular helix curve generator.\n\n"
             "It writes a plain-coordinate XYZ file with one x y z point per line. The generated file can be loaded directly as a Curve It curve input."
+        ),
+        "generate_sc": (
+            "Generate SC",
+            "Open the plectonemic supercoil-axis generator.\n\n"
+            "It writes a closed, plain-coordinate XYZ curve that can be loaded directly as a Curve It curve input; use path type closed.\n\n"
+            "Generate SC V2_2 can automatically choose the opening angle by minimizing the largest local curvature (the default), minimizing total curvature, minimizing reduced bending energy (integral kappa(s)^2 ds), or matching the projected terminal- and middle-lobe z-heights in fixed xz. Equal-lobes mode requires integer |W| >= 2. A fifth mode retains a user-provided opening angle. The report includes the selected angle, curvature values, reduced bending energy, and applicable fixed-xz lobe-height measurements. W is verified from the exact written closed polyline using the same segment-pair calculation Curve It uses for mapping reports. When W is an integer, the tool also verifies exactly |W| visible crossings in the fixed xz projection; the sign selects the mirror image/handedness because a crossing count itself is unsigned. The tool separately reports the PCA plane and notes when it switches to yz. Its report also gives the two termini and both centerline peaks of every interior xz lobe as percentages of closed contour length from the first XYZ row."
         ),
         "plane_it": (
             "Plane It",
@@ -2284,8 +2360,7 @@ def launch_gui() -> None:
                 total_curv_var.set("N/A (curvature tools not available)")
 
         if wr is not None:
-            frac = wr - np.floor(wr)
-            wr_deg = frac * 360.0
+            wr_deg = (wr - np.rint(wr)) * 360.0
             writhe_var.set(f"{wr:.6f} ({wr_deg:.3f}° residual)")
         else:
             writhe_var.set("N/A")
@@ -2966,6 +3041,26 @@ def launch_gui() -> None:
         except Exception as e:
             messagebox.showerror("Tool launch error", f"Failed to launch Generate Helical Curve:\n{e}")
 
+    def launch_generate_sc_tool() -> None:
+        script_path = resource_path(
+            os.path.join("curve_it_lib", "generate_sc_xyzV2_2.py")
+        )
+        if not os.path.isfile(script_path):
+            messagebox.showerror(
+                "Tool not found",
+                f"Could not find the Generate SC tool:\n{script_path}",
+            )
+            return
+        try:
+            import subprocess
+            if getattr(sys, "frozen", False):
+                command = [sys.executable, "--generate-sc-gui"]
+            else:
+                command = [sys.executable, script_path, "--gui"]
+            subprocess.Popen(command)
+        except Exception as e:
+            messagebox.showerror("Tool launch error", f"Failed to launch Generate SC:\n{e}")
+
     def launch_get_phase_tool() -> None:
         helix_path = (helix_pdb_path or helix_path_var.get()).strip()
         if not helix_path:
@@ -3415,18 +3510,19 @@ def launch_gui() -> None:
     tools_frame = tk.LabelFrame(root, text="Other tools", font=section_font)
     tools_frame.grid(row=6, column=0, sticky="nsew", padx=8, pady=6)
 
-    def add_tool_button(col: int, label: str, command: Any, topic_key: str) -> None:
+    def add_tool_button(row: int, col: int, label: str, command: Any, topic_key: str) -> None:
         cell = tk.Frame(tools_frame)
-        cell.grid(row=0, column=col, sticky="w", padx=(4, 14), pady=4)
+        cell.grid(row=row, column=col, sticky="w", padx=(4, 14), pady=4)
         tk.Button(cell, text=label, command=command).pack(side="left")
         help_button(cell, topic_key).pack(side="left", padx=(4, 0))
 
-    add_tool_button(0, "Convert XYZ...", convert_xyz_file_dialog, "xyz_convert")
-    add_tool_button(1, "Generate helical curve...", launch_generate_helical_curve_tool, "generate_helical_curve")
-    add_tool_button(2, "Local curvature/torsion...", launch_local_curvature_torsion_tool, "local_curvature_torsion")
-    add_tool_button(3, "Plane It...", launch_plane_it_tool, "plane_it")
-    add_tool_button(4, "Curved Connector...", launch_curved_connector_tool, "curved_connector")
-    for col in range(5):
+    add_tool_button(0, 0, "Convert XYZ...", convert_xyz_file_dialog, "xyz_convert")
+    add_tool_button(0, 1, "Generate helical curve...", launch_generate_helical_curve_tool, "generate_helical_curve")
+    add_tool_button(0, 2, "Generate SC...", launch_generate_sc_tool, "generate_sc")
+    add_tool_button(1, 0, "Local curvature/torsion...", launch_local_curvature_torsion_tool, "local_curvature_torsion")
+    add_tool_button(1, 1, "Plane It...", launch_plane_it_tool, "plane_it")
+    add_tool_button(1, 2, "Curved Connector...", launch_curved_connector_tool, "curved_connector")
+    for col in range(3):
         tools_frame.grid_columnconfigure(col, weight=1)
 
     # --- Run log frame ---
@@ -3822,6 +3918,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         help="Launch GUI mode instead of CLI.",
     )
     parser.add_argument(
+        "--generate-sc-gui",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "-v", "--version",
         action="version",
         version=f"{APP_NAME} {APP_VERSION}",
@@ -3829,6 +3930,17 @@ def main(argv: Optional[List[str]] = None) -> None:
     )
 
     args = parser.parse_args(argv)
+
+    # Frozen one-file apps cannot execute an extracted helper .py by passing
+    # it to sys.executable (which is the app binary, not a Python interpreter).
+    # This hidden dispatch keeps the Other tools launcher functional there.
+    if args.generate_sc_gui:
+        try:
+            from curve_it_lib import generate_sc_xyzV2_2
+            generate_sc_xyzV2_2.run_gui()
+        except Exception as exc:
+            raise SystemExit(f"Failed to launch Generate SC: {exc}")
+        return
 
     # Decide whether to use GUI:
     non_gui_tokens = [a for a in argv if a not in ("--gui", "-g")]
@@ -3935,21 +4047,20 @@ def main(argv: Optional[List[str]] = None) -> None:
         if args.path_type == "closed":
             try:
                 polygonal = curve_looks_polygonal(scaled_curve_pts)
-                curve_for_invariants = scaled_curve_pts if polygonal else smooth_closed_curve(scaled_curve_pts)
+                curve_for_invariants = scaled_curve_pts
                 if polygonal:
                     # Polygon-like curves can yield spuriously large curvature after periodic spline fitting.
                     total_curv = compute_discrete_total_curvature(scaled_curve_pts, closed=True)
                 else:
                     total_curv = fit_spline_and_calculate_curvature(curve_for_invariants)
-                wr = calculate_writhe(curve_for_invariants, n_samples=400)
+                wr = calculate_polyline_writhe(curve_for_invariants)
                 curv_pi = total_curv / np.pi
                 curv_deg = np.degrees(total_curv)
-                frac = wr - np.floor(wr)
-                wr_deg = frac * 360.0
+                wr_deg = (wr - np.rint(wr)) * 360.0
                 print("\n[INFO] Geometric invariants of (scaled) closed curve:")
                 print(f"       Total curvature: {total_curv:.6f} "
                       f"(≈ {curv_pi:.6f} * pi; {curv_deg:.3f}°)")
-                print(f"       Approximate writhe: {wr:.6f} "
+                print(f"       Mapped-polyline writhe: {wr:.6f} "
                       f"(residual {wr_deg:.3f}°)")
             except Exception as e:
                 print(f"[WARNING] Failed to compute curvature/writhe: {e}")

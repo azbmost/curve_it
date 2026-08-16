@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_5`
+Version: `V3_8`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -13,13 +13,14 @@ GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along An
 - Preserves local geometry with rigid group mapping:
   - nucleic acids: phosphate, sugar, and base groups
   - proteins and unknown residues: whole-residue groups
+- Reports closed-curve writhe from the exact piecewise-linear path used for mapping, using an analytic solid-angle sum over nonadjacent segment pairs. No smoothing or spline substitution is applied to mapped-polyline writhe.
 - Supports open and closed curves, curve scaling, path start control, helix phase rotation, extra twist, and optional curve interpolation.
 
 ## Requirements
 
 - Python 3.9 or newer
 - Required: `numpy`
-- Optional but recommended: `scipy` for curvature/writhe reporting and the local curvature/torsion tool
+- Required by **Generate SC**; otherwise optional but recommended: `scipy` for curvature/writhe reporting and the local curvature/torsion tool
 - Optional: `matplotlib` for the GUI curve viewer and local analysis plots
 - Optional: Tkinter for GUI mode. It is included with many Python installations.
 
@@ -182,6 +183,24 @@ python3 curve_it_lib/generate_helix_xyzV2.py -R 10 -c 2 -L 200 -n 1000 -o helix.
 python3 curve_it_lib/generate_helix_xyzV2.py -R 10 --pitch-angle-deg 20 --derive c-from-R -L 200 -o helix.xyz
 ```
 
+**Generate SC...** opens `curve_it_lib/generate_sc_xyzV2_2.py`. This tool writes a closed, plectonemic supercoil axis as a plain-coordinate XYZ file with the requested contour length and signed Gauss writhe. Before writing, it applies Curve It's periodic smoothing once, resamples the smoothed path, and rescales it to the requested closed contour length. Writhe is then verified by the same exact closed-polyline segment-pair calculation Curve It uses for mapping reports; curvature is evaluated from a periodic spline of the same written coordinates. The default output density is 2000 unique periodic points. Load the generated file as Curve It's curve input and use **Path type: closed**. The previous `generate_sc_xyzV2_1.py` path remains as a compatibility launcher for V2_2.
+
+Generate SC V2_2 can determine the opening angle automatically over its supported 5-85 degree search interval or retain a user-provided angle. The default, `--angle-objective max-local`, minimizes `max kappa(s)` to reduce the sharpest bend and generally favors a more compact curve. Choose `--angle-objective total` to minimize integrated total curvature, `K_total = integral kappa(s) ds`; this generally favors a shallow, elongated plectoneme. Choose `--angle-objective bending-energy` to minimize the reduced bending energy, `integral kappa(s)^2 ds`, evaluated after every candidate is periodically smoothed and scaled to the requested common contour length. For a homogeneous isotropic rod with constant bending rigidity `A` and no intrinsic curvature, the physical bending energy is `A/2` times this integral. Choose `--angle-objective equal-lobes` to make the terminal-lobe and middle-lobe heights equal in the fixed `xz` projection. Here height means z-span: each terminal value runs from the outermost crossing to its z-extreme tip, while every middle lobe spans two adjacent crossings. This mode requires integer `|W| >= 2` and verifies a relative mismatch no larger than 0.2 percent. Infeasible automatic candidates are skipped. The older name `--curvature-objective` remains an alias for `--angle-objective`.
+
+To bypass automatic optimization, supply `-a ANGLE` or `--opening-angle ANGLE`, strictly between 0 and 90 degrees. Curvature metrics use a periodic cubic spline of the once-smoothed output coordinates. Every mode reports the selected opening angle, total curvature in radians, largest local curvature, reduced bending energy in inverse-length units, minimum local bend radius, and applicable fixed-`xz` terminal/middle lobe heights and mismatch.
+
+For an integer request `W`, the generator constructs and verifies exactly `|W|` visible crossings in the fixed `xz` projection; its sign selects the mirror image/handedness because the number of crossings itself is unsigned. The tool separately reports the unconstrained PCA principal plane and its crossing count, including a note when a compact plectoneme makes PCA select `yz` instead of `xz`. Its summary also reports the two z-extreme termini and both centerline peak points of every interior `xz` lobe as percentages of the closed contour length measured from the first XYZ row. Projection crossing count and continuous Gauss writhe are mathematically distinct quantities. The supported educational range is `|W| <= 10`.
+
+You can also run Generate SC from the command line:
+
+```bash
+python3 curve_it_lib/generate_sc_xyzV2_2.py -L 340 -w -3 -n 2000 -o sc_softest_bend.xyz
+python3 curve_it_lib/generate_sc_xyzV2_2.py -L 340 -w -3 --angle-objective total -n 2000 -o sc_min_total.xyz
+python3 curve_it_lib/generate_sc_xyzV2_2.py -L 340 -w -3 --angle-objective bending-energy -n 2000 -o sc_min_bending_energy.xyz
+python3 curve_it_lib/generate_sc_xyzV2_2.py -L 340 -w -3 --angle-objective equal-lobes -n 2000 -o sc_equal_lobes.xyz
+python3 curve_it_lib/generate_sc_xyzV2_2.py -L 340 -w -3 -a 25 -n 2000 -o sc_25deg.xyz
+```
+
 **Local curvature/torsion...** opens `curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py`. This tool writes a CSV table with normalized path position, coordinates, local curvature, regularized local torsion, local writhe density, and diagnostic columns. Its GUI includes a quick-loading test example for a three-lobe trefoil knot, the `(2,3)` torus knot:
 
 ```text
@@ -296,6 +315,7 @@ Supporting scripts live in `curve_it_lib/`:
 - `cal_xyz_total_curvature_writheV2.py`
 - `cal_xyz_local_curvature_torsionV3_1.py`
 - `generate_helix_xyzV2.py`
+- `generate_sc_xyzV2_2.py` (`generate_sc_xyzV2_1.py` is a compatibility launcher)
 - `get_curve_it_phaseV5_1.py`
 - `curved_connectorV3_4.py`
 - `plane_itV3_8.py` (versioned Plane It implementation; use `plane_it.py` as the stable launcher)
@@ -309,6 +329,7 @@ python3 curve_it_lib/cal_xyz_total_curvature_writheV2.py curve.xyz
 python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py curve.xyz --no-plot
 python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py --example-trefoil --no-plot
 python3 curve_it_lib/generate_helix_xyzV2.py -R 10 -c 2 -L 200 -o helix.xyz
+python3 curve_it_lib/generate_sc_xyzV2_2.py -L 340 -w -3 -n 2000 -o sc.xyz
 python3 curve_it_lib/view_xyzV3.py curve.xyz
 python3 curve_it_lib/view_xyzV3.py multi_component.txt --components A,C
 ```

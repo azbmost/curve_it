@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+- Bumped Generate SC to **V2_2**, renamed its implementation to `curve_it_lib/generate_sc_xyzV2_2.py`, and retained `generate_sc_xyzV2_1.py` as a compatibility launcher.
+- Added the `bending-energy` automatic opening-angle objective, which minimizes the reduced elastic bending energy `integral kappa(s)^2 ds` on periodically smoothed candidates scaled to the requested common contour length.
+- Added reduced bending-energy reporting to the Generate SC CLI, GUI summary, completion dialog, and documentation for every automatic and manual opening-angle mode.
+
+## V3_8 - 2026-08-15
+
+- Changed Generate SC to smooth its final centerline once before writing, rescale that smoothed path to the requested contour length, and verify writhe/curvature directly from the serialized geometry without smoothing it again.
+- Increased Generate SC's default output density from 1000 to 2000 unique periodic points to reduce Curve It's discrete closed-frame transport error at modest runtime cost.
+- Unified Generate SC verification and Curve It CLI/GUI reporting on an exact solid-angle writhe sum for the same closed polyline used by mapping; periodic-spline writhe remains only an internal fast search heuristic.
+- Replaced projection-based frame propagation with exact minimal rotations between successive polyline tangents, eliminating accumulated artificial twist and making closed-frame holonomy agree with mapped-polyline writhe.
+- Bumped Generate SC to **V2_1** and renamed its implementation to `curve_it_lib/generate_sc_xyzV2_1.py`.
+- Added the `equal-lobes` automatic opening-angle objective, which matches terminal- and middle-lobe z-spans in the fixed `xz` projection for integer `|W| >= 2`.
+- Defined terminal projected height from each outermost crossing to its z-extreme tip and middle projected height between adjacent crossings; added a serialized-coordinate equality check with 0.2 percent relative tolerance.
+- Added top, bottom, mean terminal, middle, absolute-mismatch, relative-mismatch, and equality-check lines to Generate SC reports whenever integer `|W| >= 2`.
+- Added `--angle-objective` as the preferred CLI name while retaining `--curvature-objective` as an alias, and updated the GUI, frozen-app dispatch, Curve It help, README, and version metadata to `V3_8`.
+- Replaced Generate SC's non-selectable report label with a read-only, scrollable text log that supports mouse selection, Select All, and clipboard copying with Command-C or Control-C.
+
+## V3_7 - 2026-08-15
+
+- Replaced Generate SC V1 with `curve_it_lib/generate_sc_xyzV2.py` and bumped the helper to **Generate SC V2**.
+- Added two automatic opening-angle objectives while retaining the user-provided opening-angle option: minimize the largest local curvature (default) or minimize total curvature.
+- Added a deterministic coarse-to-fine opening-angle search over the documented 5-85 degree interval while preserving the requested length, fitted Gauss writhe, and integer fixed-`xz` crossing verification.
+- Added total curvature, largest local curvature, minimum local bend radius, selected mode, selected opening angle, and angle-search evaluation count to CLI and GUI reports for automatic and manual modes.
+- Updated the Generate SC GUI, command-line interface, frozen-app dispatch, Curve It help, and README examples for V2, and bumped Curve It version metadata to `V3_7`.
+
+## V3_6 - 2026-08-14
+
+- Added `curve_it_lib/generate_sc_xyzV1.py` as **Generate SC...** under the Curve It GUI **Other tools** area.
+- Added generation of closed plectonemic supercoil-axis XYZ curves fitted to a requested contour length and signed Gauss writhe.
+- For integer writhe requests, added verification that the fixed `xz` projection contains exactly `|W|` visible crossings; documented that this count and continuous Gauss writhe are distinct quantities even though Generate SC satisfies both constraints.
+- Made the plectoneme opening angle controllable from the Python API, command line, and GUI, with 25 degrees as the default.
+- Added separate PCA-plane reporting, including an explicit note when PCA selects `yz` rather than the guaranteed educational `xz` projection.
+- Added contour-landmark reporting for both z-extreme termini and both centerline peaks of every interior `xz` lobe, with XYZ row numbers and closed-length percentages measured from the first output row.
+- Revalidates the decimal coordinates that will actually be written, rejecting insufficient output precision instead of reporting a false length/writhe/crossing pass.
+- Added frozen-app dispatch so **Generate SC...** also launches from the documented PyInstaller one-file build.
+- Corrected closed-curve length reporting so the final-to-first seam is included when the input does not repeat its first point.
+- Wrapped the **Other tools** launchers into two rows and bumped Curve It version metadata to `V3_6`.
+
 ## V3_5 - 2026-07-14
 
 - Added `curve_it_lib/get_curve_it_phaseV5_1.py` for the integrated **Get phase** helper.
