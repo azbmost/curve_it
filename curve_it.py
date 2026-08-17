@@ -2158,7 +2158,7 @@ def launch_gui() -> None:
             "Generate SC",
             "Open the plectonemic supercoil-axis generator.\n\n"
             "It writes a closed, plain-coordinate XYZ curve that can be loaded directly as a Curve It curve input; use path type closed.\n\n"
-            "Generate SC V2_2 can automatically choose the opening angle by minimizing the largest local curvature (the default), minimizing total curvature, minimizing reduced bending energy (integral kappa(s)^2 ds), or matching the projected terminal- and middle-lobe z-heights in fixed xz. Equal-lobes mode requires integer |W| >= 2. A fifth mode retains a user-provided opening angle. The report includes the selected angle, curvature values, reduced bending energy, and applicable fixed-xz lobe-height measurements. W is verified from the exact written closed polyline using the same segment-pair calculation Curve It uses for mapping reports. When W is an integer, the tool also verifies exactly |W| visible crossings in the fixed xz projection; the sign selects the mirror image/handedness because a crossing count itself is unsigned. The tool separately reports the PCA plane and notes when it switches to yz. Its report also gives the two termini and both centerline peaks of every interior xz lobe as percentages of closed contour length from the first XYZ row."
+            "Generate SC V3_1 fits the exact serialized-polyline Gauss writhe used by Curve It and, for nonzero integer W, screens deterministic generic projections for the requested signed crossing sum. Its shortened arm phase retains exactly |W| crossings in fixed xz while improving projection robustness. Automatic opening-angle objectives minimize the largest local curvature (default), total curvature, or integral kappa(s)^2 ds; equal-lobes mode retains the legacy untrimmed phase and requires integer |W| >= 2. A manual mode retains a user-provided opening angle. The report includes phase-trim and multi-view diagnostics, curvature and reduced bending-energy metrics, PCA/fixed-xz checks, and applicable lobe/landmark measurements."
         ),
         "plane_it": (
             "Plane It",
@@ -3043,7 +3043,7 @@ def launch_gui() -> None:
 
     def launch_generate_sc_tool() -> None:
         script_path = resource_path(
-            os.path.join("curve_it_lib", "generate_sc_xyzV2_2.py")
+            os.path.join("curve_it_lib", "generate_sc_xyzV3_1.py")
         )
         if not os.path.isfile(script_path):
             messagebox.showerror(
@@ -3936,8 +3936,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     # This hidden dispatch keeps the Other tools launcher functional there.
     if args.generate_sc_gui:
         try:
-            from curve_it_lib import generate_sc_xyzV2_2
-            generate_sc_xyzV2_2.run_gui()
+            from curve_it_lib import generate_sc_xyzV3_1
+            generate_sc_xyzV3_1.run_gui()
         except Exception as exc:
             raise SystemExit(f"Failed to launch Generate SC: {exc}")
         return

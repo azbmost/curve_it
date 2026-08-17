@@ -2,9 +2,11 @@
 
 ## Unreleased
 
-- Bumped Generate SC to **V2_2**, renamed its implementation to `curve_it_lib/generate_sc_xyzV2_2.py`, and retained `generate_sc_xyzV2_1.py` as a compatibility launcher.
-- Added the `bending-energy` automatic opening-angle objective, which minimizes the reduced elastic bending energy `integral kappa(s)^2 ds` on periodically smoothed candidates scaled to the requested common contour length.
-- Added reduced bending-energy reporting to the Generate SC CLI, GUI summary, completion dialog, and documentation for every automatic and manual opening-angle mode.
+- Replaced the previous Generate SC implementations with standalone **Generate SC V3_1** at `curve_it_lib/generate_sc_xyzV3_1.py`, now the package's only `generate_sc_xyz*` supercoil generator.
+- Added projection-robust integer-writhe geometry: shortened arm-phase families, exact end-loop writhe refitting, deterministic generic-view signed-crossing screening, and final phase/fraction/histogram diagnostics while retaining the fixed-`xz` `|W|` crossing check.
+- Retained the `max-local`, `total`, `bending-energy`, `equal-lobes`, and manual opening-angle modes; `bending-energy` minimizes `integral kappa(s)^2 ds`, while `equal-lobes` deliberately uses the legacy untrimmed arm phase.
+- Added a final exact-polyline loop-control correction so the default 2000-point output remains within writhe tolerance through the supported `|W| <= 10` range.
+- Updated the Curve It GUI launcher, frozen-app dispatch, help, README, and CLI examples for V3_1.
 
 ## V3_8 - 2026-08-15
 
