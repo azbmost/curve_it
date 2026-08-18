@@ -2158,7 +2158,7 @@ def launch_gui() -> None:
             "Generate SC",
             "Open the plectonemic supercoil-axis generator.\n\n"
             "It writes a closed, plain-coordinate XYZ curve that can be loaded directly as a Curve It curve input; use path type closed.\n\n"
-            "Generate SC V3_1 fits the exact serialized-polyline Gauss writhe used by Curve It and, for nonzero integer W, screens deterministic generic projections for the requested signed crossing sum. Its shortened arm phase retains exactly |W| crossings in fixed xz while improving projection robustness. Automatic opening-angle objectives minimize the largest local curvature (default), total curvature, or integral kappa(s)^2 ds; equal-lobes mode retains the legacy untrimmed phase and requires integer |W| >= 2. A manual mode retains a user-provided opening angle. The report includes phase-trim and multi-view diagnostics, curvature and reduced bending-energy metrics, PCA/fixed-xz checks, and applicable lobe/landmark measurements."
+            "Generate SC V3_5 fits the exact serialized-polyline Gauss writhe used by Curve It and, for nonzero integer W, screens 256 deterministic reflection-paired projections for the requested signed crossing sum. Arm-phase trimming is enabled by default and can be disabled. The default design uses L = 1071 and maximizes qualifying views while retaining a minimum final measured central-arm radius of 13; users can instead select a qualifying-view target. The GUI presents the final-radius field before qualifying views and dynamically disables fields that do not apply to the selected screening state. A final z-axis rotation restores the symmetric fixed-xz presentation used by V2.2, and its centered phase interval preserves |W| crossings for phase_trim < 1. The default automatic opening-angle objective minimizes total bending energy, proportional to integral kappa(s)^2 ds; alternatives minimize the largest local curvature or total curvature. Equal-lobes mode supports trimmed and untrimmed geometry, resolving the angle at each trim to preserve terminal/middle lobe equality. A manual mode retains a user-provided opening angle. The report includes plectoneme_phase_turns = |theta_total|/(2*pi), the nominal construction radius and final measured arm radius, final-radius screening constraint, V2.2-style middle-segment peaks, lobe heights, symmetry rotation, multi-view diagnostics, curvature metrics, PCA/fixed-xz checks, and exact writhe."
         ),
         "plane_it": (
             "Plane It",
@@ -3043,7 +3043,7 @@ def launch_gui() -> None:
 
     def launch_generate_sc_tool() -> None:
         script_path = resource_path(
-            os.path.join("curve_it_lib", "generate_sc_xyzV3_1.py")
+            os.path.join("curve_it_lib", "generate_sc_xyzV3_5.py")
         )
         if not os.path.isfile(script_path):
             messagebox.showerror(
@@ -3936,8 +3936,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     # This hidden dispatch keeps the Other tools launcher functional there.
     if args.generate_sc_gui:
         try:
-            from curve_it_lib import generate_sc_xyzV3_1
-            generate_sc_xyzV3_1.run_gui()
+            from curve_it_lib import generate_sc_xyzV3_5
+            generate_sc_xyzV3_5.run_gui()
         except Exception as exc:
             raise SystemExit(f"Failed to launch Generate SC: {exc}")
         return

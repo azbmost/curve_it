@@ -2,11 +2,25 @@
 
 ## Unreleased
 
-- Replaced the previous Generate SC implementations with standalone **Generate SC V3_1** at `curve_it_lib/generate_sc_xyzV3_1.py`, now the package's only `generate_sc_xyz*` supercoil generator.
+- Replaced the previous Generate SC implementations with standalone **Generate SC V3_5** at `curve_it_lib/generate_sc_xyzV3_5.py`, now the package's only `generate_sc_xyz*` supercoil generator.
+- Changed the Generate SC defaults to a closed contour length of 1071 and minimum final measured superhelix radius of 13.
+- Replaced nominal-radius screening with final-measured-radius screening as the default alternative to a fixed qualifying-view target. V3.5 finds the largest feasible phase trim whose median central-arm radius remains at or above the requested minimum after the exact output smoothing, scaling, centering, and XYZ quantization steps, thereby maximizing qualifying views for this phase-trim family. The nominal construction radius remains available as a diagnostic.
+- Added `--minimum-final-radius` with the descriptive alias `--minimum-final-measured-radius`; explicitly supplying `--qualifying-views` selects percentage-based screening instead.
+- Replaced the ambiguous “Superhelical turns” report term with `plectoneme_phase_turns`, explicitly defined as `|theta_total| / (2*pi)`, the number of complete arm-phase revolutions in this generator.
 - Added projection-robust integer-writhe geometry: shortened arm-phase families, exact end-loop writhe refitting, deterministic generic-view signed-crossing screening, and final phase/fraction/histogram diagnostics while retaining the fixed-`xz` `|W|` crossing check.
-- Retained the `max-local`, `total`, `bending-energy`, `equal-lobes`, and manual opening-angle modes; `bending-energy` minimizes `integral kappa(s)^2 ds`, while `equal-lobes` deliberately uses the legacy untrimmed arm phase.
+- Added a final z-axis rotation equal to half of the phase removed from the legacy `pi*W` arm sweep, restoring the symmetric V2.2 fixed-`xz` presentation for phase-trimmed V3.5 curves.
+- Made `bending-energy` the default opening-angle objective; it minimizes total bending energy, proportional to `integral kappa(s)^2 ds` for constant bending rigidity. The `max-local`, `total`, `equal-lobes`, and manual modes remain available.
 - Added a final exact-polyline loop-control correction so the default 2000-point output remains within writhe tolerance through the supported `|W| <= 10` range.
-- Updated the Curve It GUI launcher, frozen-app dispatch, help, README, and CLI examples for V3_1.
+- Made opening-angle projection screening use the same 256 deterministic, reflection-paired directions as the final report. The pairing gives mirror-related positive- and negative-writhe curves identical finite-sample screening.
+- Kept the opening angle at the optimum found for the default `0.40*pi` trim during projection screening. V3.5 holds the angle fixed and tests larger trims through `0.90*pi` when satisfying the selected screening criterion.
+- Corrected the post-rotation fixed-xz crossing-preservation bound from `phase_trim < 0.5` to `phase_trim < 1`: the final z rotation centers the shortened phase interval, retaining all intended crossings up to the larger bound. Expanded loop-control fitting for these larger trims.
+- Restored V2.2-style middle-segment peak row/contour reporting for phase-trimmed integer-writhe curves by accounting for their shortened arm phase and final z rotation.
+- Added `--trim`/`--no-trim` controls, with trimming enabled by default, and a configurable `--qualifying-views PERCENT` threshold defaulting to 55% in both the CLI and GUI.
+- Moved the minimum-final-radius field before qualifying views in the GUI so the default radius criterion is defined first. The GUI dynamically disables and greys qualifying views whenever a minimum final radius is set; the radius field is disabled when trimming is off.
+- Added an initial GUI log explanation that **Preview / verify** constructs and fully verifies the curve in memory without writing an XYZ file, while **Generate XYZ** reuses an unchanged cached result or performs the same verification before writing.
+- Added light-blue contextual `?` buttons throughout the Generate SC V3.5 GUI, with pop-up explanations and examples for every generation argument and opening-angle mode.
+- Generalized equal-lobe height measurement and optimization to centered phase-trimmed curves; equal-lobes mode now participates in trim/projection screening while resolving its equality-preserving opening angle at each tested trim.
+- Updated the Curve It GUI launcher, frozen-app dispatch, help, README, and CLI examples for V3_5.
 
 ## V3_8 - 2026-08-15
 

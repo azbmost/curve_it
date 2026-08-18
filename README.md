@@ -183,20 +183,33 @@ python3 curve_it_lib/generate_helix_xyzV2.py -R 10 -c 2 -L 200 -n 1000 -o helix.
 python3 curve_it_lib/generate_helix_xyzV2.py -R 10 --pitch-angle-deg 20 --derive c-from-R -L 200 -o helix.xyz
 ```
 
-**Generate SC...** opens `curve_it_lib/generate_sc_xyzV3_1.py`, the package's only supercoil-centerline generator. It writes a closed plectonemic axis as plain `x y z` rows with the requested contour length and signed Gauss writhe. The default output density is 2000 unique periodic points. Before writing, V3.1 applies Curve It's periodic smoothing once, resamples, and rescales to the requested closed length. It then verifies the exact decimal coordinates with the same closed-polyline segment-pair writhe calculation Curve It uses for mapping. Load the result as a Curve It curve with **Path type: closed**.
+**Generate SC...** opens `curve_it_lib/generate_sc_xyzV3_5.py`, the package's only supercoil-centerline generator. It writes a closed plectonemic axis as plain `x y z` rows with the requested contour length and signed Gauss writhe. The default contour length is 1071 and the default output density is 2000 unique periodic points. Before writing, V3.5 applies Curve It's periodic smoothing once, resamples, and rescales to the requested closed length. It then verifies the exact decimal coordinates with the same closed-polyline segment-pair writhe calculation Curve It uses for mapping. Load the result as a Curve It curve with **Path type: closed**.
 
-For nonzero integer writhe, V3.1 shortens the signed arm phase by a fitted trim below `0.5*pi`, refits the end-loop control distance to retain the requested exact writhe, and screens deterministic generic orthographic projections. The default search seeks at least 55 percent of sampled viewing directions with signed crossing sum equal to the requested writhe, while the fixed-`xz` projection is still verified to contain exactly `|W|` crossings. The final report shows the selected phase trim, actual arm phase, multi-view signed-sum fraction/histogram, fixed-`xz` check, PCA projection, and exact writhe. Fractional writhe and `W=0` use the untrimmed geometry because a projection crossing sum is integer-valued.
+The report distinguishes the nominal scaled superhelix radius from the measured final arm radius. The latter is computed from the serialized coordinates as the median radial distance of central arm points from the translated superhelical axis, excluding the end loops and their smoothing transitions.
 
-V3.1 supports `|W| <= 10` and four automatic opening-angle objectives over 5-85 degrees. The default `--angle-objective max-local` minimizes the largest local curvature. `--angle-objective total` minimizes `integral kappa(s) ds`. `--angle-objective bending-energy` minimizes the reduced bending energy `integral kappa(s)^2 ds`; for a homogeneous isotropic rod with constant bending rigidity `A` and no intrinsic curvature, physical bending energy is `A/2` times this integral. `--angle-objective equal-lobes` uses the legacy untrimmed arm phase and matches terminal/middle fixed-`xz` lobe heights for integer `|W| >= 2`. Supply `-a ANGLE` or `--opening-angle ANGLE` to retain a manual angle strictly between 0 and 90 degrees. The older option name `--curvature-objective` remains an alias.
+The arm-phase revolution count is reported as `plectoneme_phase_turns = |theta_total| / (2*pi)`. This name distinguishes the generator's complete arm-phase revolutions from a generic geometric or topological “number of superhelical turns.”
+
+In the GUI, **Minimum final measured radius** appears before **Qualifying views** and defaults to 13. The qualifying-views field is dynamically disabled and greyed whenever arm-phase trimming is off or a minimum final radius is entered. Clear the radius field to select qualifying-view screening. The radius field is itself disabled when trimming is off.
+
+Light-blue `?` buttons beside every generation argument and opening-angle option open concise explanations and examples without leaving the GUI.
+
+The default screening mode requires a final measured radius of at least 13. Set another threshold with `--minimum-final-radius LENGTH` (alias `--minimum-final-measured-radius`). Generate SC finds the largest feasible phase trim from 0 through `0.90*pi` whose radius, measured from the central 90% of the arms after smoothing, scaling, centering, and XYZ decimal quantization, remains at or above the threshold. Thus the screened geometry and the reported final radius refer to the same serialized curve that Curve It will map. Within this phase-trim family, decreasing the allowed radius permits a larger trim and generally a higher qualifying-view fraction. Supplying `--qualifying-views PERCENT` explicitly selects percentage screening instead. Radius-constrained screening requires a nonzero integer writhe and enabled trimming.
+
+For nonzero integer writhe, V3.5 shortens the signed arm phase by a fitted trim below `1.0*pi`, refits the end-loop control distance to retain the requested exact writhe, and screens deterministic generic orthographic projections. Trimming is enabled by default; use `--no-trim` to retain the original `pi*W` phase. When percentage screening is selected, the required qualifying-view percentage defaults to 55. V3.5 rotates the complete trimmed curve around z by half of the phase removed from the legacy sweep. This restores the symmetric fixed-`xz` presentation of V2.2: odd integer writhe has reflection symmetry under `z -> -z`, and even integer writhe has central symmetry under `(x,z) -> (-x,-z)`. Because the rotation centers the shortened phase interval, all `|W|` intended xz crossings remain inside it for `phase_trim < 1`; the former `0.5*pi` limit applied to the unrotated interval. The 256 viewing directions are reflection-paired, so mirror-related positive- and negative-writhe curves receive identical finite-sample screening. For bending-energy, max-local, and total-curvature modes, projection screening holds the opening angle found at the default `0.40*pi` trim while testing progressively larger trims through `0.90*pi`. Equal-lobes mode instead resolves its opening angle at each tested trim so the terminal/middle equality remains satisfied. The final report shows whether trimming was enabled, the active radius or percentage criterion, selected phase trim, z-axis symmetry rotation, V2.2-style middle-segment peaks, lobe heights where applicable, projection statistics, and exact writhe. Fractional writhe and `W=0` use untrimmed geometry.
+
+V3.5 supports `|W| <= 10` and four automatic opening-angle objectives over 5-85 degrees. The default `--angle-objective bending-energy` minimizes total bending energy, proportional to `integral kappa(s)^2 ds`; for a homogeneous isotropic rod with constant bending rigidity `A` and no intrinsic curvature, physical bending energy is `A/2` times this integral. `--angle-objective max-local` minimizes the largest local curvature, while `--angle-objective total` minimizes `integral kappa(s) ds`. `--angle-objective equal-lobes` matches terminal/middle fixed-`xz` lobe heights for integer `|W| >= 2` in both trimmed and untrimmed modes. Supply `-a ANGLE` or `--opening-angle ANGLE` to retain a manual angle strictly between 0 and 90 degrees. The older option name `--curvature-objective` remains an alias.
 
 You can also run Generate SC from the command line:
 
 ```bash
-python3 curve_it_lib/generate_sc_xyzV3_1.py -L 340 -w -3 -n 2000 -o sc_softest_bend.xyz
-python3 curve_it_lib/generate_sc_xyzV3_1.py -L 340 -w -3 --angle-objective total -n 2000 -o sc_min_total.xyz
-python3 curve_it_lib/generate_sc_xyzV3_1.py -L 340 -w -3 --angle-objective bending-energy -n 2000 -o sc_min_bending_energy.xyz
-python3 curve_it_lib/generate_sc_xyzV3_1.py -L 340 -w -3 --angle-objective equal-lobes -n 2000 -o sc_equal_lobes.xyz
-python3 curve_it_lib/generate_sc_xyzV3_1.py -L 340 -w -3 -a 25 -n 2000 -o sc_25deg.xyz
+python3 curve_it_lib/generate_sc_xyzV3_5.py -w -3 -n 2000 -o sc_min_bending_energy.xyz
+python3 curve_it_lib/generate_sc_xyzV3_5.py -L 1071 -w -3 --angle-objective total -n 2000 -o sc_min_total.xyz
+python3 curve_it_lib/generate_sc_xyzV3_5.py -L 1071 -w -3 --angle-objective max-local -n 2000 -o sc_softest_bend.xyz
+python3 curve_it_lib/generate_sc_xyzV3_5.py -L 1071 -w -3 --angle-objective equal-lobes -n 2000 -o sc_equal_lobes.xyz
+python3 curve_it_lib/generate_sc_xyzV3_5.py -L 1071 -w -3 --no-trim -n 2000 -o sc_untrimmed.xyz
+python3 curve_it_lib/generate_sc_xyzV3_5.py -L 1071 -w -3 --qualifying-views 60 -n 2000 -o sc_q60.xyz
+python3 curve_it_lib/generate_sc_xyzV3_5.py -L 1071 -w -3 --minimum-final-radius 13 -n 2000 -o sc_radius13.xyz
+python3 curve_it_lib/generate_sc_xyzV3_5.py -L 1071 -w -3 -a 25 -n 2000 -o sc_25deg.xyz
 ```
 
 **Local curvature/torsion...** opens `curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py`. This tool writes a CSV table with normalized path position, coordinates, local curvature, regularized local torsion, local writhe density, and diagnostic columns. Its GUI includes a quick-loading test example for a three-lobe trefoil knot, the `(2,3)` torus knot:
@@ -313,7 +326,7 @@ Supporting scripts live in `curve_it_lib/`:
 - `cal_xyz_total_curvature_writheV2.py`
 - `cal_xyz_local_curvature_torsionV3_1.py`
 - `generate_helix_xyzV2.py`
-- `generate_sc_xyzV3_1.py`
+- `generate_sc_xyzV3_5.py`
 - `get_curve_it_phaseV5_1.py`
 - `curved_connectorV3_4.py`
 - `plane_itV3_8.py` (versioned Plane It implementation; use `plane_it.py` as the stable launcher)
@@ -327,7 +340,7 @@ python3 curve_it_lib/cal_xyz_total_curvature_writheV2.py curve.xyz
 python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py curve.xyz --no-plot
 python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py --example-trefoil --no-plot
 python3 curve_it_lib/generate_helix_xyzV2.py -R 10 -c 2 -L 200 -o helix.xyz
-python3 curve_it_lib/generate_sc_xyzV3_1.py -L 340 -w -3 -n 2000 -o sc.xyz
+python3 curve_it_lib/generate_sc_xyzV3_5.py -L 1071 -w -3 -n 2000 -o sc.xyz
 python3 curve_it_lib/view_xyzV3.py curve.xyz
 python3 curve_it_lib/view_xyzV3.py multi_component.txt --components A,C
 ```
