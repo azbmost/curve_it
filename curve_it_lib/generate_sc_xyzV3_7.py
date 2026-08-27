@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate a radius-aware, projection-robust closed plectonemic DNA-axis curve.
 
-Generate SC V3_5 is a standalone successor to generate_sc_xyzV2_2.py and
+Generate SC V3_7 is a standalone successor to generate_sc_xyzV2_2.py and
 Generate SC V3.  Only this SC generator script is required in ``curve_it_lib``;
 it does NOT import or monkey-patch an older Generate SC module.
 
@@ -13,14 +13,14 @@ Two related writhe concepts are kept explicit:
 
 * ``--writhe`` is fitted to the continuous Gauss-integral writhe used by
   Curve It.
-* For nonzero integer writhe, V3_5 also evaluates the *signed* crossing sum in
+* For nonzero integer writhe, V3_7 also evaluates the *signed* crossing sum in
   many deterministic generic orthographic projections.  The default search
   seeks a geometry for which at least 55% of sampled viewing directions have
   signed crossing sum exactly equal to the requested writhe.
 
 Projection-robust integer geometry
 ----------------------------------
-V2.2 used an arm phase sweep ``theta = pi * W``.  V3_5 shortens the phase before
+V2.2 used an arm phase sweep ``theta = pi * W``.  V3_7 shortens the phase before
 attaching the end loops:
 
     theta = sign(W) * pi * (|W| - phase_trim),  0 <= phase_trim < 1
@@ -37,11 +37,11 @@ mirror symmetry under ``z -> -z``, while even integer writhe has central
 symmetry under ``(x, z) -> (-x, -z)``.
 
 Trimming is enabled by default and may be disabled with ``--no-trim``. For
-fractional writhe and W=0, V3_5 uses ``phase_trim = 0`` because a projection
+fractional writhe and W=0, V3_7 uses ``phase_trim = 0`` because a projection
 crossing sum is integer-valued. The equal-lobes formulas account for the active
 centered phase trim, so equal-lobes mode can use the same trimming search.
 
-V3_5 uses ``--minimum-final-radius`` as the default alternative to a requested
+V3_7 uses ``--minimum-final-radius`` as the default alternative to a requested
 qualifying-view percentage. In that mode, the largest phase trim compatible
 with the minimum radius measured from the final serialized central-arm
 coordinates is selected, maximizing the qualifying-view fraction for this
@@ -55,6 +55,16 @@ Automatic opening-angle objectives
   integral kappa(s)^2 ds for constant bending rigidity.
 * ``equal-lobes``: match terminal and middle lobe z-heights in fixed xz;
   requires integer |W| >= 2 and supports both trimmed and untrimmed geometry.
+
+Arm-height H0 selection
+-----------------------
+The default remains the V3.6 construction ``H0 = 2R``. ``--zero-h0`` selects
+the distinct ``H0 = 0`` family and repeats every optimization and final check.
+In either mode, endpoint directions are normalized exact derivatives of the
+parametric arm equations and are passed directly to the cubic-Bezier loops;
+they are not estimated from a displayed or sampled polyline. At exactly W=0,
+the arm/loop parameterization degenerates, so V3.7 directly writes a planar
+ring with the requested serialized closed length instead.
 
 The canonical dimensionless curve is fitted first, periodically smoothed once
 with Curve It's smoothing convention, resampled, and uniformly scaled to the
@@ -71,15 +81,23 @@ Examples
 --------
 Open the GUI::
 
-    python generate_sc_xyzV3_5.py
+    python generate_sc_xyzV3_7.py
 
 Generate the default 1071-Angstrom curve with writhe -3 and final radius >= 13::
 
-    python generate_sc_xyzV3_5.py -L 1071 -w -3 -n 2000 -o sc_Wm3.xyz
+    python generate_sc_xyzV3_7.py -L 1071 -w -3 -n 2000
 
 Retain a user-provided 25-degree opening angle::
 
-    python generate_sc_xyzV3_5.py -L 1071 -w -3 -a 25 -n 2000 -o sc_Wm3_25deg.xyz
+    python generate_sc_xyzV3_7.py -L 1071 -w -3 -a 25 -n 2000
+
+Generate the fully reoptimized zero-H0 family::
+
+    python generate_sc_xyzV3_7.py -L 1071 -w -3 --zero-h0 -n 2000
+
+Generate the direct W = 0 planar-ring limit::
+
+    python generate_sc_xyzV3_7.py -L 1071 -w 0 --zero-h0 -n 2000
 
 The output is plain coordinate XYZ: one ``x y z`` row per point, without an
 atom-count header.  Load it into Curve It as a *closed* curve.
@@ -128,17 +146,18 @@ except Exception as package_exc:
 PointArray = np.ndarray
 
 TOOL_NAME = "Generate SC"
-TOOL_VERSION = "V3_5"
+TOOL_VERSION = "V3_7"
 
 DEFAULT_TOTAL_LENGTH = 1071.0
 DEFAULT_WRITHE = -3.0
 DEFAULT_NUM_POINTS = 2000
 DEFAULT_PRECISION = 8
-DEFAULT_OUTPUT = "supercoiled_DNA.xyz"
 
 CANONICAL_RADIUS = 1.0
 DEFAULT_OPENING_ANGLE_DEG = 25.0
 CANONICAL_STEM_EXTENSION = 2.0
+ZERO_H0_STEM_EXTENSION = 0.0
+DEFAULT_ZERO_H0 = False
 DEFAULT_LOOP_CONTROL = 4.0 / 3.0
 
 CURVATURE_OBJECTIVE_TOTAL = "total"
@@ -146,6 +165,7 @@ CURVATURE_OBJECTIVE_MAX_LOCAL = "max-local"
 CURVATURE_OBJECTIVE_BENDING_ENERGY = "bending-energy"
 OPENING_ANGLE_OBJECTIVE_EQUAL_LOBES = "equal-lobes"
 OPENING_ANGLE_MODE_MANUAL = "manual"
+OPENING_ANGLE_MODE_RING = "planar-ring"
 CURVATURE_OBJECTIVES = (
     CURVATURE_OBJECTIVE_BENDING_ENERGY,
     CURVATURE_OBJECTIVE_MAX_LOCAL,
@@ -168,7 +188,7 @@ EQUAL_LOBE_RELATIVE_TOLERANCE = 2.0e-3
 MAX_ABS_WRITHE = 10.0
 MAX_TOTAL_LENGTH = 1.0e12
 
-# V3/V3.5 projection-robustness settings.
+# V3/V3.7 projection-robustness settings.
 DEFAULT_QUALIFYING_VIEWS_PERCENT = 55.0
 DEFAULT_MINIMUM_FINAL_RADIUS = 13.0
 DEFAULT_PHASE_TRIM = 0.40
@@ -183,8 +203,88 @@ RADIUS_SEARCH_BISECTION_STEPS = 12
 
 SCREENING_MODE_QUALIFYING_VIEWS = "qualifying-views"
 SCREENING_MODE_MINIMUM_RADIUS = "minimum-final-radius"
+SCREENING_MODE_RING = "not-applicable-ring"
+
+
+OUTPUT_ANGLE_TOKENS = {
+    CURVATURE_OBJECTIVE_BENDING_ENERGY: "ABend",
+    CURVATURE_OBJECTIVE_MAX_LOCAL: "ALocal",
+    CURVATURE_OBJECTIVE_TOTAL: "ATotal",
+    OPENING_ANGLE_OBJECTIVE_EQUAL_LOBES: "AEq",
+}
+
+
+def _filename_number(value: float) -> str:
+    """Return a compact filesystem-safe token for a finite numeric value."""
+
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("Automatic output filenames require finite numeric inputs.")
+    if abs(number) < 5.0e-13:
+        number = 0.0
+    return format(number, ".10g").replace("+", "").replace("-", "m").replace(".", "p")
+
+
+def automatic_output_filename(
+    total_length: float,
+    target_writhe: float,
+    curvature_objective: str = DEFAULT_CURVATURE_OBJECTIVE,
+    opening_angle_deg: Optional[float] = None,
+    trim_enabled: bool = True,
+    qualifying_views_percent: float = DEFAULT_QUALIFYING_VIEWS_PERCENT,
+    minimum_final_radius: Optional[float] = DEFAULT_MINIMUM_FINAL_RADIUS,
+    zero_h0: bool = DEFAULT_ZERO_H0,
+) -> str:
+    """Build a deterministic XYZ filename from the curve-defining selections.
+
+    Examples include ``sc_L1071_Wm3_R13_ABend.xyz`` for the V3.7 defaults,
+    ``sc_L1071_Wm3_R13_ABend_H0zero.xyz`` for the opt-in zero-H0 family,
+    ``sc_L1071_W0_NoTrim_Ring_H0zero.xyz`` for its direct zero-writhe limit,
+    ``sc_L1071_W3_Q60_ALocal.xyz`` for qualifying-view screening, and
+    ``sc_L1071_W3_NoTrim_A25deg.xyz`` for an untrimmed manual-angle curve.
+    """
+
+    length_token = "L{0}".format(_filename_number(total_length))
+    writhe_token = "W{0}".format(_filename_number(target_writhe))
+    nearest_writhe = int(round(float(target_writhe)))
+    integer_nonzero_writhe = (
+        abs(float(target_writhe) - nearest_writhe) <= 1.0e-10
+        and nearest_writhe != 0
+    )
+    effective_trim = bool(trim_enabled) and integer_nonzero_writhe
+    if not effective_trim:
+        screening_token = "NoTrim"
+    elif minimum_final_radius is not None:
+        screening_token = "R{0}".format(_filename_number(minimum_final_radius))
+    else:
+        screening_token = "Q{0}".format(_filename_number(qualifying_views_percent))
+
+    zero_h0_ring = bool(zero_h0) and abs(float(target_writhe)) <= 1.0e-12
+    if zero_h0_ring:
+        angle_token = "Ring"
+    elif opening_angle_deg is not None:
+        angle_token = "A{0}deg".format(_filename_number(opening_angle_deg))
+    else:
+        try:
+            angle_token = OUTPUT_ANGLE_TOKENS[str(curvature_objective)]
+        except KeyError as exc:
+            raise ValueError(
+                "Unknown opening-angle selection for automatic output filename: {0}".format(
+                    curvature_objective
+                )
+            ) from exc
+    h0_suffix = "_H0zero" if bool(zero_h0) else ""
+    return "sc_{0}_{1}_{2}_{3}{4}.xyz".format(
+        length_token,
+        writhe_token,
+        screening_token,
+        angle_token,
+        h0_suffix,
+    )
+
 
 _ACTIVE_PHASE_TRIM = 0.0
+_ACTIVE_CANONICAL_H0 = CANONICAL_STEM_EXTENSION
 
 
 @dataclass
@@ -232,6 +332,9 @@ class SCGenerationResult:
     radius_scaled: float
     final_superhelix_radius: float
     stem_height_scaled: float
+    canonical_h0: float
+    h0_scaled: float
+    zero_h0: bool
     solver_iterations: int
     landmarks: ContourLandmarks
     phase_trim: float
@@ -309,6 +412,7 @@ def validate_inputs(
     trim_enabled: bool = True,
     qualifying_views_percent: float = DEFAULT_QUALIFYING_VIEWS_PERCENT,
     minimum_final_radius: Optional[float] = None,
+    zero_h0: bool = DEFAULT_ZERO_H0,
 ) -> None:
     """Validate user-facing inputs and raise ``ValueError`` when invalid."""
 
@@ -353,6 +457,9 @@ def validate_inputs(
         )
     if not isinstance(trim_enabled, (bool, np.bool_)):
         raise ValueError("Trim selection must be true or false.")
+    if not isinstance(zero_h0, (bool, np.bool_)):
+        raise ValueError("The H0 selection must be true or false.")
+    zero_h0_ring = bool(zero_h0) and abs(float(target_writhe)) <= 1.0e-12
     if (
         not math.isfinite(float(qualifying_views_percent))
         or not 0.0 <= float(qualifying_views_percent) <= 100.0
@@ -363,15 +470,21 @@ def validate_inputs(
         if not math.isfinite(minimum_radius) or minimum_radius <= 0.0:
             raise ValueError("Minimum final measured superhelix radius must be positive and finite.")
         is_integer, nearest = _integer_request(target_writhe)
-        if not bool(trim_enabled):
+        if zero_h0_ring:
+            pass
+        elif not bool(trim_enabled):
             raise ValueError(
                 "Minimum-radius screening requires arm-phase trimming to be enabled."
             )
-        if not is_integer or nearest == 0:
+        elif not is_integer or nearest == 0:
             raise ValueError(
                 "Minimum-radius screening requires a nonzero integer writhe."
             )
-    if opening_angle_deg is None and str(curvature_objective) == OPENING_ANGLE_OBJECTIVE_EQUAL_LOBES:
+    if (
+        not zero_h0_ring
+        and opening_angle_deg is None
+        and str(curvature_objective) == OPENING_ANGLE_OBJECTIVE_EQUAL_LOBES
+    ):
         nearest_integer = int(round(float(target_writhe)))
         if (
             abs(float(target_writhe) - nearest_integer) > 1.0e-10
@@ -420,8 +533,19 @@ def _set_active_phase_trim(value: float) -> None:
     global _ACTIVE_PHASE_TRIM
     value = float(value)
     if not math.isfinite(value) or value < 0.0 or value >= 1.0:
-        raise ValueError("V3_5 phase trim must satisfy 0 <= trim < 1.")
+        raise ValueError("V3_7 phase trim must satisfy 0 <= trim < 1.")
     _ACTIVE_PHASE_TRIM = value
+
+
+def _set_active_zero_h0(zero_h0: bool) -> None:
+    """Select the canonical H0 used by the current generation run."""
+
+    global _ACTIVE_CANONICAL_H0
+    if not isinstance(zero_h0, (bool, np.bool_)):
+        raise ValueError("The H0 selection must be true or false.")
+    _ACTIVE_CANONICAL_H0 = (
+        ZERO_H0_STEM_EXTENSION if bool(zero_h0) else CANONICAL_STEM_EXTENSION
+    )
 
 
 def _loop_control_upper_limit(target_writhe: float) -> float:
@@ -452,7 +576,7 @@ def _phase_sweep(target_writhe: float) -> float:
 def _xz_symmetry_rotation(target_writhe: float) -> float:
     """Return the z-axis rotation that restores the legacy symmetric xz view.
 
-    V3.5 removes equal phase from the two ends of the V2.2 arm sweep. Rotating
+    V3.7 removes equal phase from the two ends of the V2.2 arm sweep. Rotating
     by half of that removed phase places both terminal loops symmetrically
     about their legacy fixed-xz directions. As in V2.2, the projected symmetry
     is z-reflection for odd integer writhe and central inversion for even
@@ -486,7 +610,7 @@ def _canonical_geometry(
     theta_total = _phase_sweep(target_writhe)
     alpha = math.radians(float(opening_angle_deg))
     stem_height = (
-        CANONICAL_STEM_EXTENSION
+        _ACTIVE_CANONICAL_H0
         + abs(theta_total) * CANONICAL_RADIUS / math.tan(alpha)
     )
     return theta_total, stem_height
@@ -498,7 +622,13 @@ def _build_dense_canonical_curve(
     num_points: int,
     opening_angle_deg: float = DEFAULT_OPENING_ANGLE_DEG,
 ) -> Tuple[PointArray, float]:
-    """Build a dense C1 closed plectoneme before arc-length resampling."""
+    """Build a dense C1 closed plectoneme before arc-length resampling.
+
+    Arm endpoint directions are exact normalized derivatives of the parametric
+    arm equations below. They are not estimated from displayed or sampled
+    polylines, so both the default H0 = 2R and opt-in H0 = 0 families present
+    mathematically defined tangents to the cubic-Bezier closing loops.
+    """
 
     theta_total, stem_height = _canonical_geometry(target_writhe, opening_angle_deg)
     radius = CANONICAL_RADIUS
@@ -602,7 +732,7 @@ def analyze_contour_landmarks(
     """Locate reproducible tips and interior fixed-xz lobe peaks.
 
     The V2.2 landmarks occur where each arm reaches an x extremum between two
-    neighboring fixed-xz crossings. For phase-trimmed V3.5 geometry, account
+    neighboring fixed-xz crossings. For phase-trimmed V3.7 geometry, account
     for both the shortened arm sweep and the final symmetry rotation before
     finding the nearest serialized output vertices.
     """
@@ -1621,7 +1751,7 @@ def _find_projection_robust_auto_candidate(
 
     if not tested:
         raise RuntimeError(
-            "V3_5 could not find a feasible shortened-phase plectoneme for this integer writhe."
+            "V3_7 could not find a feasible shortened-phase plectoneme for this integer writhe."
         )
     best = min(
         tested,
@@ -1666,7 +1796,7 @@ def _find_projection_robust_manual_candidate(
         if float(stats["target_fraction"]) >= float(qualifying_fraction):
             return float(trim), candidate, stats, evaluations
     if not tested:
-        raise RuntimeError("The provided opening angle is infeasible for all tested V3_5 phase trims.")
+        raise RuntimeError("The provided opening angle is infeasible for all tested V3_7 phase trims.")
     best = min(
         tested,
         key=lambda item: (
@@ -1920,6 +2050,8 @@ def _finalize_candidate(
     points = quantize_points_for_xyz(points, precision)
     radius_scaled = CANONICAL_RADIUS * scale
     stem_height_scaled = candidate.stem_height * scale
+    canonical_h0 = float(_ACTIVE_CANONICAL_H0)
+    h0_scaled = canonical_h0 * scale
     segment_lengths = np.linalg.norm(np.roll(points, -1, axis=0) - points, axis=1)
     unique_count = int(len(np.unique(points, axis=0)))
     if not np.all(np.isfinite(points)) or not np.all(np.isfinite(segment_lengths)):
@@ -2044,6 +2176,9 @@ def _finalize_candidate(
         radius_scaled=radius_scaled,
         final_superhelix_radius=final_superhelix_radius,
         stem_height_scaled=stem_height_scaled,
+        canonical_h0=canonical_h0,
+        h0_scaled=h0_scaled,
+        zero_h0=bool(canonical_h0 == ZERO_H0_STEM_EXTENSION),
         solver_iterations=candidate.writhe_solver_iterations,
         landmarks=landmarks,
         phase_trim=float(selected_trim),
@@ -2063,6 +2198,142 @@ def _finalize_candidate(
     )
 
 
+def _generate_zero_h0_ring(
+    total_length: float,
+    num_points: int,
+    precision: int,
+    qualifying_fraction: float,
+) -> SCGenerationResult:
+    """Return the direct planar-ring limit for exactly W = 0 and H0 = 0.
+
+    The ordinary plectoneme parameterization collapses when both the phase
+    sweep and H0 vanish.  V3.7 defines that single limiting case explicitly as
+    a regular N-gon sampled from a circle in the xz plane.  Its circumradius
+    ``L / (2 N sin(pi/N))`` makes the unrounded closed polygon length exactly
+    ``L``; a short radius correction loop preserves that length after decimal
+    serialization.  No arms, Bezier loops, angle search, phase trimming, or
+    smoothing are involved.
+    """
+
+    _set_active_phase_trim(0.0)
+    n_points = int(num_points)
+    radius = float(total_length) / (
+        2.0 * float(n_points) * math.sin(math.pi / float(n_points))
+    )
+    angles = 2.0 * math.pi * np.arange(n_points, dtype=float) / float(n_points)
+
+    points = np.empty((n_points, 3), dtype=float)
+    for _iteration in range(8):
+        points[:, 0] = radius * np.sin(angles)
+        points[:, 1] = 0.0
+        points[:, 2] = radius * np.cos(angles)
+        points -= np.mean(points, axis=0)
+        points = quantize_points_for_xyz(points, precision)
+        achieved_length = closed_polyline_length(points)
+        if achieved_length <= 0.0 or not math.isfinite(achieved_length):
+            raise ValueError("The serialized W = 0 ring has zero or non-finite length.")
+        length_tolerance = max(1.0e-9, float(total_length) * 1.0e-6)
+        if abs(achieved_length - float(total_length)) <= length_tolerance:
+            break
+        radius *= float(total_length) / achieved_length
+
+    segment_lengths = np.linalg.norm(np.roll(points, -1, axis=0) - points, axis=1)
+    unique_count = int(len(np.unique(points, axis=0)))
+    if not np.all(np.isfinite(points)) or not np.all(np.isfinite(segment_lengths)):
+        raise ValueError("Serialized ring coordinates are outside the numeric range.")
+    if unique_count != n_points or np.any(segment_lengths <= 0.0):
+        raise ValueError(
+            "Output precision collapses distinct ring samples ({0} of {1} remain unique). "
+            "Increase --precision or use a larger contour length.".format(
+                unique_count, n_points
+            )
+        )
+
+    achieved_length = closed_polyline_length(points)
+    length_tolerance = max(1.0e-9, float(total_length) * 1.0e-6)
+    if abs(achieved_length - float(total_length)) > length_tolerance:
+        raise ValueError(
+            "Output precision changes the requested ring length too much: "
+            "target={0:.10g}, serialized={1:.10g}. Increase --precision.".format(
+                total_length, achieved_length
+            )
+        )
+    achieved_writhe = evaluate_curve_it_writhe(points, smooth=False)
+    if abs(achieved_writhe) > WRITHE_TOLERANCE:
+        raise ValueError(
+            "Serialized planar ring writhe is outside tolerance: {0:.6g}.".format(
+                achieved_writhe
+            )
+        )
+    total_curvature, maximum_local_curvature, bending_energy_integral = (
+        evaluate_curvature_metrics(
+            points,
+            adaptive_total=False,
+            smooth=False,
+        )
+    )
+    ring_radius = float(np.median(np.linalg.norm(points[:, (0, 2)], axis=1)))
+    xz_crossings = count_xz_projection_crossings(points)
+    pca_crossings, pca_plane = analyze_pca_projection(points)
+    landmarks = analyze_contour_landmarks(
+        points,
+        target_writhe=0.0,
+        radius_scaled=ring_radius,
+        stem_height_scaled=0.0,
+    )
+    projection_stats = {
+        "applicable": False,
+        "direction_count": FINAL_PROJECTION_DIRECTIONS,
+    }
+    search_stats = {
+        "applicable": False,
+        "direction_count": SEARCH_PROJECTION_DIRECTIONS,
+    }
+    return SCGenerationResult(
+        points=points,
+        requested_length=float(total_length),
+        achieved_length=float(achieved_length),
+        requested_writhe=0.0,
+        achieved_writhe=float(achieved_writhe),
+        xz_crossings=int(xz_crossings),
+        pca_crossings=int(pca_crossings),
+        pca_plane=str(pca_plane),
+        plectoneme_phase_turns=0.0,
+        opening_angle_deg=0.0,
+        curvature_objective=OPENING_ANGLE_MODE_RING,
+        total_curvature=float(total_curvature),
+        maximum_local_curvature=float(maximum_local_curvature),
+        bending_energy_integral=float(bending_energy_integral),
+        top_terminal_lobe_height_xz=None,
+        bottom_terminal_lobe_height_xz=None,
+        terminal_lobe_height_xz=None,
+        middle_lobe_height_xz=None,
+        lobe_height_mismatch_xz=None,
+        opening_angle_evaluations=0,
+        loop_control_canonical=0.0,
+        radius_scaled=ring_radius,
+        final_superhelix_radius=ring_radius,
+        stem_height_scaled=0.0,
+        canonical_h0=0.0,
+        h0_scaled=0.0,
+        zero_h0=True,
+        solver_iterations=0,
+        landmarks=landmarks,
+        phase_trim=0.0,
+        phase_sweep_rad=0.0,
+        phase_sweep_pi=0.0,
+        phase_factor=1.0,
+        xz_symmetry_rotation_rad=0.0,
+        trim_enabled=False,
+        projection_stats=projection_stats,
+        search_projection_stats=search_stats,
+        projection_majority_target=float(qualifying_fraction),
+        screening_mode=SCREENING_MODE_RING,
+        minimum_final_radius=None,
+        projection_search_evaluations=0,
+    )
+
+
 def generate_sc_points(
     total_length: float,
     target_writhe: float,
@@ -2073,8 +2344,18 @@ def generate_sc_points(
     trim_enabled: bool = True,
     qualifying_views_percent: float = DEFAULT_QUALIFYING_VIEWS_PERCENT,
     minimum_final_radius: Optional[float] = None,
+    zero_h0: bool = DEFAULT_ZERO_H0,
 ) -> SCGenerationResult:
-    """Generate an optimized/manual plectoneme with V3_5 multi-view screening."""
+    """Generate an optimized/manual plectoneme with V3_7 multi-view screening.
+
+    ``zero_h0=False`` preserves the V3.6/default construction H0 = 2R.
+    ``zero_h0=True`` selects H0 = 0. For nonzero W it re-runs the entire
+    optimization and serialized-coordinate verification workflow for that
+    distinct family. At exactly W = 0 it directly returns a serialized planar
+    ring because the arm/loop parameterization has collapsed.
+    """
+
+    _set_active_zero_h0(zero_h0)
 
     validate_inputs(
         total_length,
@@ -2086,9 +2367,17 @@ def generate_sc_points(
         trim_enabled,
         qualifying_views_percent,
         minimum_final_radius,
+        zero_h0,
     )
     num_points = int(num_points)
     qualifying_fraction = float(qualifying_views_percent) / 100.0
+    if bool(zero_h0) and abs(float(target_writhe)) <= 1.0e-12:
+        return _generate_zero_h0_ring(
+            total_length=float(total_length),
+            num_points=num_points,
+            precision=int(precision),
+            qualifying_fraction=qualifying_fraction,
+        )
     is_integer, nearest = _integer_request(target_writhe)
     legacy_geometry = (
         not bool(trim_enabled)
@@ -2210,9 +2499,10 @@ def _landmark_line(label: str, landmark: ContourLandmark) -> str:
 
 
 def generation_summary(result: SCGenerationResult) -> str:
-    """Return a compact V3_5 report for the command line and GUI."""
+    """Return a compact V3_7 report for the command line and GUI."""
 
     residual = result.achieved_writhe - result.requested_writhe
+    ring_mode = result.curvature_objective == OPENING_ANGLE_MODE_RING
     is_integer, nearest = _integer_request(result.requested_writhe)
     crossing_check = (
         "PASS (required |W| = {0})".format(abs(nearest))
@@ -2227,7 +2517,9 @@ def generation_summary(result: SCGenerationResult) -> str:
         and result.curvature_objective != OPENING_ANGLE_OBJECTIVE_EQUAL_LOBES
         else ""
     )
-    if result.curvature_objective == OPENING_ANGLE_MODE_MANUAL:
+    if ring_mode:
+        objective_label = "not applicable: direct planar ring for W = 0 and H0 = 0"
+    elif result.curvature_objective == OPENING_ANGLE_MODE_MANUAL:
         objective_label = "manual: use user-provided opening angle"
     elif result.curvature_objective == CURVATURE_OBJECTIVE_TOTAL:
         objective_label = "automatic: minimize total curvature" + screening_suffix
@@ -2249,6 +2541,21 @@ def generation_summary(result: SCGenerationResult) -> str:
         handedness = "positive-writhe mirror"
     elif result.requested_writhe < 0.0:
         handedness = "negative-writhe mirror"
+    realized_beta_deg = 0.0
+    if not ring_mode:
+        realized_beta_deg = math.degrees(
+            math.atan2(
+                abs(float(result.phase_sweep_rad)) * float(result.radius_scaled),
+                float(result.stem_height_scaled),
+            )
+        )
+    h0_mode_label = (
+        "H0 = 0 (direct planar-ring limit)"
+        if ring_mode
+        else "H0 = 0 (opt-in zero-H0 family)"
+        if result.zero_h0
+        else "H0 = 2R (backward-compatible default family)"
+    )
 
     lines = [
         "Requested closed contour length = {0:.10g}".format(result.requested_length),
@@ -2264,29 +2571,74 @@ def generation_summary(result: SCGenerationResult) -> str:
             result.plectoneme_phase_turns
         ),
         "Opening-angle selection = {0}".format(objective_label),
-        "Selected opening angle  = {0:.8g} deg".format(result.opening_angle_deg),
-        "Candidates/search evaluations = {0}".format(result.opening_angle_evaluations),
-        "Canonical loop control  = {0:.10g}".format(result.loop_control_canonical),
-        "Nominal scaled superhelix radius = {0:.10g}".format(result.radius_scaled),
         (
-            "Minimum final measured superhelix radius = not set"
+            "Selected opening angle  = N/A (ring has no arms)"
+            if ring_mode
+            else "Selected opening angle  = {0:.8g} deg".format(result.opening_angle_deg)
+        ),
+        (
+            "Realized arm-tangent beta = N/A (ring has no arms)"
+            if ring_mode
+            else "Realized arm-tangent beta = {0:.8g} deg".format(realized_beta_deg)
+        ),
+        "Candidates/search evaluations = {0}".format(result.opening_angle_evaluations),
+        (
+            "Canonical loop control  = N/A (ring has no Bezier loops)"
+            if ring_mode
+            else "Canonical loop control  = {0:.10g}".format(result.loop_control_canonical)
+        ),
+        (
+            "Serialized planar-ring radius = {0:.10g}".format(result.radius_scaled)
+            if ring_mode
+            else "Nominal scaled superhelix radius = {0:.10g}".format(result.radius_scaled)
+        ),
+        (
+            "Minimum final measured superhelix radius = N/A for planar ring"
+            if ring_mode
+            else "Minimum final measured superhelix radius = not set"
             if result.minimum_final_radius is None
             else "Minimum final measured superhelix radius = {0:.10g} (PASS)".format(
                 result.minimum_final_radius
             )
         ),
-        "Final measured superhelix radius = {0:.10g}".format(
-            result.final_superhelix_radius
+        (
+            "Final measured ring radius = {0:.10g}".format(result.final_superhelix_radius)
+            if ring_mode
+            else "Final measured superhelix radius = {0:.10g}".format(
+                result.final_superhelix_radius
+            )
         ),
-        "Scaled stem height                = {0:.10g}".format(result.stem_height_scaled),
+        (
+            "Scaled arm height H               = N/A (direct ring)"
+            if ring_mode
+            else "Scaled arm height H               = {0:.10g}".format(result.stem_height_scaled)
+        ),
+        "Canonical H0 mode                  = {0}".format(h0_mode_label),
+        "Canonical / scaled H0              = {0:.10g} / {1:.10g}".format(
+            result.canonical_h0,
+            result.h0_scaled,
+        ),
+        (
+            "Arm tangent calculation            = N/A (direct ring has no arms)"
+            if ring_mode
+            else "Arm tangent calculation            = exact parametric derivatives (not plotted samples)"
+        ),
         "Total curvature          = {0:.10g} rad".format(result.total_curvature),
         "Largest local curvature  = {0:.10g} inverse length".format(result.maximum_local_curvature),
         "Minimum local bend radius = {0:.10g}".format(minimum_bend_radius),
         "Reduced bending energy integral = {0:.10g} inverse length".format(
             result.bending_energy_integral
         ),
-        "Output geometry          = periodically smoothed once, then rescaled",
-        "Final-radius convention  = median serialized arm distance from axis (central 90%)",
+        (
+            "Output geometry          = direct regular polygon on an xz-plane circle; no smoothing"
+            if ring_mode
+            else "Output geometry          = periodically smoothed once, then rescaled"
+        ),
+        (
+            "Radius convention       = median serialized vertex distance from ring center"
+            if ring_mode
+            else "Final-radius convention  = median serialized arm distance from axis (central 90%)"
+        ),
         "Writhe convention        = exact written closed polyline used by Curve It",
         "Curvature convention     = periodic spline of written coordinates",
         "Mirror / handedness      = {0}".format(handedness),
@@ -2331,12 +2683,18 @@ def generation_summary(result: SCGenerationResult) -> str:
     lines.extend(
         [
             "",
-            "V3_5 projection-robustness diagnostics",
+            "V3_7 projection-robustness diagnostics",
             "Arm phase trimming           = {0}".format(
-                "enabled (default)" if result.trim_enabled else "disabled"
+                "not applicable (direct ring)"
+                if ring_mode
+                else "enabled (default)"
+                if result.trim_enabled
+                else "disabled"
             ),
             "Projection screening mode     = {0}".format(
-                "maximize qualifying views subject to minimum final measured radius"
+                "not applicable to W = 0 planar ring"
+                if ring_mode
+                else "maximize qualifying views subject to minimum final measured radius"
                 if result.screening_mode == SCREENING_MODE_MINIMUM_RADIUS
                 else "meet requested qualifying-views percentage"
             ),
@@ -2362,6 +2720,8 @@ def generation_summary(result: SCGenerationResult) -> str:
                 else (
                     "central inversion (even integer W)"
                     if is_integer and nearest != 0
+                    else "planar ring in xz"
+                    if ring_mode
                     else "legacy/untrimmed orientation"
                 )
             ),
@@ -2372,11 +2732,11 @@ def generation_summary(result: SCGenerationResult) -> str:
         fraction = float(stats["target_fraction"])
         if result.screening_mode == SCREENING_MODE_MINIMUM_RADIUS:
             screening_result = (
-                "V3_5 final-radius-constrained qualifying views = {0:.2%} "
+                "V3_7 final-radius-constrained qualifying views = {0:.2%} "
                 "(maximum at feasible phase trim)".format(fraction)
             )
         else:
-            screening_result = "V3_5 qualifying-views target (>={0:.6g}%) = {1}".format(
+            screening_result = "V3_7 qualifying-views target (>={0:.6g}%) = {1}".format(
                 100.0 * result.projection_majority_target,
                 "diagnostic only because trimming is disabled"
                 if not result.trim_enabled
@@ -2446,6 +2806,16 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "-a", "--opening-angle", type=float, default=None,
         help="Use this opening angle in degrees instead of automatic optimization.",
     )
+    parser.add_argument(
+        "--zero-h0",
+        action="store_true",
+        default=DEFAULT_ZERO_H0,
+        help=(
+            "Use the opt-in H0 = 0 arm-height construction. The default remains H0 = 2R. "
+            "Arm and loop endpoint directions are calculated from exact parametric "
+            "derivatives for nonzero W. At W = 0, directly generate a planar ring."
+        ),
+    )
     trim_group = parser.add_mutually_exclusive_group()
     trim_group.add_argument(
         "--trim",
@@ -2488,8 +2858,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Number of unique periodic output samples. Default: {0}".format(DEFAULT_NUM_POINTS),
     )
     parser.add_argument(
-        "-o", "--output", default=DEFAULT_OUTPUT,
-        help="Output plain-coordinate XYZ file. Default: {0}".format(DEFAULT_OUTPUT),
+        "-o", "--output", default=None,
+        help=(
+            "Output plain-coordinate XYZ file. When omitted, derive the filename "
+            "from L, W, radius/screening mode, opening-angle selection, and nondefault "
+            "H0 mode."
+        ),
     )
     parser.add_argument(
         "--precision", type=int, default=DEFAULT_PRECISION,
@@ -2508,6 +2882,17 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             and nearest != 0
         ):
             args.minimum_final_radius = DEFAULT_MINIMUM_FINAL_RADIUS
+    if args.output is None:
+        args.output = automatic_output_filename(
+            total_length=args.total_length,
+            target_writhe=args.writhe,
+            curvature_objective=args.curvature_objective,
+            opening_angle_deg=args.opening_angle,
+            trim_enabled=args.trim_enabled,
+            qualifying_views_percent=args.qualifying_views,
+            minimum_final_radius=args.minimum_final_radius,
+            zero_h0=args.zero_h0,
+        )
     return args
 
 
@@ -2524,6 +2909,7 @@ def run_cli(args: argparse.Namespace) -> SCGenerationResult:
         trim_enabled=args.trim_enabled,
         qualifying_views_percent=args.qualifying_views,
         minimum_final_radius=args.minimum_final_radius,
+        zero_h0=args.zero_h0,
     )
     write_plain_xyz(result.points, args.output, args.precision)
     print("Wrote {0} unique periodic points to: {1}".format(len(result.points), args.output))
@@ -2543,9 +2929,39 @@ def run_gui() -> None:
 
     root = tk.Tk()
     root.title("{0} {1}".format(TOOL_NAME, TOOL_VERSION))
-    root.geometry("1040x800")
+    root.geometry("1040x830")
     root.minsize(900, 700)
     set_optional_window_icon(root, tk, ("icon.png",), "_generate_sc_icon_image")
+
+    def bring_window_to_front() -> None:
+        """Raise and focus a newly launched helper without keeping it always on top."""
+
+        try:
+            root.deiconify()
+            root.lift()
+        except tk.TclError:
+            return
+
+        temporary_topmost = False
+        try:
+            root.attributes("-topmost", True)
+            temporary_topmost = True
+        except tk.TclError:
+            pass
+        try:
+            root.focus_force()
+        except tk.TclError:
+            pass
+
+        def release_temporary_topmost() -> None:
+            try:
+                if root.winfo_exists():
+                    root.attributes("-topmost", False)
+            except tk.TclError:
+                pass
+
+        if temporary_topmost:
+            root.after(400, release_temporary_topmost)
 
     style = ttk.Style(root)
     try:
@@ -2607,12 +3023,24 @@ def run_gui() -> None:
     writhe_var = tk.StringVar(value=str(DEFAULT_WRITHE))
     curvature_objective_var = tk.StringVar(value=DEFAULT_CURVATURE_OBJECTIVE)
     opening_angle_var = tk.StringVar(value=str(DEFAULT_OPENING_ANGLE_DEG))
+    zero_h0_var = tk.BooleanVar(value=DEFAULT_ZERO_H0)
     trim_enabled_var = tk.BooleanVar(value=True)
     qualifying_views_var = tk.StringVar(value=str(DEFAULT_QUALIFYING_VIEWS_PERCENT))
     minimum_final_radius_var = tk.StringVar(value=str(DEFAULT_MINIMUM_FINAL_RADIUS))
     points_var = tk.StringVar(value=str(DEFAULT_NUM_POINTS))
     precision_var = tk.StringVar(value=str(DEFAULT_PRECISION))
-    output_var = tk.StringVar(value=DEFAULT_OUTPUT)
+    initial_auto_output = automatic_output_filename(
+        total_length=DEFAULT_TOTAL_LENGTH,
+        target_writhe=DEFAULT_WRITHE,
+        curvature_objective=DEFAULT_CURVATURE_OBJECTIVE,
+        opening_angle_deg=None,
+        trim_enabled=True,
+        qualifying_views_percent=DEFAULT_QUALIFYING_VIEWS_PERCENT,
+        minimum_final_radius=DEFAULT_MINIMUM_FINAL_RADIUS,
+        zero_h0=DEFAULT_ZERO_H0,
+    )
+    output_var = tk.StringVar(value=initial_auto_output)
+    last_auto_output_name = {"value": initial_auto_output}
 
     fields = (
         ("Length L:", length_var),
@@ -2714,8 +3142,19 @@ def run_gui() -> None:
         (
             "Use provided angle",
             OPENING_ANGLE_MODE_MANUAL,
-            "Keeps the entered opening angle fixed while fitting exact writhe and screening "
-            "phase trim. The angle must be strictly between 0 and 90 degrees.\n\nExample: 25.",
+            "The entered opening-angle parameter alpha is the nominal pitch angle for "
+            "the phase-associated part of either superhelical arm. If H is the full "
+            "canonical arm height, H0 is the fixed stem extension, R is the canonical "
+            "arm radius, and theta is the signed phase sweep, then "
+            "tan(alpha) = |theta|*R/(H-H0), or H = H0 + |theta|*R/tan(alpha). "
+            "The default uses H0 = 2R, for which the realized acute angle beta between "
+            "the arm tangent and the plectoneme z axis is atan(|theta|*R/H), slightly "
+            "smaller than alpha. In the opt-in H0 = 0 mode, beta = alpha. Thus a "
+            "smaller angle makes a longer, more axial plectoneme, while a larger angle "
+            "makes a shorter, more transverse one. It is not the DNA base-pair twist "
+            "angle or the full angle between both arms.\n\nKeeps the entered angle fixed "
+            "while fitting exact writhe and screening phase trim. It must be strictly "
+            "between 0 and 90 degrees. Example: 25.",
         ),
     )
     for row, (label, value, explanation) in enumerate(options):
@@ -2735,11 +3174,12 @@ def run_gui() -> None:
     manual_angle_entry = ttk.Entry(objective_frame, textvariable=opening_angle_var, width=9)
     manual_angle_entry.grid(row=4, column=1, sticky="w", padx=(8, 0))
     ttk.Label(objective_frame, text="deg").grid(row=4, column=2, sticky="w", padx=(4, 0))
-    ttk.Checkbutton(
+    trim_checkbutton = ttk.Checkbutton(
         objective_frame,
         text="Enable arm-phase trimming (default)",
         variable=trim_enabled_var,
-    ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    )
+    trim_checkbutton.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
     add_help_button(
         objective_frame,
         5,
@@ -2751,27 +3191,120 @@ def run_gui() -> None:
         "presentation and |W| fixed-xz crossings for trim < 1. Disable trimming to retain "
         "the legacy pi*W arm phase; projection statistics then become diagnostic only.",
     )
+    ttk.Checkbutton(
+        objective_frame,
+        text="Use H0 = 0 construction (default: H0 = 2R)",
+        variable=zero_h0_var,
+    ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(4, 0))
+    add_help_button(
+        objective_frame,
+        6,
+        3,
+        "Zero-H0 construction (--zero-h0)",
+        "Selects the distinct H0 = 0 arm-height family instead of the default H0 = 2R. "
+        "For every tested angle and phase trim, the arm endpoint directions are calculated "
+        "analytically from the exact parametric derivatives and supplied directly to the "
+        "cubic-Bezier closing loops; they are not inferred from plotted or sampled curves. "
+        "The full angle, loop-control, writhe, trim, smoothing, scaling, and serialized-"
+        "coordinate checks are repeated for nonzero W. At exactly W = 0, the arm/loop "
+        "parameterization collapses, so V3.7 directly writes a regular planar ring with "
+        "the requested closed length; opening-angle, trimming, and screening settings "
+        "are then not applicable.\n\n"
+        "Default: off (H0 = 2R).",
+    )
+
+    def zero_h0_ring_selected() -> bool:
+        try:
+            return bool(zero_h0_var.get()) and abs(float(writhe_var.get().strip())) <= 1.0e-12
+        except (TypeError, ValueError):
+            return False
 
     def update_manual_state(*_args) -> None:
         manual_angle_entry.configure(
-            state="normal" if curvature_objective_var.get() == OPENING_ANGLE_MODE_MANUAL else "disabled"
+            state=(
+                "normal"
+                if curvature_objective_var.get() == OPENING_ANGLE_MODE_MANUAL
+                and not zero_h0_ring_selected()
+                else "disabled"
+            )
         )
 
     def update_screening_state(*_args) -> None:
-        trimming_enabled = bool(trim_enabled_var.get())
+        ring_mode = zero_h0_ring_selected()
+        trimming_enabled = bool(trim_enabled_var.get()) and not ring_mode
         radius_mode = bool(minimum_final_radius_var.get().strip())
         qualifying_state = "!disabled" if trimming_enabled and not radius_mode else "disabled"
         radius_state = "!disabled" if trimming_enabled else "disabled"
+        trim_checkbutton.state(("disabled",) if ring_mode else ("!disabled",))
         qualifying_views_label.state((qualifying_state,))
         qualifying_views_entry.state((qualifying_state,))
         minimum_radius_label.state((radius_state,))
         minimum_radius_entry.state((radius_state,))
 
+    def update_automatic_output(*_args) -> None:
+        """Refresh an automatic basename while preserving a custom user filename."""
+
+        try:
+            selection = curvature_objective_var.get().strip()
+            manual_angle = (
+                float(opening_angle_var.get().strip())
+                if selection == OPENING_ANGLE_MODE_MANUAL
+                else None
+            )
+            minimum_radius_text = minimum_final_radius_var.get().strip()
+            minimum_radius = (
+                float(minimum_radius_text)
+                if bool(trim_enabled_var.get()) and minimum_radius_text
+                else None
+            )
+            new_name = automatic_output_filename(
+                total_length=float(length_var.get().strip()),
+                target_writhe=float(writhe_var.get().strip()),
+                curvature_objective=(
+                    DEFAULT_CURVATURE_OBJECTIVE
+                    if selection == OPENING_ANGLE_MODE_MANUAL
+                    else selection
+                ),
+                opening_angle_deg=manual_angle,
+                trim_enabled=bool(trim_enabled_var.get()),
+                qualifying_views_percent=float(qualifying_views_var.get().strip()),
+                minimum_final_radius=minimum_radius,
+                zero_h0=bool(zero_h0_var.get()),
+            )
+        except (TypeError, ValueError):
+            return
+
+        current_text = output_var.get().strip()
+        current_path = Path(current_text) if current_text else Path(last_auto_output_name["value"])
+        if not current_text or current_path.name == last_auto_output_name["value"]:
+            output_var.set(
+                str(current_path.with_name(new_name))
+                if current_path.parent != Path(".")
+                else new_name
+            )
+        last_auto_output_name["value"] = new_name
+
     curvature_objective_var.trace_add("write", update_manual_state)
+    writhe_var.trace_add("write", update_manual_state)
+    zero_h0_var.trace_add("write", update_manual_state)
     trim_enabled_var.trace_add("write", update_screening_state)
     minimum_final_radius_var.trace_add("write", update_screening_state)
+    writhe_var.trace_add("write", update_screening_state)
+    zero_h0_var.trace_add("write", update_screening_state)
+    for filename_input_var in (
+        length_var,
+        writhe_var,
+        curvature_objective_var,
+        opening_angle_var,
+        trim_enabled_var,
+        zero_h0_var,
+        qualifying_views_var,
+        minimum_final_radius_var,
+    ):
+        filename_input_var.trace_add("write", update_automatic_output)
     update_manual_state()
     update_screening_state()
+    update_automatic_output()
 
     output_frame = ttk.LabelFrame(body, text="Output and verification", padding=10)
     output_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
@@ -2789,13 +3322,19 @@ def run_gui() -> None:
         "Output file (--output)",
         "Destination for the plain-coordinate XYZ file. Each row contains x y z; there is "
         "no atom-count header and the first point is not repeated at the end. Load this file "
-        "in Curve It with Path type: closed.\n\nExample: sc_W3_ABend.xyz.",
+        "in Curve It with Path type: closed. The automatic basename records L, W, the "
+        "radius or screening mode, opening-angle selection, and a trailing H0zero token "
+        "when that opt-in family is selected. A custom typed or browsed filename is "
+        "preserved.\n\nExamples: sc_L1071_Wm3_R13_ABend.xyz and "
+        "sc_L1071_Wm3_R13_ABend_H0zero.xyz. The direct zero-writhe ring is "
+        "sc_L1071_W0_NoTrim_Ring_H0zero.xyz.",
     )
 
     def browse_output() -> None:
         filename = filedialog.asksaveasfilename(
             title="Save plectonemic curve",
             defaultextension=".xyz",
+            initialfile=Path(output_var.get().strip()).name,
             filetypes=(("XYZ files", "*.xyz"), ("Text files", "*.txt"), ("All files", "*.*")),
         )
         if filename:
@@ -2827,7 +3366,10 @@ def run_gui() -> None:
         "  used by Generate XYZ. It displays the full report here without writing a file.\n\n"
         "Generate XYZ function:\n"
         "  Performs the same preview/verification (or reuses its cached result when the\n"
-        "  geometry inputs are unchanged), then writes the selected XYZ output file."
+        "  geometry inputs are unchanged), then writes the selected XYZ output file.\n\n"
+        "Automatic output filename:\n"
+        "  Follows L, W, radius/screening mode, opening-angle selection, and H0 mode until you\n"
+        "  enter or browse to a custom filename. W = 0 with H0 = 0 uses the Ring token."
     )
     status_var = tk.StringVar(value="Ready.")
     ttk.Label(main, textvariable=status_var).grid(row=3, column=0, sticky="w", pady=(10, 0))
@@ -2846,11 +3388,15 @@ def run_gui() -> None:
             manual_angle = float(opening_angle_var.get().strip())
         num_points = int(points_var.get().strip())
         precision = int(precision_var.get().strip())
-        trim_enabled = bool(trim_enabled_var.get())
+        zero_h0 = bool(zero_h0_var.get())
+        ring_mode = zero_h0 and abs(target_writhe) <= 1.0e-12
+        trim_enabled = bool(trim_enabled_var.get()) and not ring_mode
+        if ring_mode:
+            manual_angle = None
         minimum_radius_text = minimum_final_radius_var.get().strip()
         minimum_final_radius = (
             float(minimum_radius_text)
-            if trim_enabled and minimum_radius_text
+            if trim_enabled and minimum_radius_text and not ring_mode
             else None
         )
         qualifying_views = (
@@ -2871,6 +3417,7 @@ def run_gui() -> None:
             trim_enabled,
             qualifying_views,
             minimum_final_radius,
+            zero_h0,
         )
         return (
             total_length,
@@ -2880,6 +3427,7 @@ def run_gui() -> None:
             trim_enabled,
             qualifying_views,
             minimum_final_radius,
+            zero_h0,
             num_points,
             precision,
             output,
@@ -2896,6 +3444,7 @@ def run_gui() -> None:
             trim_enabled,
             qualifying_views,
             minimum_final_radius,
+            zero_h0,
             num_points,
             precision,
             output,
@@ -2908,11 +3457,16 @@ def run_gui() -> None:
             trim_enabled,
             qualifying_views,
             minimum_final_radius,
+            zero_h0,
             num_points,
             precision,
         )
         if cached_result is None or cached_key != key:
-            status_var.set("Fitting Gauss writhe and screening generic projections...")
+            status_var.set(
+                "Generating and verifying the direct planar ring..."
+                if zero_h0 and abs(target_writhe) <= 1.0e-12
+                else "Fitting Gauss writhe and screening generic projections..."
+            )
             root.update_idletasks()
             cached_result = generate_sc_points(
                 total_length=total_length,
@@ -2924,6 +3478,7 @@ def run_gui() -> None:
                 trim_enabled=trim_enabled,
                 qualifying_views_percent=qualifying_views,
                 minimum_final_radius=minimum_final_radius,
+                zero_h0=zero_h0,
             )
             cached_key = key
         set_summary(generation_summary(cached_result))
@@ -2974,6 +3529,7 @@ def run_gui() -> None:
     ttk.Button(buttons, text="Preview / verify", command=preview).pack(side="left", padx=(0, 8))
     ttk.Button(buttons, text="Generate XYZ", command=generate_file).pack(side="left")
     root.bind("<Escape>", lambda _event: root.destroy())
+    root.after(100, bring_window_to_front)
     root.mainloop()
 
 

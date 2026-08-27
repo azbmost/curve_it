@@ -2158,7 +2158,7 @@ def launch_gui() -> None:
             "Generate SC",
             "Open the plectonemic supercoil-axis generator.\n\n"
             "It writes a closed, plain-coordinate XYZ curve that can be loaded directly as a Curve It curve input; use path type closed.\n\n"
-            "Generate SC V3_5 fits the exact serialized-polyline Gauss writhe used by Curve It and, for nonzero integer W, screens 256 deterministic reflection-paired projections for the requested signed crossing sum. Arm-phase trimming is enabled by default and can be disabled. The default design uses L = 1071 and maximizes qualifying views while retaining a minimum final measured central-arm radius of 13; users can instead select a qualifying-view target. The GUI presents the final-radius field before qualifying views and dynamically disables fields that do not apply to the selected screening state. A final z-axis rotation restores the symmetric fixed-xz presentation used by V2.2, and its centered phase interval preserves |W| crossings for phase_trim < 1. The default automatic opening-angle objective minimizes total bending energy, proportional to integral kappa(s)^2 ds; alternatives minimize the largest local curvature or total curvature. Equal-lobes mode supports trimmed and untrimmed geometry, resolving the angle at each trim to preserve terminal/middle lobe equality. A manual mode retains a user-provided opening angle. The report includes plectoneme_phase_turns = |theta_total|/(2*pi), the nominal construction radius and final measured arm radius, final-radius screening constraint, V2.2-style middle-segment peaks, lobe heights, symmetry rotation, multi-view diagnostics, curvature metrics, PCA/fixed-xz checks, and exact writhe."
+            "Generate SC V3_7 fits the exact serialized-polyline Gauss writhe used by Curve It and, for nonzero integer W, screens 256 deterministic reflection-paired projections for the requested signed crossing sum. Arm-phase trimming is enabled by default and can be disabled. The default design uses L = 1071 and maximizes qualifying views while retaining a minimum final measured central-arm radius of 13; users can instead select a qualifying-view target. The default arm-height family remains H0 = 2R. An opt-in H0 = 0 mode repeats the complete optimization and validation pipeline for nonzero W, with arm and loop endpoint directions calculated from exact parametric derivatives rather than plotted samples. At W = 0 it directly writes a verified planar ring because the arm/loop parameterization has collapsed. The GUI presents the final-radius field before qualifying views and dynamically disables fields that do not apply to the selected screening state. Its output filename automatically records L, W, radius/screening mode, opening-angle selection, and nondefault H0 mode until a custom name is entered. A final z-axis rotation restores the symmetric fixed-xz presentation used by V2.2, and its centered phase interval preserves |W| crossings for phase_trim < 1. The default automatic opening-angle objective minimizes total bending energy, proportional to integral kappa(s)^2 ds; alternatives minimize the largest local curvature or total curvature. Equal-lobes mode supports trimmed and untrimmed geometry, resolving the angle at each trim to preserve terminal/middle lobe equality. A manual mode retains a user-provided opening angle. The report includes plectoneme_phase_turns = |theta_total|/(2*pi), the H0 construction mode, nominal construction radius and final measured arm radius, final-radius screening constraint, V2.2-style middle-segment peaks, lobe heights, symmetry rotation, multi-view diagnostics, curvature metrics, PCA/fixed-xz checks, and exact writhe."
         ),
         "plane_it": (
             "Plane It",
@@ -3043,7 +3043,7 @@ def launch_gui() -> None:
 
     def launch_generate_sc_tool() -> None:
         script_path = resource_path(
-            os.path.join("curve_it_lib", "generate_sc_xyzV3_5.py")
+            os.path.join("curve_it_lib", "generate_sc_xyzV3_7.py")
         )
         if not os.path.isfile(script_path):
             messagebox.showerror(
@@ -3936,8 +3936,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     # This hidden dispatch keeps the Other tools launcher functional there.
     if args.generate_sc_gui:
         try:
-            from curve_it_lib import generate_sc_xyzV3_5
-            generate_sc_xyzV3_5.run_gui()
+            from curve_it_lib import generate_sc_xyzV3_7
+            generate_sc_xyzV3_7.run_gui()
         except Exception as exc:
             raise SystemExit(f"Failed to launch Generate SC: {exc}")
         return
