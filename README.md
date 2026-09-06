@@ -22,6 +22,7 @@ GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along An
 - Required: `numpy`
 - Required by **Generate SC**; otherwise optional but recommended: `scipy` for curvature/writhe reporting and the local curvature/torsion tool
 - Optional: `matplotlib` for the GUI curve viewer and local analysis plots
+- Required by **XYZ to 3D Model**; not needed otherwise: `trimesh` for STL/GLB mesh output
 - Optional: Tkinter for GUI mode. It is included with many Python installations.
 
 Install the Python packages:
@@ -286,6 +287,25 @@ This requires `x3dna-dssr` to be installed and available on `PATH`; otherwise, p
 
 Base-pair lines use `--base-pair-atom` as the residue anchor atom. The default is `C3'`, recommended for B-DNA; `C4'` is recommended for A-RNA.
 
+**XYZ to 3D Model...** opens `curve_it_lib/xyz2model.py`, which turns a curve into a printable solid. It sweeps a round rod along every curve in the file and writes a binary STL holding all components as one multi-shell file, plus a binary GLB with one separately colored mesh per component for rendering. Closed loops and open strands are both handled, and open ends receive rounded caps. When the main window already has a curve file loaded, the tool opens with that file selected. This tool requires `trimesh`.
+
+The scale factor is applied to the centerline first and the rod is swept afterwards, so the rod diameter is in final output units and the scale factor does not change it:
+
+```text
+input coordinates  x --scale  ->  centre-line  + --diameter  ->  solid
+```
+
+`MODEL SIZE` is the printed extent and is the number to compare against a build volume. A rod of radius `r` reaches `r` beyond the centerline in every direction, so the solid is exactly one rod diameter larger than the centerline extent on each of the three axes, rounded end caps included. The measured size read back from the finished mesh is slightly under `MODEL SIZE` because the tube is a 24-sided prism inscribed in the true circle rather than touching it.
+
+An existing `STL`, `OBJ`, `PLY`, `GLB`, `3MF`, or `OFF` mesh is also accepted. A mesh is only rescaled, so rod diameter, segments, facets, and the closed-curve setting do not apply. The input mode is taken from the file extension, then from the file's first bytes, and can be forced with `--as`.
+
+```bash
+python3 curve_it_lib/xyz2model.py curve.xyz --info
+python3 curve_it_lib/xyz2model.py curve.xyz -d 2.0 -s 0.25
+python3 curve_it_lib/xyz2model.py curve.xyz -d 1.5 --split --preview
+python3 curve_it_lib/xyz2model.py model.stl --as mesh -s 0.5
+```
+
 ## Outputs
 
 - The curved PDB is written to `-o/--output-pdb`, or to `<input>_curved.pdb` if no output path is given.
@@ -336,6 +356,7 @@ Supporting scripts live in `curve_it_lib/`:
 - `curved_connectorV3_4.py`
 - `plane_itV3_8.py` (versioned Plane It implementation; use `plane_it.py` as the stable launcher)
 - `view_xyzV3.py`
+- `xyz2model.py`
 
 They can still be run directly, for example:
 
@@ -348,6 +369,7 @@ python3 curve_it_lib/generate_helix_xyzV2.py -R 10 -c 2 -L 200 -o helix.xyz
 python3 curve_it_lib/generate_sc_xyzV3_7.py -L 1071 -w -3 -n 2000
 python3 curve_it_lib/view_xyzV3.py curve.xyz
 python3 curve_it_lib/view_xyzV3.py multi_component.txt --components A,C
+python3 curve_it_lib/xyz2model.py curve.xyz -d 2.0 -s 0.25
 ```
 
 ## License

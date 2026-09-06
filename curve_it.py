@@ -2172,6 +2172,15 @@ def launch_gui() -> None:
             "The V3_4 tool can optionally enforce a sampled maximum local curvature limit during centerline optimization and includes the endpoint twist mismatch in output PDB filenames.\n\n"
             "The reported twist_mismatch_deg is an endpoint base-pair orientation mismatch, not integrated curve torsion or material twist energy."
         ),
+        "xyz2model": (
+            "XYZ to 3D Model",
+            "Open the solid-model builder for 3D printing and rendering.\n\n"
+            "It sweeps a round rod along every curve in a coordinate XYZ/txt file and writes a binary STL with all components in one multi-shell file, plus a binary GLB with one separately colored mesh per component. Closed loops and open strands are both handled; open ends receive rounded caps. An existing STL/OBJ/PLY/GLB/3MF/OFF mesh can also be loaded, in which case the tool only rescales it.\n\n"
+            "The scale factor is applied to the centerline first, then the rod is swept, so the rod diameter is in final output units and the scale factor does not change it:\n"
+            "input coordinates x scale -> centerline + diameter -> solid\n\n"
+            "MODEL SIZE is the printed extent. A rod of radius r reaches r beyond the centerline on every axis, so the solid is exactly one rod diameter larger than the centerline extent on each of the three axes; compare that number against the build volume. The measured size read back from the finished mesh comes out slightly under MODEL SIZE because the tube is a 24-sided prism inscribed in the true circle.\n\n"
+            "When the main window already has a curve file loaded, it opens with that file selected. Requires the trimesh package."
+        ),
         "path_type": (
             "Path Type",
             "closed treats the curve as a periodic loop and can wrap the fitted PDB around the curve.\n\n"
@@ -3195,6 +3204,34 @@ def launch_gui() -> None:
         except Exception as e:
             messagebox.showerror("Tool launch error", f"Failed to launch Curved Connector:\n{e}")
 
+    def launch_xyz2model_tool() -> None:
+        script_path = resource_path(os.path.join("curve_it_lib", "xyz2model.py"))
+        if not os.path.isfile(script_path):
+            messagebox.showerror(
+                "Tool not found",
+                f"Could not find the XYZ to 3D Model tool:\n{script_path}",
+            )
+            return
+        try:
+            import trimesh  # noqa: F401
+        except Exception:
+            messagebox.showerror(
+                "Missing dependency",
+                "XYZ to 3D Model needs the trimesh package to build STL/GLB meshes.\n\n"
+                "Install it with:\n"
+                "    python3 -m pip install trimesh",
+            )
+            return
+        command = [sys.executable, script_path, "--gui"]
+        curve_path = (curve_xyz_path or curve_path_var.get()).strip()
+        if curve_path and os.path.isfile(curve_path):
+            command = [sys.executable, script_path, curve_path, "--gui"]
+        try:
+            import subprocess
+            subprocess.Popen(command)
+        except Exception as e:
+            messagebox.showerror("Tool launch error", f"Failed to launch XYZ to 3D Model:\n{e}")
+
     tk.Button(file_frame, text="View curve", command=view_curve).grid(
         row=2, column=6, sticky="w", padx=4, pady=2
     )
@@ -3522,6 +3559,7 @@ def launch_gui() -> None:
     add_tool_button(1, 0, "Local curvature/torsion...", launch_local_curvature_torsion_tool, "local_curvature_torsion")
     add_tool_button(1, 1, "Plane It...", launch_plane_it_tool, "plane_it")
     add_tool_button(1, 2, "Curved Connector...", launch_curved_connector_tool, "curved_connector")
+    add_tool_button(2, 0, "XYZ to 3D Model...", launch_xyz2model_tool, "xyz2model")
     for col in range(3):
         tools_frame.grid_columnconfigure(col, weight=1)
 
