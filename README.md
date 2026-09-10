@@ -21,7 +21,8 @@ GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along An
 - Python 3.9 or newer
 - Required: `numpy`
 - Required by **Generate SC**; otherwise optional but recommended: `scipy` for curvature/writhe reporting and the local curvature/torsion tool
-- Optional: `matplotlib` for the GUI curve viewer and local analysis plots
+- Optional: `matplotlib` for the GUI curve viewer, local analysis plots, and the SVG to XYZ preview
+- **SVG to XYZ** needs nothing beyond `numpy` and the standard library
 - Required by **XYZ to 3D Model**; not needed otherwise: `trimesh` for STL/GLB mesh output
 - Optional: Tkinter for GUI mode. It is included with many Python installations.
 
@@ -166,6 +167,31 @@ python3 curve_it_lib/get_curve_it_phaseV5_1.py input.pdb curve.xyz \
 ```
 
 **Convert XYZ...** opens a small conversion window for coordinate XYZ/txt, molecular XYZ, and fake-PDB output. An optional scale factor multiplies every output coordinate before writing. Fake PDB output is meant for molecular visualization: each point becomes one atom in one residue, using residue `ALA` and atom `CA` by default. Blank-line-separated coordinate components become chains `A`, `B`, `C`, and so on; selected closed chains can be written with `LINK` records.
+
+**SVG to XYZ...** opens `curve_it_lib/svg2xyz.py`, which turns a 2D vector drawing into space curves. Every drawn `<path>`, `<polyline>`, `<polygon>`, `<line>`, `<rect>`, `<circle>`, and `<ellipse>` becomes one component of a coordinate XYZ/txt file, so a drawing holding several curves produces a curve file holding the same number of space curves, selectable as components `A`, `B`, `C`, and so on. The drawing is flat, so every `z` is the same constant, `0` by default.
+
+Bezier and elliptical-arc geometry is flattened by adaptive subdivision at a chosen tolerance, which keeps corners exact and arcs smooth; elliptical arcs, circles, ellipses, and rounded rectangles are all built from cubic pieces of at most 45 degrees, so their radial error stays near `2e-5` of the radius. Group and element transforms are composed exactly, `<use>` references are expanded in place, and nested `<svg>` and `<symbol>` viewBoxes are applied. Text, images, gradients, clip paths, markers, anything inside `<defs>`, and anything hidden with `display:none`, `visibility:hidden`, or `opacity:0` are all skipped, including a hidden Illustrator layer delivered as a `.st5 { display:none; }` rule in a `<style>` block.
+
+The SVG y axis points down the page, so it is flipped by default and the exported curve comes out with the same orientation as the drawing; `--no-flip-y` keeps the raw SVG coordinates. Flipping is a reflection, so it reverses the sign of any signed quantity computed from the curve later. Closed shapes are written without repeating the first point, which is the convention Curve It, its writhe calculation, and Generate SC all use; load such a curve with **Path type: closed**.
+
+Coordinates are written at the requested precision, and points that would round to the same row are removed before writing, so the file never contains a zero-length segment. That matters because Curve It's writhe calculation rejects those outright and its discrete total curvature silently loses the turning angle there.
+
+By default the adaptively flattened points are kept, which places a point exactly on every corner. `--points` or `--spacing` resample instead, evenly by arc length. Evenly spaced samples step straight over a sharp vertex, so resampling keeps exactly every vertex that turns by at least `--min-corner-angle`, 20 degrees by default, and resamples each smooth stretch between two kept corners on its own. The threshold decides what counts as a corner; it is not an angle applied to the geometry. Resampling a 60 by 40 rectangle to 137 points clips its corners by 0.52 units with the threshold at 0, and reproduces all four exactly at 20; more points does not fix the clipping, only shrinks it. Resampled points always lie on the drawn path, so the only shape change possible is a chord cutting inward across a corner.
+
+Use `--info` first to list what the drawing contains, then pick from that listing with `-c/--components`, spelled exactly like Curve It's own `--curve-components`: `A`, `B,C`, `A-C`, or `all`. Selection is applied after every other filter, so the labels are the ones you just read, and after scaling and centring, so a component extracted on its own is bit-identical to the same component of the full file and separately extracted curves stay in register. `--split` writes every component to its own file in one pass instead.
+
+`--include` and `--exclude` select curves by id, class, or enclosing group name, and unlike `--components` they run before scaling, so the curves left over reframe the output. This is how the decoration is dropped from a Plane It projection SVG. `--elements` restricts by shape type.
+
+```bash
+python3 curve_it_lib/svg2xyz.py drawing.svg --info
+python3 curve_it_lib/svg2xyz.py drawing.svg
+python3 curve_it_lib/svg2xyz.py drawing.svg -s 0.25 --points 400
+python3 curve_it_lib/svg2xyz.py drawing.svg -c B
+python3 curve_it_lib/svg2xyz.py drawing.svg --fit-size 340 --split
+python3 curve_it_lib/svg2xyz.py projection.svg --elements path --exclude xy-plane
+```
+
+Curve It concatenates every component of a curve file by default, so a multi-curve XYZ file should normally be used one component at a time, with **Select components...** in the GUI or `--curve-components A` on the command line. The tool prints the exact commands after a conversion.
 
 **Generate helical curve...** opens `curve_it_lib/generate_helix_xyzV2.py`. This tool writes a plain-coordinate XYZ file for a circular helix:
 
@@ -355,6 +381,7 @@ Supporting scripts live in `curve_it_lib/`:
 - `get_curve_it_phaseV5_1.py`
 - `curved_connectorV3_4.py`
 - `plane_itV3_8.py` (versioned Plane It implementation; use `plane_it.py` as the stable launcher)
+- `svg2xyz.py`
 - `view_xyzV3.py`
 - `xyz2model.py`
 
@@ -367,6 +394,7 @@ python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py curve.xyz --no-plot
 python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py --example-trefoil --no-plot
 python3 curve_it_lib/generate_helix_xyzV2.py -R 10 -c 2 -L 200 -o helix.xyz
 python3 curve_it_lib/generate_sc_xyzV3_7.py -L 1071 -w -3 -n 2000
+python3 curve_it_lib/svg2xyz.py drawing.svg --info
 python3 curve_it_lib/view_xyzV3.py curve.xyz
 python3 curve_it_lib/view_xyzV3.py multi_component.txt --components A,C
 python3 curve_it_lib/xyz2model.py curve.xyz -d 2.0 -s 0.25

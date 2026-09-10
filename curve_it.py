@@ -2141,6 +2141,14 @@ def launch_gui() -> None:
             "Fake PDB output writes one atom per residue for molecular visualization. By default each point becomes atom CA in residue ALA; blank-line-separated coordinate components become chains A, B, C, and so on. Closed chains can be marked with LINK records.\n\n"
             "The scale factor multiplies every output x/y/z coordinate before writing."
         ),
+        "svg2xyz": (
+            "SVG to XYZ",
+            "Open the 2D drawing converter.\n\n"
+            "It reads an SVG and writes a coordinate XYZ/txt curve file in which every z is the same constant, 0 by default. Each drawn path, polyline, polygon, line, rect, circle, and ellipse becomes one component, so a drawing holding several curves produces a curve file holding the same number of space curves, selectable as components A, B, C, and so on.\n\n"
+            "Bezier and elliptical-arc geometry is flattened by adaptive subdivision at a tolerance you choose, so corners stay exact and arcs stay smooth. Group and element transforms are composed exactly, and hidden geometry, text, images, and anything inside defs are skipped.\n\n"
+            "The SVG y axis points down the page, so it is flipped by default and the exported curve comes out with the same orientation as the drawing. Closed shapes are written without repeating the first point, which is the convention Curve It expects for Path type: closed.\n\n"
+            "Pick individual curves with the components field, using the same A, B, C labels this GUI uses: A, or B,C, or A-C. Selection happens after sizing and centering, so a curve pulled out on its own stays in register with the rest of the drawing. Include and exclude select instead by id, class, or enclosing group name, and do reframe the output; that is how the decoration is dropped from a Plane It projection SVG."
+        ),
         "local_curvature_torsion": (
             "Local Curvature/Torsion",
             "Open the local curve analysis tool. It writes a CSV table with normalized path position, coordinates, local curvature, regularized local torsion, and local writhe density.\n\n"
@@ -3232,6 +3240,24 @@ def launch_gui() -> None:
         except Exception as e:
             messagebox.showerror("Tool launch error", f"Failed to launch XYZ to 3D Model:\n{e}")
 
+    def launch_svg2xyz_tool() -> None:
+        script_path = resource_path(os.path.join("curve_it_lib", "svg2xyz.py"))
+        if not os.path.isfile(script_path):
+            messagebox.showerror(
+                "Tool not found",
+                f"Could not find the SVG to XYZ tool:\n{script_path}",
+            )
+            return
+        try:
+            import subprocess
+            if getattr(sys, "frozen", False):
+                command = [sys.executable, "--svg2xyz-gui"]
+            else:
+                command = [sys.executable, script_path, "--gui"]
+            subprocess.Popen(command)
+        except Exception as e:
+            messagebox.showerror("Tool launch error", f"Failed to launch SVG to XYZ:\n{e}")
+
     tk.Button(file_frame, text="View curve", command=view_curve).grid(
         row=2, column=6, sticky="w", padx=4, pady=2
     )
@@ -3549,19 +3575,25 @@ def launch_gui() -> None:
 
     def add_tool_button(row: int, col: int, label: str, command: Any, topic_key: str) -> None:
         cell = tk.Frame(tools_frame)
-        cell.grid(row=row, column=col, sticky="w", padx=(4, 14), pady=4)
+        cell.grid(row=row, column=col, sticky="w", padx=(3, 8), pady=2)
         tk.Button(cell, text=label, command=command).pack(side="left")
-        help_button(cell, topic_key).pack(side="left", padx=(4, 0))
+        help_button(cell, topic_key).pack(side="left", padx=(3, 0))
 
+    # Two rows of four: the first row produces or converts a curve file, the
+    # second analyzes one or builds something from it.
     add_tool_button(0, 0, "Convert XYZ...", convert_xyz_file_dialog, "xyz_convert")
-    add_tool_button(0, 1, "Generate helical curve...", launch_generate_helical_curve_tool, "generate_helical_curve")
-    add_tool_button(0, 2, "Generate SC...", launch_generate_sc_tool, "generate_sc")
+    add_tool_button(0, 1, "SVG to XYZ...", launch_svg2xyz_tool, "svg2xyz")
+    add_tool_button(0, 2, "Generate helical curve...", launch_generate_helical_curve_tool, "generate_helical_curve")
+    add_tool_button(0, 3, "Generate SC...", launch_generate_sc_tool, "generate_sc")
     add_tool_button(1, 0, "Local curvature/torsion...", launch_local_curvature_torsion_tool, "local_curvature_torsion")
     add_tool_button(1, 1, "Plane It...", launch_plane_it_tool, "plane_it")
     add_tool_button(1, 2, "Curved Connector...", launch_curved_connector_tool, "curved_connector")
-    add_tool_button(2, 0, "XYZ to 3D Model...", launch_xyz2model_tool, "xyz2model")
-    for col in range(3):
-        tools_frame.grid_columnconfigure(col, weight=1)
+    add_tool_button(1, 3, "XYZ to 3D Model...", launch_xyz2model_tool, "xyz2model")
+    # Only the trailing spacer column takes up slack, so the buttons stay
+    # grouped at the left instead of spreading across the window width.
+    for col in range(4):
+        tools_frame.grid_columnconfigure(col, weight=0)
+    tools_frame.grid_columnconfigure(4, weight=1)
 
     # --- Run log frame ---
     log_frame = tk.LabelFrame(root, text="Run log", font=section_font)
@@ -3961,6 +3993,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
+        "--svg2xyz-gui",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "-v", "--version",
         action="version",
         version=f"{APP_NAME} {APP_VERSION}",
@@ -3978,6 +4015,14 @@ def main(argv: Optional[List[str]] = None) -> None:
             generate_sc_xyzV3_7.run_gui()
         except Exception as exc:
             raise SystemExit(f"Failed to launch Generate SC: {exc}")
+        return
+
+    if args.svg2xyz_gui:
+        try:
+            from curve_it_lib import svg2xyz
+            svg2xyz.run_gui()
+        except Exception as exc:
+            raise SystemExit(f"Failed to launch SVG to XYZ: {exc}")
         return
 
     # Decide whether to use GUI:
