@@ -281,11 +281,15 @@ HELP = {
         "and 8_19 are the left- and right-handed forms and you have to pick "
         "the one you mean. Click the ? beside Browse catalogue... for the "
         "detail.\n\n"
-        "Anything containing a space is treated as a KnotPlot command "
-        "instead and passed through untouched, so generators work too. On "
-        "the command line such an item has to be quoted. For torus, note "
-        "that the order of its two numbers is not the one every text "
-        "uses - click the ? beside it.",
+        "A generator command and its numbers can be typed plainly: "
+        "torus 2 3, lissajous 3 2 5. They are recognised and kept "
+        "together, so no quoting is needed here or on the command line, "
+        "and the numbers that follow a catalogue name are still read as "
+        "separate targets. Only the arguments a command requires are "
+        "absorbed, so quote the whole thing if you want to pass one of "
+        "its optional trailing arguments. For torus, note that the order "
+        "of its two numbers is not the one every text uses - click the ? "
+        "beside it.",
         "4.1 6.3.2 \"torus 2 3\"\n"
         "  4.1          -> load 4.1\n"
         "  6.3.2        -> load 6.3.2      (a 3-component link)\n"
@@ -1453,6 +1457,49 @@ def preview_selection(written):
     return chosen, note
 
 
+# KnotPlot commands that build a curve from numbers, with the count of
+# arguments each one requires.  Optional trailing arguments are deliberately
+# not counted: a catalogue name such as 4.1 also parses as a number, so
+# absorbing more than the required count would swallow the next target.
+GENERATORS = {
+    "torus": 2, "toru": 2,
+    "lissajous": 3, "lissa": 3,
+    "2lissajous": 4, "2lissa": 4,
+}
+
+
+def _looks_numeric(token):
+    try:
+        float(token)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def merge_generator_commands(tokens):
+    """Rejoin a bare generator command with its numbers.
+
+    `torus 2 3` is what KnotPlot itself takes and what anyone types, but a
+    whitespace split turns it into three targets that each fail to load. A
+    token that already contains a space came from quoting and is left alone,
+    so the older quoted form keeps working.
+    """
+    out = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        arity = GENERATORS.get(str(token).strip().lower()) if token else None
+        if arity and " " not in str(token):
+            args = tokens[index + 1:index + 1 + arity]
+            if len(args) == arity and all(_looks_numeric(a) for a in args):
+                out.append(" ".join([str(token)] + [str(a) for a in args]))
+                index += 1 + arity
+                continue
+        out.append(token)
+        index += 1
+    return out
+
+
 def torus_note(targets):
     """Warn about `torus p q`'s index order, which no convention agrees on."""
     used = [t for t in targets if str(t).strip().lower().startswith("torus")]
@@ -1607,7 +1654,7 @@ def build_parser():
 
 def resolve_targets(args, install):
     """The full target list for this run, catalogue expansion included."""
-    targets = list(args.targets)
+    targets = merge_generator_commands(list(args.targets))
     if args.all:
         targets += catalogue_names(install, dedupe=not args.no_dedupe)
     return targets
@@ -1851,7 +1898,7 @@ def run_gui(initial_outdir=None):
     targets_entry = ttk.Entry(ft, textvariable=V["targets"], width=34)
     targets_entry.grid(row=0, column=0, columnspan=2, sticky="ew")
     chip(ft, "targets").grid(row=0, column=2, padx=(6, 0))
-    tk.Label(ft, text="names and quoted commands, space separated",
+    tk.Label(ft, text="names and commands, space separated: 4.1 6.3.2 torus 2 3",
              font=("Helvetica", 10), fg="#8a929b").grid(
                  row=1, column=0, columnspan=3, sticky="w", pady=(3, 0))
     browse_btn = ttk.Button(ft, text="Browse catalogue...")
@@ -2248,7 +2295,7 @@ def run_gui(initial_outdir=None):
         """The target list, parsed the same way the command line parses it."""
         text = V["targets"].get().strip()
         try:
-            targets = shlex.split(text) if text else []
+            targets = merge_generator_commands(shlex.split(text)) if text else []
         except ValueError as exc:
             raise ValueError("targets: %s (check the quotes)" % exc)
         if V["all"].get():
@@ -2300,6 +2347,26 @@ def run_gui(initial_outdir=None):
                              mirror_axis=V["mirror_axis"].get(),
                              both=V["both"].get(),
                              explicit_label=LOCATED_LABEL)
+            if not result["written"]:
+                # The extraction just ran and produced nothing, so "extract
+                # first" would be actively misleading.  Say what KnotPlot
+                # said about each target instead.
+                reasons = knotplot_errors(result.get("log", ""))
+                detail = "\n".join(
+                    "  %s  --  %s" % (t, reasons.get(i, "no coordinates"))
+                    for i, t in enumerate(shown))
+                show("PREVIEW FAILED\n\nKnotPlot produced no coordinates "
+                     "for:\n" + detail + "\n")
+                messagebox.showerror(
+                    "Nothing to preview",
+                    "KnotPlot produced no coordinates for any target:\n\n"
+                    + detail +
+                    "\n\nCheck the spelling against Browse catalogue..., "
+                    "or the ? beside the target field for how generator "
+                    "commands are written.")
+                status.configure(text="preview failed -- no coordinates",
+                                 foreground="#c00")
+                return
             opened = preview(result["written"])
         except Exception as exc:            # noqa: BLE001
             messagebox.showerror("Preview failed", str(exc))
