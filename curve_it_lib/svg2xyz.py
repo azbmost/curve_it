@@ -43,7 +43,35 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-__version__ = "1.0"
+try:
+    # Even arc-length resampling lives in interpolate_xyz so svg2xyz and
+    # Curve It share one implementation and one corner threshold.  Three of
+    # these are re-exported rather than used here, because they were part of
+    # this module's surface before the move.
+    try:
+        from .interpolate_xyz import (
+            DEFAULT_MIN_CORNER_ANGLE,
+            allocate_points as _allocate,  # noqa: F401  re-exported
+            corner_flags,  # noqa: F401  re-exported
+            even_points as _even_points,  # noqa: F401  re-exported
+            resample_curve as resample,
+        )
+    except ImportError:
+        from interpolate_xyz import (          # type: ignore[no-redef]
+            DEFAULT_MIN_CORNER_ANGLE,
+            allocate_points as _allocate,  # noqa: F401  re-exported
+            corner_flags,  # noqa: F401  re-exported
+            even_points as _even_points,  # noqa: F401  re-exported
+            resample_curve as resample,
+        )
+except ImportError as exc:                     # pragma: no cover
+    raise ImportError(
+        "svg2xyz needs curve_it_lib/interpolate_xyz.py for its resampling, "
+        "which is now the default sampling mode. Make sure that file sits "
+        "beside this one. (%s)" % exc
+    )
+
+__version__ = "1.1"
 
 TOOL_NAME = "SVG to XYZ"
 
@@ -89,9 +117,16 @@ MIN_TOLERANCE = 1.0e-9
 # of the point spacing; the extra points are thrown away immediately.
 DENSE_FACTOR = 16
 
-# Smallest turning angle, in degrees, that makes a vertex count as a corner.
-# Corners are kept exactly through resampling; gentler vertices are not.
-DEFAULT_MIN_CORNER_ANGLE = 20.0
+# Auto sampling never returns more than this many points for one curve,
+# however tight the geometry.  A drawing that reaches it is saying the
+# tolerance is far finer than the drawing itself warrants.
+MAX_AUTO_POINTS = 20000
+
+# A vertex only counts as a corner when both of its segments reach this
+# fraction of the median segment length.  Illustrator's closepath can leave a
+# stub a thousandth of the median long, whose two ends both look sharp;
+# pinning those would preserve the stub and defeat even spacing.
+STUB_SEGMENT_FRACTION = 0.25
 
 # Decimal places per coordinate; matches curve_it.write_plain_xyz_curve.
 DEFAULT_PRECISION = 6
@@ -150,18 +185,27 @@ HELP = {
 
     "points": (
         "Points per curve",
-        "'auto' keeps the points that adaptive flattening produced. They are "
-        "dense on tight bends and sparse on straight runs, and every corner "
-        "sits exactly on a point.\n\n"
-        "A number instead resamples each curve to exactly that many points, "
-        "evenly spaced by arc length. Even spacing suits curvature and writhe "
-        "work, but a resampled corner is only approximated, so prefer 'auto' "
-        "for polygonal drawings.\n\n"
+        "'auto' works a point count out from the curve itself and resamples "
+        "evenly by arc length. The chord is chosen so the polyline holds the "
+        "same accuracy the flattening tolerance already promises: for a chord "
+        "h on a bend of radius R the gap to the true curve is about h*h/(8R), "
+        "and auto holds that at the tolerance.\n\n"
+        "'keep' returns the adaptively flattened points untouched. They are "
+        "dense on tight bends and sparse on straight runs, so the spacing can "
+        "vary by hundreds of times across one curve.\n\n"
+        "A number resamples every curve to exactly that many points. Corners "
+        "survive all three settings, because resampling keeps every vertex "
+        "sharper than the min corner angle exactly.\n\n"
+        "Auto matches the DRAWING's accuracy. It knows nothing about what you "
+        "feed the curve to afterwards, so give an explicit count or spacing "
+        "when something downstream has its own resolution requirement.\n\n"
         "Closed curves are resampled without repeating the first point.",
-        "auto   corners exact, spacing uneven\n"
+        "auto   a count from the curve's own geometry\n"
+        "keep   the flattened points, spacing left uneven\n"
         "400    400 evenly spaced points on every curve\n"
         "\n"
-        "Curve It can also resample later: Interpolation mode 'n'."),
+        "Curve It's Interpolation mode 'n' is the same resampler with the\n"
+        "same 20 degree corner default, so the two behave identically."),
 
     "spacing": (
         "Point spacing",
@@ -171,6 +215,11 @@ HELP = {
         "Unlike a fixed count, this gives long and short curves the same point "
         "density, which is usually what you want when one drawing holds curves "
         "of very different sizes.\n\n"
+        "'auto' resolves one step for the whole drawing from its tightest "
+        "bend, so every curve comes out at the same density; curves gentler "
+        "than the tightest one are sampled more finely than they need, which "
+        "is the point. Points per curve 'auto' instead resolves a step per "
+        "curve, making every curve equally accurate but not equally dense.\n\n"
         "Leave it blank to use the points-per-curve setting instead.",
         "two curves, 400 and 100 units long\n"
         "    points  = 400  ->  400 pts and 400 pts  (4x denser on the short one)\n"
@@ -186,9 +235,10 @@ HELP = {
         "kept exactly instead, and each smooth stretch between two kept "
         "corners is resampled on its own, in proportion to its length.\n\n"
         "Set it to 0 to resample blindly. Raise it to keep only the very "
-        "sharpest vertices; lower it to keep gentler ones too. It has no "
-        "effect when points per curve is 'auto', because nothing is resampled "
-        "then and every vertex is already exact.",
+        "sharpest vertices; lower it to keep gentler ones too. It applies "
+        "whenever anything is resampled, which now includes the default "
+        "'auto'; it does nothing only under points per curve 'keep', where "
+        "every vertex is returned exactly as flattened.",
         "60 x 40 rectangle resampled to 137 points\n"
         "    min corner angle  0   corners clipped by 0.52 units\n"
         "    min corner angle 20   all four corners exact; a rectangle turns 90 deg\n"
@@ -1221,10 +1271,13 @@ class Curve(object):
     """One flattened outline, with the drawing metadata it came from."""
 
     __slots__ = ("points", "closed", "tag", "element_id", "classes",
-                 "layers", "subpath", "subpath_count")
+                 "layers", "subpath", "subpath_count", "sampling",
+                 "n_target")
 
     def __init__(self, points, closed, tag, element_id, classes, layers,
                  subpath=0, subpath_count=1):
+        self.sampling = ""              # filled in by prepare_curves
+        self.n_target = None            # resolved point count, when resampling
         self.points = points
         self.closed = bool(closed)
         self.tag = tag
@@ -1546,6 +1599,155 @@ def polyline_length(points, closed):
     return total
 
 
+POINTS_AUTO = "auto"
+POINTS_KEEP = "keep"
+
+
+def parse_points_setting(value):
+    """Read the points setting: 'auto', 'keep', or a whole number >= 2."""
+    if value is None:
+        return POINTS_AUTO
+    text = str(value).strip().lower()
+    if text == POINTS_AUTO:
+        return POINTS_AUTO
+    if text in (POINTS_KEEP, "none", "off", ""):
+        return POINTS_KEEP
+    try:
+        count = int(float(text))
+    except ValueError:
+        raise ValueError("points must be a whole number, 'auto' or 'keep'; got %r"
+                         % (value,))
+    if count < 2:
+        raise ValueError("points must be at least 2, or 'auto' or 'keep'; got %r"
+                         % (value,))
+    return count
+
+
+def parse_spacing_setting(value):
+    """Read the spacing setting: None, 'auto', or a positive step."""
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in ("", "none", "off", POINTS_KEEP):
+        return None
+    if text == POINTS_AUTO:
+        return POINTS_AUTO
+    try:
+        step = float(text)
+    except ValueError:
+        raise ValueError("spacing must be a number or 'auto'; got %r" % (value,))
+    if step <= 0.0:
+        raise ValueError("spacing must be greater than zero, or 'auto'; got %r"
+                         % (value,))
+    return step
+
+
+def min_curvature_radius(points, closed, median_fraction=0.25,
+                         min_corner_angle=DEFAULT_MIN_CORNER_ANGLE):
+    """Smallest circumradius over consecutive vertex triples.
+
+    Two kinds of vertex are excluded, and both matter:
+
+    A stray short segment left behind by a drawing program fabricates a very
+    tight radius.  On the shipped sample star a single 0.030-unit segment at
+    the seam reports 0.985 against a true value near 6, which would make auto
+    sampling over-sample by the square of that error.  Triples whose adjacent
+    segments fall well below the median segment length are therefore skipped.
+
+    A genuine corner is not curvature either.  Its circumradius is an
+    artifact of the turn, and corners are reproduced exactly by pinning
+    rather than by sampling density, so letting one set the chord would
+    inflate a plain rectangle from 4 points to dozens.
+    """
+    pts = np.asarray(points, dtype=float)
+    if len(pts) < 3:
+        return float("inf")
+    if closed:
+        before, here, after = (np.roll(pts, 1, axis=0), pts, np.roll(pts, -1, axis=0))
+        corners = corner_flags(pts, True, min_corner_angle,
+                               STUB_SEGMENT_FRACTION)
+    else:
+        before, here, after = pts[:-2], pts[1:-1], pts[2:]
+        corners = corner_flags(pts, False, min_corner_angle,
+                               STUB_SEGMENT_FRACTION)[1:-1]
+
+    side_a = np.linalg.norm(here - before, axis=1)
+    side_b = np.linalg.norm(after - here, axis=1)
+    side_c = np.linalg.norm(after - before, axis=1)
+
+    steps = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    steps = steps[steps > 0.0]
+    if not len(steps):
+        return float("inf")
+    shortest = float(median_fraction) * float(np.median(steps))
+
+    usable = ((side_a > shortest) & (side_b > shortest) & (side_c > 0.0)
+              & ~corners)
+    if not usable.any():
+        return float("inf")
+
+    if pts.shape[1] == 2:
+        twice_area = np.abs((here[:, 0] - before[:, 0]) * (after[:, 1] - before[:, 1])
+                            - (here[:, 1] - before[:, 1]) * (after[:, 0] - before[:, 0]))
+    else:
+        twice_area = np.linalg.norm(np.cross(here - before, after - before), axis=1)
+
+    radius = np.where(twice_area > 1e-15,
+                      side_a * side_b * side_c / (2.0 * np.maximum(twice_area, 1e-300)),
+                      np.inf)
+    return float(np.min(radius[usable]))
+
+
+def auto_point_count(points, closed, tolerance,
+                     min_corner_angle=DEFAULT_MIN_CORNER_ANGLE):
+    """How many evenly spaced points hold the flattening tolerance.
+
+    A chord of length h across a circle of radius R sits a sagitta of about
+    h^2 / (8R) inside it, so holding that at the tolerance the drawing was
+    already flattened to gives
+
+        h = sqrt(8 * R_min * tolerance)
+        n = ceil(contour_length / h)
+
+    Auto therefore matches the *drawing's* own accuracy.  It is not tuned to
+    whatever a downstream consumer needs: pass an explicit count or spacing
+    when something further along the pipeline has its own resolution
+    requirement.
+    """
+    pts = np.asarray(points, dtype=float)
+    floor = 4 if closed else 2
+    if len(pts) < 2:
+        return floor
+    length = polyline_length(pts, closed)
+    radius = min_curvature_radius(pts, closed, min_corner_angle=min_corner_angle)
+    tolerance = max(float(tolerance), MIN_TOLERANCE)
+    if length <= 0.0 or not math.isfinite(radius) or radius <= 0.0:
+        # No resolvable bend anywhere: straight runs and pinned corners only,
+        # so the vertices already present are the whole story.
+        return max(len(pts), floor)
+    chord = math.sqrt(8.0 * radius * tolerance)
+    if chord <= 0.0:
+        return MAX_AUTO_POINTS
+    return int(min(max(math.ceil(length / chord), floor), MAX_AUTO_POINTS))
+
+
+def auto_spacing(curves, tolerance, min_corner_angle=DEFAULT_MIN_CORNER_ANGLE):
+    """One chord for the whole drawing, from its tightest bend.
+
+    Where `auto_point_count` makes every curve equally accurate, this makes
+    every curve equally dense: the chord is resolved once, from the smallest
+    radius found anywhere in the drawing, so a gentle curve is sampled as
+    finely as the tightest one rather than to its own looser need.
+    """
+    radii = [min_curvature_radius(c.points, c.closed,
+                                  min_corner_angle=min_corner_angle)
+             for c in curves if len(c.points) >= 3]
+    radii = [r for r in radii if math.isfinite(r) and r > 0.0]
+    if not radii:
+        return None
+    return math.sqrt(8.0 * min(radii) * max(float(tolerance), MIN_TOLERANCE))
+
+
 def dedupe_rounded(points, closed, precision):
     """Drop points that would be written as an identical row.
 
@@ -1565,125 +1767,6 @@ def dedupe_rounded(points, closed, precision):
     if closed and len(pts) > 1 and np.array_equal(grid[-1], grid[0]):
         pts = pts[:-1]
     return pts
-
-
-def corner_flags(points, closed, angle_deg):
-    """Mark vertices whose turning angle reaches `angle_deg`."""
-    pts = np.asarray(points, dtype=float)
-    n = len(pts)
-    flags = np.zeros(n, dtype=bool)
-    if n < 3 or not angle_deg or float(angle_deg) <= 0.0:
-        return flags
-    before = np.roll(pts, 1, axis=0) if closed else np.vstack([pts[:1], pts[:-1]])
-    after = np.roll(pts, -1, axis=0) if closed else np.vstack([pts[1:], pts[-1:]])
-    incoming = pts - before
-    outgoing = after - pts
-    len_in = np.linalg.norm(incoming, axis=1)
-    len_out = np.linalg.norm(outgoing, axis=1)
-    usable = (len_in > 0.0) & (len_out > 0.0)
-    cosine = np.ones(n)
-    cosine[usable] = np.clip(
-        np.einsum("ij,ij->i", incoming[usable], outgoing[usable])
-        / (len_in[usable] * len_out[usable]), -1.0, 1.0)
-    flags = np.degrees(np.arccos(cosine)) >= float(angle_deg)
-    if not closed:
-        flags[0] = flags[-1] = False        # the ends are kept regardless
-    return flags
-
-
-def _even_points(points, count):
-    """`count` points evenly spaced by arc length, both ends included."""
-    pts = np.asarray(points, dtype=float)
-    if len(pts) < 2 or count < 2:
-        return pts[:1] if len(pts) else pts
-    step = np.linalg.norm(np.diff(pts, axis=0), axis=1)
-    arc = np.concatenate([[0.0], np.cumsum(step)])
-    if arc[-1] <= 0.0:
-        return pts[:1]
-    target = np.linspace(0.0, float(arc[-1]), int(count))
-    return np.column_stack([np.interp(target, arc, pts[:, 0]),
-                            np.interp(target, arc, pts[:, 1])])
-
-
-def _allocate(lengths, total):
-    """Split `total` points between spans in proportion to their length."""
-    lengths = np.asarray(lengths, dtype=float)
-    count = len(lengths)
-    total = max(int(total), count)
-    if lengths.sum() <= 0.0:
-        share = np.ones(count, dtype=int)
-    else:
-        exact = lengths / lengths.sum() * total
-        share = np.maximum(1, np.floor(exact).astype(int))
-        order = np.argsort(-(exact - np.floor(exact)))
-        while share.sum() < total:
-            share[order[share.sum() % count]] += 1
-        order = np.argsort(exact - np.floor(exact))
-        index = 0
-        while share.sum() > total and index < 100 * count:
-            candidate = order[index % count]
-            if share[candidate] > 1:
-                share[candidate] -= 1
-            index += 1
-    return share
-
-
-def resample(points, closed, n=None, spacing=None, min_corner_angle=None):
-    """Evenly space points by arc length, keeping every corner exactly.
-
-    Blind uniform resampling walks straight past a vertex and rounds the
-    corners off a rectangle, a polygon or a star.  Curve It's discrete total
-    curvature is exact for polygons, so a rounded corner is lost curvature.
-    Corners are therefore pinned and each smooth span between them is
-    resampled on its own, in proportion to its length.
-    """
-    pts = np.asarray(points, dtype=float)
-    if len(pts) < 2:
-        return pts
-    loop = np.vstack([pts, pts[0]]) if closed else pts
-    step = np.linalg.norm(np.diff(loop, axis=0), axis=1)
-    total_length = float(step.sum())
-    if total_length <= 0.0:
-        return pts
-
-    if n is None:
-        if spacing is None or float(spacing) <= 0.0:
-            return pts
-        n = int(round(total_length / float(spacing)))
-    n = max(int(n), 4 if closed else 2)
-
-    corners = corner_flags(pts, closed, min_corner_angle)
-    index = list(np.nonzero(corners)[0])
-    if not index:
-        target = (np.linspace(0.0, total_length, n, endpoint=False) if closed
-                  else np.linspace(0.0, total_length, n))
-        arc = np.concatenate([[0.0], np.cumsum(step)])
-        return np.column_stack([np.interp(target, arc, loop[:, 0]),
-                                np.interp(target, arc, loop[:, 1])])
-
-    if closed:
-        pts = np.roll(pts, -index[0], axis=0)
-        index = [i - index[0] for i in index]
-        loop = np.vstack([pts, pts[0]])
-        bounds = index + [len(pts)]
-        spans = [loop[bounds[k]:bounds[k + 1] + 1] for k in range(len(bounds) - 1)]
-        unique_total = n
-    else:
-        bounds = [0] + index + [len(pts) - 1]
-        spans = [pts[bounds[k]:bounds[k + 1] + 1] for k in range(len(bounds) - 1)]
-        unique_total = n - 1
-
-    spans = [s for s in spans if len(s) >= 2]
-    if not spans:
-        return pts
-    lengths = [float(np.linalg.norm(np.diff(s, axis=0), axis=1).sum()) for s in spans]
-    share = _allocate(lengths, unique_total)
-
-    out = [_even_points(span, int(count) + 1)[:-1]
-           for span, count in zip(spans, share)]
-    if not closed:
-        out.append(spans[-1][-1:])
-    return np.vstack(out)
 
 
 def bounding_box(curves):
@@ -1709,12 +1792,20 @@ def prepare_curves(curves, scale=1.0, fit_size=None, flip_y=True,
                    center="bbox", closed_mode="auto", points=None,
                    spacing=None, min_points=2, min_length=0.0, z=0.0,
                    precision=DEFAULT_PRECISION,
-                   min_corner_angle=DEFAULT_MIN_CORNER_ANGLE):
+                   min_corner_angle=DEFAULT_MIN_CORNER_ANGLE,
+                   tolerance=0.05):
     """Apply the closed decision, y flip, scaling, centring and resampling.
+
+    `points` is 'auto', 'keep', or a whole number; `spacing` is None, 'auto',
+    or a step in final output units.  Both autos are resolved to a per-curve
+    point count on the drawing's own geometry, before scaling, so the chosen
+    sampling depends on the drawing rather than on the output scale factor.
 
     Returns a new list of Curve objects whose points are still (N, 2); the z
     column is added by write_xyz.
     """
+    points = parse_points_setting(points) if not isinstance(points, int) else points
+    spacing = spacing if spacing == POINTS_AUTO else parse_spacing_setting(spacing)
     prepared = []
     for curve in curves:
         pts = np.array(curve.points, dtype=float)
@@ -1740,6 +1831,33 @@ def prepare_curves(curves, scale=1.0, fit_size=None, flip_y=True,
     prepared = [c for c in prepared if len(c.points) >= max(2, int(min_points))]
     if not prepared:
         return prepared
+
+    # Resolve auto here, on the drawing's own geometry.  Doing it after
+    # scaling would make the answer depend on the scale factor, because the
+    # chord goes as sqrt(R) while the contour goes as R.
+    for curve in prepared:
+        curve.sampling = "keep %d" % len(curve.points)
+        curve.n_target = None
+    # A spacing that was actually asked for outranks the points default,
+    # which is 'auto' on every run and would otherwise always win.
+    if spacing == POINTS_AUTO:
+        chord = auto_spacing(prepared, tolerance, min_corner_angle)
+        for curve in prepared:
+            if chord is None:
+                curve.n_target = len(curve.points)
+            else:
+                length = polyline_length(curve.points, curve.closed)
+                curve.n_target = max(4 if curve.closed else 2,
+                                     int(round(length / chord)))
+    elif spacing is not None:
+        pass                            # numeric spacing, applied after scaling
+    elif points == POINTS_AUTO:
+        for curve in prepared:
+            curve.n_target = auto_point_count(curve.points, curve.closed,
+                                              tolerance, min_corner_angle)
+    elif isinstance(points, int):
+        for curve in prepared:
+            curve.n_target = int(points)
 
     if flip_y:
         for curve in prepared:
@@ -1767,11 +1885,33 @@ def prepare_curves(curves, scale=1.0, fit_size=None, flip_y=True,
         prepared = [c for c in prepared
                     if polyline_length(c.points, c.closed) >= float(min_length)]
 
-    if points is not None or (spacing is not None and float(spacing) > 0.0):
-        for curve in prepared:
-            curve.points = resample(curve.points, curve.closed, n=points,
-                                    spacing=spacing,
-                                    min_corner_angle=min_corner_angle)
+    numeric_spacing = spacing if isinstance(spacing, float) else None
+    for curve in prepared:
+        before = len(curve.points)
+        if curve.n_target is not None:
+            curve.points = resample(curve.points, curve.closed,
+                                    n=curve.n_target,
+                                    min_corner_angle=min_corner_angle,
+                                    min_segment_fraction=STUB_SEGMENT_FRACTION)
+        elif numeric_spacing is not None:
+            curve.points = resample(curve.points, curve.closed,
+                                    spacing=numeric_spacing,
+                                    min_corner_angle=min_corner_angle,
+                                    min_segment_fraction=STUB_SEGMENT_FRACTION)
+        else:
+            curve.sampling = "keep %d" % before
+            continue
+        length = polyline_length(curve.points, curve.closed)
+        step = length / len(curve.points) if len(curve.points) else 0.0
+        if points == POINTS_AUTO:
+            mode = "auto"
+        elif spacing == POINTS_AUTO:
+            mode = "spacing auto"
+        elif numeric_spacing is not None:
+            mode = "spacing %g" % numeric_spacing
+        else:
+            mode = "points %d" % int(points)
+        curve.sampling = "%s -> %d pts, spacing %.4f" % (mode, len(curve.points), step)
 
     # Last, because it is the written rows that must come out distinct.
     for curve in prepared:
@@ -1820,6 +1960,13 @@ def write_xyz(path, curves, z=0.0, precision=DEFAULT_PRECISION,
                      % (TOOL_NAME, __version__, len(blocks),
                         _flat(os.path.basename(source or path))))
             fh.write("# columns: x y z ; blank lines separate components\n")
+            modes = []
+            for _c, _p in blocks:
+                head = (_c.sampling or "").split(" ->")[0]
+                if head and head not in modes:
+                    modes.append(head)
+            if modes:
+                fh.write("# sampling: %s\n" % "; ".join(modes))
         for index, (curve, pts) in enumerate(blocks):
             if index:
                 fh.write("\n")
@@ -1827,6 +1974,11 @@ def write_xyz(path, curves, z=0.0, precision=DEFAULT_PRECISION,
                 fh.write("# component %s: %s closed=%s points=%d\n"
                          % (component_label(index), curve.source(),
                             "yes" if curve.closed else "no", len(pts)))
+                if curve.sampling:
+                    # Its own line, so the component line keeps the fixed
+                    # non-numeric prefix that makes it unreadable as a
+                    # coordinate row by every reader in the package.
+                    fh.write("#   sampling: %s\n" % curve.sampling)
             for x, y in pts:
                 fh.write(fmt % (x, y, z))
     return path
@@ -1882,6 +2034,13 @@ def describe(curves, info=None, z=0.0):
                         "closed" if curve.closed else "open",
                         len(curve.points),
                         polyline_length(curve.points, curve.closed)))
+    if any(c.sampling for c in curves):
+        lines.append("")
+        lines.append("SAMPLING")
+        for index, curve in enumerate(curves):
+            lines.append("  %-3s %s" % (component_label(index),
+                                        curve.sampling or "keep"))
+
     low, high = bounding_box(curves)
     lines.append("")
     lines.append("EXTENT")
@@ -1970,12 +2129,21 @@ def build_parser():
     p.add_argument("-t", "--tolerance", type=float, default=0.05,
                    help="Bezier/arc flattening tolerance in SVG units; smaller "
                         "means more points (default 0.05)")
-    p.add_argument("-n", "--points", type=int,
-                   help="resample every curve to this many evenly spaced points "
-                        "(default: keep the adaptively flattened points)")
-    p.add_argument("--spacing", type=float,
+    p.add_argument("-n", "--points", default=None,
+                   help="how many evenly spaced points each curve gets: a whole "
+                        "number, 'auto' to work one out from the curve's own "
+                        "geometry and the tolerance, or 'keep' to return the "
+                        "adaptively flattened points untouched. Auto matches "
+                        "the drawing's accuracy, not any downstream "
+                        "requirement, so pass a number when something later in "
+                        "the pipeline needs a particular resolution "
+                        "(default auto)")
+    p.add_argument("--spacing", default=None,
                    help="resample every curve to this arc-length step, in final "
-                        "output units; an alternative to --points")
+                        "output units, or 'auto' to resolve one step for the "
+                        "whole drawing from its tightest bend so every curve "
+                        "comes out at the same density. An alternative to "
+                        "--points, not a companion to it")
     p.add_argument("--min-corner-angle", type=float, default=DEFAULT_MIN_CORNER_ANGLE,
                    help="smallest turning angle, in degrees, that counts as a "
                         "corner; when resampling, corners are kept exactly and "
@@ -2034,10 +2202,12 @@ def build_parser():
 
 def _convert(args):
     """Shared read/filter/prepare pipeline for the CLI and the GUI."""
-    resampling = (args.points is not None
-                  or (args.spacing is not None and float(args.spacing) > 0.0))
-    # Resampling measures arc length off the flattened polyline, so flatten
-    # finer than asked when it is going to be resampled anyway.
+    points_setting = parse_points_setting(getattr(args, "points", None))
+    spacing_setting = parse_spacing_setting(getattr(args, "spacing", None))
+    resampling = spacing_setting is not None or points_setting != POINTS_KEEP
+    # Resampling measures arc length and curvature off the flattened
+    # polyline, so flatten finer than asked when it is going to be resampled
+    # anyway.  The auto rule still targets the tolerance the user asked for.
     tolerance = args.tolerance / DENSE_FACTOR if resampling else args.tolerance
 
     curves, info = extract_curves(
@@ -2055,8 +2225,9 @@ def _convert(args):
         flip_y=not args.no_flip_y,
         center=args.center,
         closed_mode=args.closed,
-        points=args.points,
-        spacing=args.spacing,
+        points=points_setting,
+        spacing=spacing_setting,
+        tolerance=args.tolerance,
         min_points=args.min_points,
         min_length=args.min_length,
         z=args.z,
@@ -2079,8 +2250,8 @@ def _convert(args):
 def run_cli(args):
     if args.points is not None and args.spacing is not None:
         raise ValueError("use either --points or --spacing, not both")
-    if args.points is not None and args.points < 2:
-        raise ValueError("--points needs at least 2")
+    parse_points_setting(args.points)      # validate early, with a clear message
+    parse_spacing_setting(args.spacing)
     if args.fit_size is not None and args.scale != 1.0:
         print("  note: --fit-size overrides --scale")
 
@@ -2243,8 +2414,8 @@ def run_gui(initial_file=None):
     fs = ttk.LabelFrame(left, text="Sampling", padding=8)
     fs.pack(fill="x", pady=(0, 8))
     sampling_rows = [("flattening tolerance", "tolerance", "SVG units, before scaling"),
-                     ("points per curve", "points", "'auto' keeps corners exact"),
-                     ("point spacing", "spacing", "output units; overrides count"),
+                     ("points per curve", "points", "'auto', 'keep', or a count"),
+                     ("point spacing", "spacing", "'auto', or a step in output units"),
                      ("min corner angle", "corner", "degrees; sharper vertices pinned")]
     for r, (label, key, hint) in enumerate(sampling_rows):
         ttk.Label(fs, text=label).grid(row=r, column=0, sticky="w")
@@ -2358,15 +2529,20 @@ def run_gui(initial_file=None):
             raise ValueError("%s: %r is not a number" % (key, text))
 
     def gui_args():
-        points = optional("points")
-        spacing = optional("spacing")
-        if points is not None and spacing is not None:
+        points_text = V["points"].get().strip()
+        spacing_text = V["spacing"].get().strip()
+        # 'auto' is the resting value of the points field, so it does not
+        # count as the user asking for it; without this, every run that sets
+        # a spacing would be rejected.
+        chose_points = points_text.lower() not in ("", POINTS_AUTO)
+        chose_spacing = spacing_text != ""
+        if chose_points and chose_spacing:
             raise ValueError("set either points per curve or point spacing, not both")
         return argparse.Namespace(
             svg=V["file"].get().strip(),
             tolerance=fnum("tolerance", 0.05),
-            points=int(points) if points is not None else None,
-            spacing=spacing,
+            points=points_text or None,
+            spacing=spacing_text or None,
             scale=fnum("scale", 1.0),
             fit_size=optional("fit"),
             z=fnum("z", 0.0),

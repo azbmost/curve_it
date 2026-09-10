@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_8`
+Version: `V3_9`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -136,6 +136,8 @@ When interpolation is enabled, the input curve is first resampled or densified, 
 
 Use `--interp-mode n` when you want exactly `--interp-n` evenly arc-length-spaced points. Use `--interp-mode p` when you want to insert `--interp-p` points between each adjacent pair of original curve points.
 
+`--interp-mode n` reproduces exactly every vertex that turns by at least `--min-corner-angle`, 20 degrees by default, and resamples each smooth stretch between two kept corners on its own, so a polygonal curve keeps its corners instead of having them clipped by evenly spaced samples. On smooth, densely sampled curves no vertex reaches 20 degrees and the result is bitwise identical to blind resampling; on a coarse polygon it preserves contour length that blind resampling loses. `--min-corner-angle 0` restores the blind behaviour exactly. The setting is ignored by `--interp-mode none` and `--interp-mode p`, and it is the same threshold, the same default and the same code as the SVG to XYZ tool uses, since both share the resampler in `curve_it_lib/interpolate_xyz.py`.
+
 ## Curve File Format
 
 Curve files can be plain whitespace-separated coordinates:
@@ -177,7 +179,13 @@ The SVG y axis points down the page, so it is flipped by default and the exporte
 
 Coordinates are written at the requested precision, and points that would round to the same row are removed before writing, so the file never contains a zero-length segment. That matters because Curve It's writhe calculation rejects those outright and its discrete total curvature silently loses the turning angle there.
 
-By default the adaptively flattened points are kept, which places a point exactly on every corner. `--points` or `--spacing` resample instead, evenly by arc length. Evenly spaced samples step straight over a sharp vertex, so resampling keeps exactly every vertex that turns by at least `--min-corner-angle`, 20 degrees by default, and resamples each smooth stretch between two kept corners on its own. The threshold decides what counts as a corner; it is not an angle applied to the geometry. Resampling a 60 by 40 rectangle to 137 points clips its corners by 0.52 units with the threshold at 0, and reproduces all four exactly at 20; more points does not fix the clipping, only shrinks it. Resampled points always lie on the drawn path, so the only shape change possible is a chord cutting inward across a corner.
+Sampling is controlled by `-n/--points`, which takes a whole number, `keep`, or `auto` (the default). `auto` works a point count out from the curve's own geometry: for a chord `h` across a bend of radius `R` the gap to the true curve is about `h^2 / (8R)`, so holding that at the flattening tolerance gives `h = sqrt(8 * R_min * tolerance)` and `n = ceil(contour_length / h)`. `keep` returns the adaptively flattened points untouched, which is what versions before 1.1 did by default; their spacing can vary enormously, by a factor of 420 across the sample star. `--spacing` takes a step in output units or `auto`: `--points auto` resolves a chord per curve so every curve is equally accurate, while `--spacing auto` resolves one chord for the whole drawing from its tightest bend so every curve is equally dense.
+
+**Auto matches the drawing's own accuracy, not any downstream requirement.** At the default tolerance the sample star resolves to 1.542 units, which is 3.62 Angstrom once Curve It scales it to a 168-bp B-DNA contour, coarser than the 3.40 Angstrom helical rise. Pass an explicit count or spacing when something further along the pipeline needs a particular resolution.
+
+Corners survive every setting. Resampling reproduces exactly every vertex that turns by at least `--min-corner-angle`, 20 degrees by default, and resamples each smooth stretch between two kept corners on its own, so a rectangle stays a rectangle: resampling a 60 by 40 rectangle to 137 points clips its corners by 0.52 units at a threshold of 0 and reproduces all four exactly at 20. A vertex only counts as a corner when both of its segments reach a quarter of the median segment length, which keeps a drawing program's closepath stub from being mistaken for one. Resampled points always lie on the drawn path, so the only shape change possible is a chord cutting inward across a corner.
+
+The resolved sampling is reported in `--info` and recorded in the XYZ header, so a file says how it was built.
 
 Use `--info` first to list what the drawing contains, then pick from that listing with `-c/--components`, spelled exactly like Curve It's own `--curve-components`: `A`, `B,C`, `A-C`, or `all`. Selection is applied after every other filter, so the labels are the ones you just read, and after scaling and centring, so a component extracted on its own is bit-identical to the same component of the full file and separately extracted curves stay in register. `--split` writes every component to its own file in one pass instead.
 
@@ -186,7 +194,9 @@ Use `--info` first to list what the drawing contains, then pick from that listin
 ```bash
 python3 curve_it_lib/svg2xyz.py drawing.svg --info
 python3 curve_it_lib/svg2xyz.py drawing.svg
+python3 curve_it_lib/svg2xyz.py drawing.svg --points keep
 python3 curve_it_lib/svg2xyz.py drawing.svg -s 0.25 --points 400
+python3 curve_it_lib/svg2xyz.py drawing.svg --spacing auto
 python3 curve_it_lib/svg2xyz.py drawing.svg -c B
 python3 curve_it_lib/svg2xyz.py drawing.svg --fit-size 340 --split
 python3 curve_it_lib/svg2xyz.py projection.svg --elements path --exclude xy-plane

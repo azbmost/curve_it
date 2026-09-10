@@ -139,7 +139,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_8"
+APP_VERSION = "V3_9"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -147,8 +147,13 @@ APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along A
 try:
     from curve_it_lib import interpolate_xyz  # noqa: F401
     HAVE_INTERPOLATE_XYZ = True
+    # One shared corner threshold, so Curve It and svg2xyz cannot drift apart.
+    DEFAULT_MIN_CORNER_ANGLE = interpolate_xyz.DEFAULT_MIN_CORNER_ANGLE
 except Exception:
     HAVE_INTERPOLATE_XYZ = False
+    # Only reached when the helper is missing, in which case interpolation
+    # raises anyway; the value just has to exist for the argument parser.
+    DEFAULT_MIN_CORNER_ANGLE = 20.0
 
 
 # Optional import of curvature & writhe utilities + smoothing support
@@ -691,7 +696,9 @@ def apply_curve_interpolation(points: np.ndarray,
                               interp_n: int = 200,
                               interp_p: int = 0,
                               closed: bool = False,
-                              verbose: bool = False) -> np.ndarray:
+                              verbose: bool = False,
+                              min_corner_angle: float =
+                              DEFAULT_MIN_CORNER_ANGLE) -> np.ndarray:
     """Interpolate curve points before embedding.
 
     Two interpolation modes are supported (controlled by interp_mode):
@@ -701,6 +708,12 @@ def apply_curve_interpolation(points: np.ndarray,
       - 'p'   : insert interp_p equally spaced points between each adjacent
                input point pair.
       - 'none': do not change the input curve points (default).
+
+    In mode 'n', vertices turning by at least min_corner_angle degrees are
+    reproduced exactly, so a polygonal curve keeps its corners instead of
+    having them clipped by evenly spaced samples.  Pass 0 for the older
+    blind behaviour.  Mode 'p' is unaffected: it subdivides in place and
+    already keeps every original vertex.
 
     closed controls whether the curve is treated as a closed loop for the
     interpolation step (for example, whether the last->first segment is
@@ -720,10 +733,12 @@ def apply_curve_interpolation(points: np.ndarray,
     if mode in ("n", "n_points", "npoints", "num", "num_points"):
         n = int(interp_n)
         pts_out = interpolate_xyz.interpolate_curve(
-            pts_in, mode="n", n=n, closed=closed
+            pts_in, mode="n", n=n, closed=closed,
+            min_corner_angle=min_corner_angle,
         )
         if verbose:
-            print(f"[INFO] Curve interpolation (n={n}, closed={closed}): "
+            print(f"[INFO] Curve interpolation (n={n}, closed={closed}, "
+                  f"min_corner_angle={float(min_corner_angle):g}): "
                   f"{pts_in.shape[0]} -> {pts_out.shape[0]} points")
         return pts_out
 
@@ -1178,6 +1193,12 @@ def sample_curve_position(points: np.ndarray,
     points      : (M,3) curve points
     arc_lengths : (M,) cumulative arc-lengths with arc_lengths[0]=0, arc_lengths[-1]=total
     s_query     : arc-length in [0,total]; values outside are clamped
+
+    This duplicates interpolate_xyz.sample_curve_position on purpose.  It is
+    called by reparameterize_closed_curve, which implements --path-start and
+    therefore has to keep working when the optional interpolate_xyz helper is
+    absent.  Do not collapse the two copies: that would quietly make
+    --path-start depend on an optional module.  Keep them in step instead.
     """
     total = arc_lengths[-1]
     if total <= eps:
@@ -1192,7 +1213,9 @@ def sample_curve_position(points: np.ndarray,
     idx = max(0, min(idx, len(points) - 2))
 
     s0, s1 = arc_lengths[idx], arc_lengths[idx + 1]
-    t = (s_query - s0) / (s1 - s0 + eps)
+    # A zero-length segment is guarded explicitly.  Adding an epsilon to this
+    # denominator instead would bias every sample toward its segment start.
+    t = 0.0 if s1 <= s0 else (s_query - s0) / (s1 - s0)
 
     p0, p1 = points[idx], points[idx + 1]
     pos = (1.0 - t) * p0 + t * p1
@@ -1837,6 +1860,7 @@ def build_generation_remarks(
     interp_n: int,
     interp_p: int,
     curve_components: Optional[str] = None,
+    min_corner_angle: float = DEFAULT_MIN_CORNER_ANGLE,
 ) -> List[str]:
     """Build PDB REMARK lines describing how Curve It generated the file."""
     curve_source = curve_xyz_path if curve_xyz_path else "default planar ring curve"
@@ -1850,6 +1874,7 @@ def build_generation_remarks(
             f"twist={float(twist):.6g} deg; path_start={float(path_start):.6g}."
         ),
         f"Options: interp_mode={interp_mode}; interp_n={int(interp_n)}; interp_p={int(interp_p)}.",
+        f"Options: min_corner_angle={float(min_corner_angle):.6g} deg (interp_mode=n only).",
         "Method: principal-axis coordinates mapped onto the target curve with a rotation-minimizing frame and rigid atom-group transforms.",
     ]
     if curve_components:
@@ -2076,6 +2101,7 @@ def launch_gui() -> None:
     interp_mode_var = tk.StringVar(value="none")  # none | n | p
     interp_n_var = tk.StringVar(value="200")
     interp_p_var = tk.StringVar(value="0")
+    min_corner_angle_var = tk.StringVar(value=f"{DEFAULT_MIN_CORNER_ANGLE:g}")
 
 
     # Total curvature estimation mode for GUI reporting
@@ -2211,6 +2237,15 @@ def launch_gui() -> None:
             "n resamples the curve to exactly n points, evenly spaced by arc length.\n\n"
             "p inserts p evenly spaced points between every adjacent pair of curve points."
         ),
+        "min_corner_angle": (
+            "Min Corner Angle",
+            "Used only when interpolation mode is n.\n\n"
+            "The smallest turning angle, in degrees, that makes a curve vertex count as a corner. It is a threshold, not an angle applied to the curve.\n\n"
+            "Evenly spaced samples step straight over a sharp vertex, so resampling a polygonal curve clips its corners. Every vertex that turns by at least this much is reproduced exactly instead, and each smooth stretch between two kept corners is resampled on its own.\n\n"
+            "On smooth, densely sampled curves no vertex reaches 20 degrees, so this changes nothing at all. On coarse polygonal curves it preserves contour length that blind resampling loses.\n\n"
+            "Set it to 0 for the blind resampling Curve It used before this option existed.\n\n"
+            "The same threshold and default are used by the SVG to XYZ tool, which shares this resampler."
+        ),
         "interp_n": (
             "Interpolation n",
             "Used only when interpolation mode is n.\n\n"
@@ -2285,6 +2320,16 @@ def launch_gui() -> None:
     def help_button(parent: Any, topic_key: str) -> Any:
         return tk.Button(parent, command=lambda: show_help(topic_key), **help_button_kwargs)
 
+    def gui_min_corner_angle() -> float:
+        """Read the min corner angle field, falling back to the default."""
+        text = (min_corner_angle_var.get() or "").strip()
+        if not text:
+            return float(DEFAULT_MIN_CORNER_ANGLE)
+        try:
+            return float(text)
+        except ValueError:
+            return float(DEFAULT_MIN_CORNER_ANGLE)
+
     def compute_interpolated_curve(points_in: np.ndarray, show_error: bool = True) -> Optional[np.ndarray]:
         """Return curve points after applying the current interpolation settings.
 
@@ -2333,6 +2378,7 @@ def launch_gui() -> None:
                 interp_p=p_val,
                 closed=closed_interp,
                 verbose=False,
+                min_corner_angle=gui_min_corner_angle(),
             )
             return pts_out
         except Exception as e:
@@ -3372,36 +3418,44 @@ def launch_gui() -> None:
     interp_p_entry.grid(row=0, column=7, sticky="w", padx=4, pady=2)
     help_button(curve_param_frame, "interp_p").grid(row=0, column=8, sticky="w", padx=(0, 4), pady=2)
 
-    tk.Label(curve_param_frame, text="Points after interpolation:").grid(
+    tk.Label(curve_param_frame, text="Min corner angle (mode 'n'):").grid(
         row=1, column=0, sticky="e", padx=4, pady=2
     )
+    min_corner_angle_entry = tk.Entry(curve_param_frame, textvariable=min_corner_angle_var, width=10)
+    min_corner_angle_entry.grid(row=1, column=1, sticky="w", padx=4, pady=2)
+    help_button(curve_param_frame, "min_corner_angle").grid(row=1, column=2, sticky="w", padx=(0, 8), pady=2)
+
+    tk.Label(curve_param_frame, text="Points after interpolation:").grid(
+        row=2, column=0, sticky="e", padx=4, pady=2
+    )
     curve_n_used_entry = ttk.Entry(curve_param_frame, textvariable=curve_n_used_var, width=10, state="readonly")
-    curve_n_used_entry.grid(row=1, column=1, sticky="w", padx=4, pady=2)
+    curve_n_used_entry.grid(row=2, column=1, sticky="w", padx=4, pady=2)
 
     tk.Label(curve_param_frame, text="Curvature mode:").grid(
-        row=1, column=3, sticky="e", padx=4, pady=2
+        row=2, column=3, sticky="e", padx=4, pady=2
     )
     curvature_mode_menu = tk.OptionMenu(curve_param_frame, curvature_mode_var, "auto", "polyline", "spline")
-    curvature_mode_menu.grid(row=1, column=4, sticky="w", padx=4, pady=2)
-    help_button(curve_param_frame, "curvature_mode").grid(row=1, column=5, sticky="w", padx=(0, 8), pady=2)
+    curvature_mode_menu.grid(row=2, column=4, sticky="w", padx=4, pady=2)
+    help_button(curve_param_frame, "curvature_mode").grid(row=2, column=5, sticky="w", padx=(0, 8), pady=2)
 
     tk.Label(curve_param_frame, text="Curvature used:").grid(
-        row=1, column=6, sticky="e", padx=4, pady=2
+        row=2, column=6, sticky="e", padx=4, pady=2
     )
     curvature_used_entry = ttk.Entry(
         curve_param_frame, textvariable=curvature_used_var, width=26, state="readonly"
     )
-    curvature_used_entry.grid(row=1, column=7, columnspan=2, sticky="we", padx=4, pady=2)
+    curvature_used_entry.grid(row=2, column=7, columnspan=2, sticky="we", padx=4, pady=2)
 
     tk.Label(curve_param_frame, text="Interpolated curve file:").grid(
-        row=2, column=0, sticky="e", padx=4, pady=2
+        row=3, column=0, sticky="e", padx=4, pady=2
     )
     interp_out_entry = ttk.Entry(curve_param_frame, textvariable=interp_out_path_var, width=48, state="readonly")
-    interp_out_entry.grid(row=2, column=1, columnspan=7, sticky="we", padx=4, pady=2)
-    help_button(curve_param_frame, "interp_file").grid(row=2, column=8, sticky="w", padx=(0, 4), pady=2)
+    interp_out_entry.grid(row=3, column=1, columnspan=7, sticky="we", padx=4, pady=2)
+    help_button(curve_param_frame, "interp_file").grid(row=3, column=8, sticky="w", padx=(0, 4), pady=2)
 
     def update_interp_widgets(*_args: Any):
         mode = (interp_mode_var.get() or "none").strip().lower()
+        min_corner_angle_entry.config(state="normal" if mode == "n" else "disabled")
         if mode == "n":
             interp_n_entry.config(state="normal")
             interp_p_entry.config(state="disabled")
@@ -3446,11 +3500,12 @@ def launch_gui() -> None:
 
     curve_hint = (
         "Hint: interpolation changes the curve used for fitting the PDB and for metrics; "
-        "'n' resamples to a total point count, and 'p' inserts points per segment. "
+        "'n' resamples to a total point count and keeps vertices sharper than the "
+        "min corner angle exactly; 'p' inserts points per segment. "
         "Curvature auto mode uses a robust polyline estimate for polygon-like curves."
     )
     tk.Label(curve_param_frame, text=curve_hint, fg="gray", wraplength=820, justify="left").grid(
-        row=3, column=0, columnspan=9, sticky="w", padx=4, pady=(2, 4)
+        row=4, column=0, columnspan=9, sticky="w", padx=4, pady=(2, 4)
     )
 
     # --- Parameters frame ---
@@ -3706,6 +3761,7 @@ def launch_gui() -> None:
         interp_n: int,
         interp_p: int,
         curve_components: Optional[str] = None,
+        min_corner_angle: Optional[float] = None,
     ) -> str:
         """Return a copyable CLI equivalent for the current GUI run."""
         cmd = [
@@ -3726,6 +3782,8 @@ def launch_gui() -> None:
             "--interp-n", str(interp_n),
             "--interp-p", str(interp_p),
         ])
+        if min_corner_angle is not None and float(min_corner_angle) != float(DEFAULT_MIN_CORNER_ANGLE):
+            cmd.extend(["--min-corner-angle", f"{float(min_corner_angle):g}"])
         if curve_components:
             cmd.extend(["--curve-components", curve_components])
         cmd.extend(["-o", output_pdb])
@@ -3853,6 +3911,7 @@ def launch_gui() -> None:
             interp_n=interp_n_meta,
             interp_p=interp_p_meta,
             curve_components=selected_component_arg,
+            min_corner_angle=gui_min_corner_angle(),
         )
 
         try:
@@ -3891,6 +3950,7 @@ def launch_gui() -> None:
                     interp_n=interp_n_meta,
                     interp_p=interp_p_meta,
                     curve_components=selected_component_arg,
+                    min_corner_angle=gui_min_corner_angle(),
                 )
 
                 write_output_pdb(pdb_text, new_coords, out_path, remark_lines=remark_lines)
@@ -4041,6 +4101,17 @@ def main(argv: Optional[List[str]] = None) -> None:
               "Default: 0."),
     )
     parser.add_argument(
+        "--min-corner-angle",
+        type=float,
+        default=DEFAULT_MIN_CORNER_ANGLE,
+        help=("When --interp-mode n: smallest turning angle, in degrees, that counts as a corner. "
+              "Corners are reproduced exactly and each smooth span between them is resampled on "
+              "its own, so a polygonal curve keeps its shape instead of having the corners clipped "
+              "by evenly spaced samples. 0 resamples blindly, which is what Curve It did before "
+              "this option existed. Ignored by --interp-mode none and p. "
+              f"Default: {DEFAULT_MIN_CORNER_ANGLE:g}."),
+    )
+    parser.add_argument(
         "--curve-components",
         default="all",
         help=("For plain XYZ/txt curve files with blank-line-separated components, choose which "
@@ -4185,6 +4256,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             interp_mode=args.interp_mode,
             interp_n=args.interp_n,
             interp_p=args.interp_p,
+            min_corner_angle=args.min_corner_angle,
             closed=interp_closed,
             verbose=True,
         )
@@ -4248,6 +4320,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         interp_n=args.interp_n,
         interp_p=args.interp_p,
         curve_components=curve_component_selection_label,
+        min_corner_angle=args.min_corner_angle,
     )
 
     write_rescaled_curve_xyz(curve_xyz_path, scaled_curve_pts, scaling_applied)

@@ -161,7 +161,10 @@ def sample_curve_position(points: np.ndarray,
     idx = max(0, min(idx, len(points) - 2))
 
     s0, s1 = float(arc_lengths[idx]), float(arc_lengths[idx + 1])
-    t = (s_query - s0) / (s1 - s0 + eps)
+    # A zero-length segment is guarded explicitly.  Adding an epsilon to this
+    # denominator instead would bias every sample toward its segment start,
+    # which is a systematic error rather than a safety net.
+    t = 0.0 if s1 <= s0 else (s_query - s0) / (s1 - s0)
 
     p0 = np.asarray(points[idx], dtype=float)
     p1 = np.asarray(points[idx + 1], dtype=float)
@@ -176,47 +179,205 @@ def _strip_closing_duplicate(points: np.ndarray, eps: float = 1e-6) -> np.ndarra
     return pts.copy()
 
 
+# --------------------------------------------------------------------------
+# Even arc-length resampling, shared with svg2xyz.py
+#
+# This is the one implementation of even resampling in the package.  It works
+# in any number of dimensions: svg2xyz feeds it 2D drawing curves and Curve It
+# feeds it 3D space curves through --interp-mode n.
+# --------------------------------------------------------------------------
+
+# Smallest turning angle, in degrees, that makes a vertex count as a corner.
+# Corners are reproduced exactly through resampling; gentler vertices are not.
+# Shared so svg2xyz and Curve It cannot drift apart.
+DEFAULT_MIN_CORNER_ANGLE = 20.0
+
+
+def corner_flags(points: np.ndarray,
+                 closed: bool,
+                 angle_deg: Optional[float],
+                 min_segment_fraction: float = 0.0) -> np.ndarray:
+    """Mark vertices whose turning angle reaches `angle_deg`.
+
+    Dimension agnostic: the turning angle between two segments is defined by
+    their dot product, which is the same in 2D and 3D.
+
+    `min_segment_fraction` optionally rejects turns that only exist because
+    of a stub segment.  A drawing program closing a path can leave a segment
+    a thousandth the length of its neighbours, and both of its endpoints then
+    look like sharp corners; pinning those preserves the stub and defeats
+    even spacing.  Set it to, say, 0.25 to require both adjacent segments to
+    reach a quarter of the median segment length.  It defaults to 0, meaning
+    no filtering, so Curve It's --interp-mode n is unaffected.
+    """
+    pts = np.asarray(points, dtype=float)
+    n = len(pts)
+    flags = np.zeros(n, dtype=bool)
+    if n < 3 or not angle_deg or float(angle_deg) <= 0.0:
+        return flags
+    before = np.roll(pts, 1, axis=0) if closed else np.vstack([pts[:1], pts[:-1]])
+    after = np.roll(pts, -1, axis=0) if closed else np.vstack([pts[1:], pts[-1:]])
+    incoming = pts - before
+    outgoing = after - pts
+    len_in = np.linalg.norm(incoming, axis=1)
+    len_out = np.linalg.norm(outgoing, axis=1)
+    usable = (len_in > 0.0) & (len_out > 0.0)
+    cosine = np.ones(n)
+    cosine[usable] = np.clip(
+        np.einsum("ij,ij->i", incoming[usable], outgoing[usable])
+        / (len_in[usable] * len_out[usable]), -1.0, 1.0)
+    flags = np.degrees(np.arccos(cosine)) >= float(angle_deg)
+    if min_segment_fraction and float(min_segment_fraction) > 0.0:
+        steps = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        steps = steps[steps > 0.0]
+        if len(steps):
+            shortest = float(min_segment_fraction) * float(np.median(steps))
+            flags &= (len_in > shortest) & (len_out > shortest)
+    if not closed:
+        flags[0] = flags[-1] = False        # the ends are kept regardless
+    return flags
+
+
+def even_points(points: np.ndarray, count: int) -> np.ndarray:
+    """`count` points evenly spaced by arc length, both ends included.
+
+    Every coordinate column of the input survives, so a 3D curve stays 3D.
+    """
+    pts = np.asarray(points, dtype=float)
+    if pts.ndim != 2:
+        raise ValueError("even_points expects an (N, D) array, got shape %r"
+                         % (pts.shape,))
+    if len(pts) < 2 or count < 2:
+        return pts[:1].copy() if len(pts) else pts.copy()
+    step = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    arc = np.concatenate([[0.0], np.cumsum(step)])
+    if arc[-1] <= 0.0:
+        return pts[:1].copy()
+    target = np.linspace(0.0, float(arc[-1]), int(count))
+    return np.column_stack([np.interp(target, arc, pts[:, d])
+                            for d in range(pts.shape[1])])
+
+
+def allocate_points(lengths, total: int) -> np.ndarray:
+    """Split `total` points between spans in proportion to their length."""
+    lengths = np.asarray(lengths, dtype=float)
+    count = len(lengths)
+    total = max(int(total), count)
+    if lengths.sum() <= 0.0:
+        return np.ones(count, dtype=int)
+    exact = lengths / lengths.sum() * total
+    share = np.maximum(1, np.floor(exact).astype(int))
+    order = np.argsort(-(exact - np.floor(exact)))
+    while share.sum() < total:
+        share[order[share.sum() % count]] += 1
+    order = np.argsort(exact - np.floor(exact))
+    index = 0
+    while share.sum() > total and index < 100 * count:
+        candidate = order[index % count]
+        if share[candidate] > 1:
+            share[candidate] -= 1
+        index += 1
+    return share
+
+
+def resample_curve(points: np.ndarray,
+                   closed: bool,
+                   n: Optional[int] = None,
+                   spacing: Optional[float] = None,
+                   min_corner_angle: Optional[float] = DEFAULT_MIN_CORNER_ANGLE,
+                   min_segment_fraction: float = 0.0) -> np.ndarray:
+    """Evenly space points by arc length, reproducing every corner exactly.
+
+    Blind uniform resampling walks straight past a sharp vertex and clips the
+    corners off a rectangle, a polygon or a star.  Corners are therefore
+    pinned and each smooth span between them is resampled on its own, in
+    proportion to its length.  Pass ``min_corner_angle=0`` for the older
+    blind behaviour.
+
+    Closed curves are returned without repeating the first point, the
+    convention the rest of the package uses.
+    """
+    pts = np.asarray(points, dtype=float)
+    if pts.ndim != 2:
+        raise ValueError("resample_curve expects an (N, D) array, got shape %r"
+                         % (pts.shape,))
+    if len(pts) < 2:
+        return pts.copy()
+    loop = np.vstack([pts, pts[:1]]) if closed else pts
+    step = np.linalg.norm(np.diff(loop, axis=0), axis=1)
+    total_length = float(step.sum())
+    if total_length <= 0.0:
+        return pts.copy()
+
+    if n is None:
+        if spacing is None or float(spacing) <= 0.0:
+            return pts.copy()
+        n = int(round(total_length / float(spacing)))
+    n = max(int(n), 3 if closed else 2)
+
+    corners = corner_flags(pts, closed, min_corner_angle, min_segment_fraction)
+    index = list(np.nonzero(corners)[0])
+    if not index:
+        target = (np.linspace(0.0, total_length, n, endpoint=False) if closed
+                  else np.linspace(0.0, total_length, n))
+        arc = np.concatenate([[0.0], np.cumsum(step)])
+        return np.column_stack([np.interp(target, arc, loop[:, d])
+                                for d in range(loop.shape[1])])
+
+    if closed:
+        pts = np.roll(pts, -index[0], axis=0)
+        index = [i - index[0] for i in index]
+        loop = np.vstack([pts, pts[:1]])
+        bounds = index + [len(pts)]
+        spans = [loop[bounds[k]:bounds[k + 1] + 1] for k in range(len(bounds) - 1)]
+        unique_total = n
+    else:
+        bounds = [0] + index + [len(pts) - 1]
+        spans = [pts[bounds[k]:bounds[k + 1] + 1] for k in range(len(bounds) - 1)]
+        unique_total = n - 1
+
+    spans = [s for s in spans if len(s) >= 2]
+    if not spans:
+        return pts.copy()
+    lengths = [float(np.linalg.norm(np.diff(s, axis=0), axis=1).sum()) for s in spans]
+    share = allocate_points(lengths, unique_total)
+
+    out = [even_points(span, int(count) + 1)[:-1]
+           for span, count in zip(spans, share)]
+    if not closed:
+        out.append(spans[-1][-1:])
+    return np.vstack(out)
+
+
 def interpolate_curve_n_points(points: np.ndarray,
                                n: int,
                                closed: bool = False,
-                               eps: float = 1e-8) -> np.ndarray:
-    """Interpolate a curve to contain exactly n points evenly spaced by arc length."""
+                               eps: float = 1e-8,
+                               min_corner_angle: Optional[float] =
+                               DEFAULT_MIN_CORNER_ANGLE) -> np.ndarray:
+    """Interpolate a curve to contain exactly n points evenly spaced by arc length.
+
+    Vertices turning by at least ``min_corner_angle`` degrees are reproduced
+    exactly, so a polygonal curve keeps its corners; pass 0 for the older
+    blind behaviour.  Works in any number of dimensions.
+    """
     if int(n) != n:
         raise ValueError("n must be an integer")
     n = int(n)
+    pts0 = _strip_closing_duplicate(points) if closed else np.asarray(points, dtype=float)
     if closed:
         if n < 3:
             raise ValueError("For closed curves, n must be >= 3.")
-        pts0 = _strip_closing_duplicate(points)
-        # Build an explicit closing segment for arc-length parametrization.
-        pts_ext = np.vstack([pts0, pts0[0]])
-        arc = compute_arc_lengths(pts_ext)
-        total = float(arc[-1])
-        if total <= eps:
-            raise ValueError("Curve length is too small or degenerate.")
-        step = total / float(n)
-        s_samples = (np.arange(n, dtype=float) * step)
-        out = np.zeros((n, 3), dtype=float)
-        for i, s in enumerate(s_samples):
-            out[i] = sample_curve_position(pts_ext, arc, float(s), eps=eps)
-        return out
-
-    # Open curve
-    if n < 2:
+    elif n < 2:
         raise ValueError("For open curves, n must be >= 2.")
-    pts0 = np.asarray(points, dtype=float)
-    arc = compute_arc_lengths(pts0)
-    total = float(arc[-1])
-    if total <= eps:
+
+    ext = np.vstack([pts0, pts0[:1]]) if closed else pts0
+    if float(compute_arc_lengths(ext)[-1]) <= eps:
         raise ValueError("Curve length is too small or degenerate.")
-    if n == 2:
+    if not closed and n == 2:
         return np.vstack([pts0[0], pts0[-1]])
-    step = total / float(n - 1)
-    s_samples = (np.arange(n, dtype=float) * step)
-    out = np.zeros((n, 3), dtype=float)
-    for i, s in enumerate(s_samples):
-        out[i] = sample_curve_position(pts0, arc, float(s), eps=eps)
-    return out
+
+    return resample_curve(pts0, closed, n=n, min_corner_angle=min_corner_angle)
 
 
 def interpolate_curve_insert_p(points: np.ndarray,
@@ -264,7 +425,9 @@ def interpolate_curve(points: np.ndarray,
                       mode: str = "none",
                       n: Optional[int] = None,
                       p: Optional[int] = None,
-                      closed: bool = False) -> np.ndarray:
+                      closed: bool = False,
+                      min_corner_angle: Optional[float] =
+                      DEFAULT_MIN_CORNER_ANGLE) -> np.ndarray:
     """Convenience wrapper for curve interpolation.
 
     mode:
@@ -278,7 +441,8 @@ def interpolate_curve(points: np.ndarray,
     if m in ("n", "npoints", "n_points", "num", "num_points"):
         if n is None:
             raise ValueError("mode='n' requires n")
-        return interpolate_curve_n_points(points, int(n), closed=closed)
+        return interpolate_curve_n_points(points, int(n), closed=closed,
+                                          min_corner_angle=min_corner_angle)
     if m in ("p", "pbetween", "p_between", "insert"):
         if p is None:
             raise ValueError("mode='p' requires p")
