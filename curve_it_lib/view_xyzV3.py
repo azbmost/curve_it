@@ -225,7 +225,13 @@ def read_xyz_like(filename: str, file_format: str = "auto") -> np.ndarray:
 
 
 def set_equal_aspect_3d(ax, points: np.ndarray) -> None:
-    """Set a 3D axis to have equal aspect ratio based on the given points."""
+    """Set a 3D axis to have equal aspect ratio based on the given points.
+
+    Equal limits alone are not enough.  Matplotlib draws a 3D axes into a box
+    whose default aspect is (4, 4, 3), so with equal data ranges on all three
+    axes the z direction still comes out at 0.75 of the x and y lengths and a
+    curve looks flattened.  The box has to be squared off as well.
+    """
     x = points[:, 0]
     y = points[:, 1]
     z = points[:, 2]
@@ -242,6 +248,11 @@ def set_equal_aspect_3d(ax, points: np.ndarray) -> None:
     ax.set_xlim(mid_x - half, mid_x + half)
     ax.set_ylim(mid_y - half, mid_y + half)
     ax.set_zlim(mid_z - half, mid_z + half)
+
+    try:
+        ax.set_box_aspect((1.0, 1.0, 1.0))
+    except Exception:       # matplotlib older than 3.3 has no 3D box aspect
+        pass
 
 
 def _project_points_to_display(ax: Any, points: np.ndarray) -> np.ndarray:

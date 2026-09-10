@@ -579,6 +579,17 @@ def render_preview(components, scale=1.0, colors=None, path=None, closed="auto")
     for i, c in enumerate(curves):
         ax.plot(c[:, 0], c[:, 1], c[:, 2], lw=1.0, color=colors[i % len(colors)])
     ax.set_title("3-D", fontsize=9)
+    # The three flat panels are set_aspect("equal"); match that here, which
+    # needs a cubic box as well as equal limits or z comes out at 0.75.
+    stacked = np.vstack(curves)
+    span = max(float(np.ptp(stacked[:, k])) for k in range(3)) or 1.0
+    for k, setter in enumerate((ax.set_xlim, ax.set_ylim, ax.set_zlim)):
+        middle = 0.5 * float(stacked[:, k].max() + stacked[:, k].min())
+        setter(middle - 0.5 * span, middle + 0.5 * span)
+    try:
+        ax.set_box_aspect((1.0, 1.0, 1.0))
+    except Exception:                   # noqa: BLE001
+        pass
     fig.tight_layout()
     fig.savefig(path, dpi=110)
     plt.close(fig)

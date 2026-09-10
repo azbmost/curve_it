@@ -2768,6 +2768,20 @@ def launch_gui() -> None:
                 ax.set_ylabel("Y")
                 ax.set_zlabel("Z")
                 ax.set_title("Curve")
+                # Equal data ranges on all three axes, and a cubic box to
+                # draw them into.  Without the box aspect matplotlib renders
+                # z at 0.75 of the x and y lengths and the curve looks
+                # flattened; this fallback cannot call view_xyzV3's helper,
+                # which is the whole reason it exists.
+                span = max((pts[:, k].max() - pts[:, k].min()) for k in range(3))
+                span = span if span > 0 else 1.0
+                for k, setter in enumerate((ax.set_xlim, ax.set_ylim, ax.set_zlim)):
+                    middle = 0.5 * (pts[:, k].max() + pts[:, k].min())
+                    setter(middle - 0.5 * span, middle + 0.5 * span)
+                try:
+                    ax.set_box_aspect((1.0, 1.0, 1.0))
+                except Exception:
+                    pass
                 plt.tight_layout()
                 plt.show()
             except Exception as e:
