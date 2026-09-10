@@ -24,6 +24,7 @@ GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along An
 - Optional: `matplotlib` for the GUI curve viewer, local analysis plots, and the SVG to XYZ preview
 - **SVG to XYZ** needs nothing beyond `numpy` and the standard library
 - Required by **XYZ to 3D Model**; not needed otherwise: `trimesh` for STL/GLB mesh output
+- Required by **KnotPlot to XYZ**; not needed otherwise: a local KnotPlot installation. KnotPlot is third-party software under its own license and is not bundled with this package; download it from https://knotplot.com/download/. The tool finds a normal installation on its own; set the `KNOTPLOT` environment variable to the full path of the executable if yours is elsewhere.
 - Optional: Tkinter for GUI mode. It is included with many Python installations.
 
 Install the Python packages:
@@ -192,6 +193,40 @@ python3 curve_it_lib/svg2xyz.py projection.svg --elements path --exclude xy-plan
 ```
 
 Curve It concatenates every component of a curve file by default, so a multi-curve XYZ file should normally be used one component at a time, with **Select components...** in the GUI or `--curve-components A` on the command line. The tool prints the exact commands after a conversion.
+
+**KnotPlot to XYZ...** opens `curve_it_lib/kp2xyz.py`, which turns the knot and link catalogue shipped with a local KnotPlot installation into coordinate XYZ/txt curve files. Name a target the way KnotPlot names it, `4.1` or `6.3.2`, or give a generator command such as `torus 2 3`, and the tool writes one file of plain `x y z` rows per target. Every component of a link becomes one blank-line-separated block of the same file, selectable as components `A`, `B`, `C`, and so on; `--split` writes each component to its own file instead, and `--all` converts the whole catalogue in one pass.
+
+A shipped catalogue entry is KnotPlot's own binary format rather than text, so the coordinates always come out of KnotPlot itself: the tool runs it headlessly with no window and asks it for the coordinates of the loaded conformation. The catalogue files are read directly only to list their names and to hash their contents for deduplication; no coordinate is ever parsed out of them. Nothing is displayed, and no KnotPlot window opens.
+
+`--nbeads N` sets the number of points. KnotPlot spreads that number over the whole conformation, so on a link it is the total and not a per-component count: `--nbeads 300` on the three-component link `6.3.2` gives components of 107, 97, and 95 points. Leave it unset to export the shipped conformation at its own resolution.
+
+Conformations are exported exactly as KnotPlot ships them, and relaxation is deliberately not offered. The tool does not relax, tighten, or smooth the geometry. Three things change the coordinates, and all three are opt-in: the reflection described below, the `--nbeads` resampling above, and `--precision`, which rounds each value as it is written. Resampling redistributes vertices along the same curve rather than reshaping it, but it does move them, so it is not a no-op even at the shipped point count: `3.1` ships 47 points, and `--nbeads 47` shifts them by up to `0.096853` in a single coordinate and takes the writhe from `+3.3722171577968423` to `+3.3710769510513137`, both measured with `curve_it_lib/cal_xyz_total_curvature_writheV2.py` at its defaults. Leave `--nbeads` unset and the shipped coordinates are what you get. These conformations are correct representatives of their knot and link types, but they are not ideal or ropelength-minimizing shapes, so do not read their length, curvature, or writhe as ideal-knot values. Relax a knot inside KnotPlot first and export it afterwards if that is what you want.
+
+`--list` prints the catalogue and `--info` shows what a run would extract without writing anything. Duplicates are dropped by comparing file contents rather than names, which reduces the 585 catalogue files to 522 distinct knots and links; `--no-dedupe` keeps all 585. Everything is extracted in one KnotPlot session rather than one session per target, so even the largest run starts KnotPlot once: those 522 entries write 59877 points in about 0.3 seconds here. Files are written to `-o/--outdir`, `kp_xyz` by default.
+
+**The dotted and underscored spellings are not two names for one knot, and the difference is chirality.** 93 names ship in both spellings, but only 63 of those pairs are byte-identical; those 63 collapse onto the dotted form KnotPlot's own `load` syntax uses. The other 30 pairs are genuinely different curves, so both spellings survive deduplication and both appear in `--list` and `--all`. 28 of the 30 are mirror images, the two chiral forms of the same knot type: measured with `curve_it_lib/cal_xyz_total_curvature_writheV2.py` at its defaults, `8.19` has writhe `-8.62647841209301` and `8_19` has `+8.62647841925399`, equal in magnitude to eight significant figures and opposite in sign. Treat `8.19` and `8_19` as opposite-handed knots rather than as a duplicate to discard, and check which one you loaded before reading any signed quantity off the curve.
+
+The two remaining pairs, `9.20`/`9_20` and `9.35`/`9_35`, share a handedness, and they are two slightly different conformations of one knot rather than one conformation stored in a different orientation. Measured with the same tool, `9.20` gives `+6.346643502580359` against `+6.346635731949251` for `9_20`, and `9.35` gives `+7.539209051573574` against `+7.539218781711285` for `9_35`. Rotating or translating a curve leaves its writhe alone, so two files that agree in sign and still disagree in value cannot be one conformation re-oriented; their contents differ as well, which is why the content hash keeps both.
+
+The tool can also write the mirror image of any target, so either handedness is available even where the catalogue ships only one. `--mirror` writes the reflection in place of the original, `--both` writes the original and the reflection, and `--mirror-axis x`, `y`, or `z` chooses which coordinate is negated. Exactly one coordinate is negated, because negating one axis is a genuine reflection while negating two composes into a rotation and leaves the handedness alone. The default axis is `z`, which leaves `x` and `y` untouched: the projection you see looking down the `z` axis is identical, while every crossing swaps over for under, which is the mirror of the textbook knot diagram. Reflection negates the writhe, the linking number, and every other chirality-sensitive invariant; mirroring the shipped `8.19`, writhe `-8.62647841209301` by the same tool, gives `+8.62647841209301` and so matches KnotPlot's own chiral partner `8_19`, `+8.62647841925399`, to eight significant figures. A link is reflected as a whole, so the components of a mirrored link stay in register with one another. For an amphichiral knot such as `4.1`, whose shipped conformation measures `+0.15240866875536058`, near zero beside the `8.6` of `8.19`, the mirror measures `-0.15240866875536058` and is the same knot type in a different conformation, not a second knot.
+
+A reflected file is written as `<stem>_mirror.xyz`, or `<stem>_mirror_A.xyz` per component with `--split`, and its `#` header records that the coordinates were reflected and on which axis, so a file on disk is never ambiguous about its handedness. `--both` is opt-in rather than the default because `--all --both` writes 1044 files instead of 522.
+
+This requires a local KnotPlot installation. The tool searches the `KNOTPLOT` environment variable holding the full path of the executable, then `KNOTPLOT_HOME`, then `PATH`, then the usual install locations for the platform; `--knotplot /path/to/KnotPlot` overrides the search for one run. `--check` prints what it found and exits, and it does more than look for a file: it launches the binary, asks it to quit, and looks for KnotPlot's own startup banner, so something executable that is not KnotPlot is reported as exactly that and `--check` exits nonzero. The tool opens whether or not the search succeeds, and its **Locate KnotPlot...** button points it at an install the search missed, so the Curve It launcher warns about a missing installation and then offers to open the tool anyway. KnotPlot is third-party software under its own license and is not bundled here; download it from https://knotplot.com/download/.
+
+```bash
+python3 curve_it_lib/kp2xyz.py --check
+python3 curve_it_lib/kp2xyz.py --list
+python3 curve_it_lib/kp2xyz.py 4.1 -o out
+python3 curve_it_lib/kp2xyz.py 6.3.2 -o out --nbeads 200 --split
+python3 curve_it_lib/kp2xyz.py "torus 2 3" -o out
+python3 curve_it_lib/kp2xyz.py 8.19 -o out --mirror
+python3 curve_it_lib/kp2xyz.py 3.1 -o out --both
+python3 curve_it_lib/kp2xyz.py 4.1 -o out --mirror --mirror-axis x
+python3 curve_it_lib/kp2xyz.py --all -o catalogue
+```
+
+Closure is measured per component rather than assumed. Almost everything KnotPlot ships is a closed curve, written without repeating the first point, so load it with **Path type: closed**; the `#` header records `closed=yes` or `closed=no` for every component, and in the shipped catalogue exactly one component, component A of `n3.1s`, is a genuine open arc. A link file holds several components and Curve It concatenates all of them by default, so use one at a time with **Select components...** in the GUI or `--curve-components A` on the command line. Whenever a written file holds more than one component, the report ends with a `USING THIS FILE IN CURVE IT` block spelling out the exact command for the first three components and naming the last when the file holds more than three; a single-component knot, and every file written by `--split`, leaves nothing to choose between and gets no block.
 
 **Generate helical curve...** opens `curve_it_lib/generate_helix_xyzV2.py`. This tool writes a plain-coordinate XYZ file for a circular helix:
 
@@ -381,6 +416,7 @@ Supporting scripts live in `curve_it_lib/`:
 - `get_curve_it_phaseV5_1.py`
 - `curved_connectorV3_4.py`
 - `plane_itV3_8.py` (versioned Plane It implementation; use `plane_it.py` as the stable launcher)
+- `kp2xyz.py`
 - `svg2xyz.py`
 - `view_xyzV3.py`
 - `xyz2model.py`
@@ -394,6 +430,7 @@ python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py curve.xyz --no-plot
 python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py --example-trefoil --no-plot
 python3 curve_it_lib/generate_helix_xyzV2.py -R 10 -c 2 -L 200 -o helix.xyz
 python3 curve_it_lib/generate_sc_xyzV3_7.py -L 1071 -w -3 -n 2000
+python3 curve_it_lib/kp2xyz.py 4.1 -o out
 python3 curve_it_lib/svg2xyz.py drawing.svg --info
 python3 curve_it_lib/view_xyzV3.py curve.xyz
 python3 curve_it_lib/view_xyzV3.py multi_component.txt --components A,C

@@ -2149,6 +2149,16 @@ def launch_gui() -> None:
             "The SVG y axis points down the page, so it is flipped by default and the exported curve comes out with the same orientation as the drawing. Closed shapes are written without repeating the first point, which is the convention Curve It expects for Path type: closed.\n\n"
             "Pick individual curves with the components field, using the same A, B, C labels this GUI uses: A, or B,C, or A-C. Selection happens after sizing and centering, so a curve pulled out on its own stays in register with the rest of the drawing. Include and exclude select instead by id, class, or enclosing group name, and do reframe the output; that is how the decoration is dropped from a Plane It projection SVG."
         ),
+        "kp2xyz": (
+            "KnotPlot to XYZ",
+            "Open the knot and link catalogue extractor.\n\n"
+            "It pulls xyz coordinates out of the knot and link catalogue that ships with KnotPlot and writes them as coordinate XYZ/txt curve files that load directly as Curve It curve inputs. The shipped catalogue files are in KnotPlot's own binary format, so the tool drives KnotPlot itself to read them; a local KnotPlot installation is therefore required. Get it from https://knotplot.com/download/. The tool searches the usual install locations, and the KNOTPLOT environment variable can point at the binary, or KNOTPLOT_HOME at the install folder, when it lives somewhere else.\n\n"
+            "Catalogue entries are named exactly the way KnotPlot names them, so ask for 4.1, 6.3.2, or 8.19 the same way you would type load 6.3.2 in KnotPlot. Generator commands work too: enter torus 2 3 for the (2,3) torus knot. List the catalogue to see everything the installed copy provides.\n\n"
+            "A link comes out as several components separated by blank lines, which Curve It reads as components A, B, C, and so on, so the whole link can be loaded at once and individual components selected afterward. A closed component is written without repeating its first vertex, which is the convention Curve It expects for Path type: closed. Closure is measured per component rather than assumed and is recorded in the # header, so a target that does come back as an open arc, typically a generator command rather than a catalogue entry, is labelled closed=no instead of being passed off as a loop. Resolution is set with the bead count, and on a multi-component link that count is the total across all components, divided between them roughly in proportion to their length.\n\n"
+            "Dotted and underscored spellings are NOT interchangeable. The catalogue's basic/ folder holds 585 knot and link files, the ones carrying KnotPlot's own file header, 522 of them distinct by content, and 93 names appear in both spellings. Only 63 of those 93 pairs are byte-identical; the other 30 pairs differ, and 28 of those 30 are the two MIRROR IMAGES of the same knot type, one of each handedness. Measured with this project's own writhe tool, curve_it_lib/cal_xyz_total_curvature_writheV2.py at its defaults, 8.19 gives -8.6265 and 8_19 gives +8.6265, and 7.3 gives -7.1239 against +7.0459 for 7_3. Differing pairs include 7.3/7_3, 7.4/7_4, 7.7/7_7, 8.10/8_10, 8.13/8_13, and 8.19/8_19. Two of the 30 are NOT mirror pairs: 9.20/9_20, measured by the same tool as +6.3466435 and +6.3466357, and 9.35/9_35, +7.5392091 and +7.5392188, carry the SAME handedness, so neither pair is a chiral pair. They are not one conformation stored in a different orientation either: the two files differ by content hash and their writhes differ in the fifth decimal, so each of those pairs is two slightly DIFFERENT conformations of the same handedness. Listing the catalogue collapses only the byte-identical copies, by content hash, so both members of every differing pair are kept and offered. If handedness matters, as it does in DNA topology, pick the spelling deliberately and check the sign of the writhe.\n\n"
+            "The tool can also write the MIRROR IMAGE of any catalogue entry, so either handedness is available even where the catalogue ships only one. Reflection negates exactly one coordinate: one negated axis is a true mirror, while negating two is merely a rotation, so one axis is used at a time. The default axis is z, which leaves x and y untouched, so the projection seen down the z axis is identical while every crossing swaps over and under, the textbook mirror of a knot diagram. Reflection negates the writhe, the linking number, and every other chirality-sensitive invariant; mirroring 8.19 turns writhe -8.6265 into +8.6265, matching KnotPlot's own 8_19 to eight significant figures. For an AMPHICHIRAL knot such as 4.1, whose shipped conformation measures +0.1524 by the same tool and mirrors to -0.1524, both near zero, the mirror is the SAME knot type, a different conformation and not a new knot. A reflected file is written as <stem>_mirror.xyz, or <stem>_mirror_A.xyz per component when split, and its # header records that the coordinates were reflected and on which axis, so a file on disk is never ambiguous about its handedness.\n\n"
+            "These are KnotPlot's shipped conformations, exported as they are. The tool never relaxes, tightens, or smooths them, so the shape it writes is the shape KnotPlot ships. That is a promise about the shape, not about every coordinate: setting a bead count resamples the curve, which moves the vertices along that same shape, and the optional reflection above negates one axis. They are correct representatives of each knot and link type, but they are NOT ideal conformations, so do not read their length, curvature, or writhe as ideal-knot values."
+        ),
         "local_curvature_torsion": (
             "Local Curvature/Torsion",
             "Open the local curve analysis tool. It writes a CSV table with normalized path position, coordinates, local curvature, regularized local torsion, and local writhe density.\n\n"
@@ -3258,6 +3268,59 @@ def launch_gui() -> None:
         except Exception as e:
             messagebox.showerror("Tool launch error", f"Failed to launch SVG to XYZ:\n{e}")
 
+    def launch_kp2xyz_tool() -> None:
+        script_path = resource_path(os.path.join("curve_it_lib", "kp2xyz.py"))
+        if not os.path.isfile(script_path):
+            messagebox.showerror(
+                "Tool not found",
+                f"Could not find the KnotPlot to XYZ tool:\n{script_path}",
+            )
+            return
+        # KnotPlot itself does the reading, so check for it before launching and
+        # remind the user where to get it. The import is defensive: a missing or
+        # broken helper module must not take the main window down with it.
+        # BaseException, not Exception: a module that calls sys.exit() at import
+        # time raises SystemExit, which Tkinter re-raises out of mainloop and
+        # would close Curve It.
+        try:
+            from curve_it_lib import kp2xyz
+            install = kp2xyz.find_knotplot()
+        except BaseException as exc:
+            # The module itself is unusable here, so the child process would fail
+            # to import it too. There is nothing to open; say so and stop.
+            messagebox.showerror(
+                "Tool unavailable",
+                "KnotPlot to XYZ could not be loaded:\n"
+                f"{type(exc).__name__}: {exc}\n\n"
+                f"Check the helper module:\n{script_path}",
+            )
+            return
+        if not install:
+            # The module is fine, only the external program is missing, so the
+            # tool window is still worth opening: it has Locate KnotPlot... and
+            # Re-check. Keep this a short reminder; the tool's own opening pane
+            # lists every location that was probed.
+            proceed = messagebox.askyesno(
+                "KnotPlot not found",
+                "KnotPlot is a separate program and is not bundled with Curve It.\n\n"
+                "Download it from https://knotplot.com/download/, or set the KNOTPLOT "
+                "environment variable to an existing KnotPlot binary.\n\n"
+                "The tool's opening pane lists every location that was searched, and its "
+                "Locate KnotPlot... button can point it at an install directly.\n\n"
+                "Open KnotPlot to XYZ anyway?",
+            )
+            if not proceed:
+                return
+        try:
+            import subprocess
+            if getattr(sys, "frozen", False):
+                command = [sys.executable, "--kp2xyz-gui"]
+            else:
+                command = [sys.executable, script_path, "--gui"]
+            subprocess.Popen(command)
+        except Exception as e:
+            messagebox.showerror("Tool launch error", f"Failed to launch KnotPlot to XYZ:\n{e}")
+
     tk.Button(file_frame, text="View curve", command=view_curve).grid(
         row=2, column=6, sticky="w", padx=4, pady=2
     )
@@ -3579,16 +3642,19 @@ def launch_gui() -> None:
         tk.Button(cell, text=label, command=command).pack(side="left")
         help_button(cell, topic_key).pack(side="left", padx=(3, 0))
 
-    # Two rows of four: the first row produces or converts a curve file, the
-    # second analyzes one or builds something from it.
+    # Three rows: the first converts an existing file into a curve file, the
+    # second generates one from parameters, the third analyzes a curve or
+    # builds something from it. A fifth column in the first row would make this
+    # frame wider than the rest of the window, so the producers wrap instead.
     add_tool_button(0, 0, "Convert XYZ...", convert_xyz_file_dialog, "xyz_convert")
     add_tool_button(0, 1, "SVG to XYZ...", launch_svg2xyz_tool, "svg2xyz")
-    add_tool_button(0, 2, "Generate helical curve...", launch_generate_helical_curve_tool, "generate_helical_curve")
-    add_tool_button(0, 3, "Generate SC...", launch_generate_sc_tool, "generate_sc")
-    add_tool_button(1, 0, "Local curvature/torsion...", launch_local_curvature_torsion_tool, "local_curvature_torsion")
-    add_tool_button(1, 1, "Plane It...", launch_plane_it_tool, "plane_it")
-    add_tool_button(1, 2, "Curved Connector...", launch_curved_connector_tool, "curved_connector")
-    add_tool_button(1, 3, "XYZ to 3D Model...", launch_xyz2model_tool, "xyz2model")
+    add_tool_button(0, 2, "KnotPlot to XYZ...", launch_kp2xyz_tool, "kp2xyz")
+    add_tool_button(1, 0, "Generate helical curve...", launch_generate_helical_curve_tool, "generate_helical_curve")
+    add_tool_button(1, 1, "Generate SC...", launch_generate_sc_tool, "generate_sc")
+    add_tool_button(2, 0, "Local curvature/torsion...", launch_local_curvature_torsion_tool, "local_curvature_torsion")
+    add_tool_button(2, 1, "Plane It...", launch_plane_it_tool, "plane_it")
+    add_tool_button(2, 2, "Curved Connector...", launch_curved_connector_tool, "curved_connector")
+    add_tool_button(2, 3, "XYZ to 3D Model...", launch_xyz2model_tool, "xyz2model")
     # Only the trailing spacer column takes up slack, so the buttons stay
     # grouped at the left instead of spreading across the window width.
     for col in range(4):
@@ -3998,6 +4064,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
+        "--kp2xyz-gui",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "-v", "--version",
         action="version",
         version=f"{APP_NAME} {APP_VERSION}",
@@ -4023,6 +4094,16 @@ def main(argv: Optional[List[str]] = None) -> None:
             svg2xyz.run_gui()
         except Exception as exc:
             raise SystemExit(f"Failed to launch SVG to XYZ: {exc}")
+        return
+
+    if args.kp2xyz_gui:
+        # BaseException so that a sys.exit() raised while importing the helper
+        # is reported as a launch failure instead of a bare, silent exit.
+        try:
+            from curve_it_lib import kp2xyz
+            kp2xyz.run_gui()
+        except BaseException as exc:
+            raise SystemExit(f"Failed to launch KnotPlot to XYZ: {exc}")
         return
 
     # Decide whether to use GUI:
