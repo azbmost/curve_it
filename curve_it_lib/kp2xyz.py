@@ -283,13 +283,37 @@ HELP = {
         "detail.\n\n"
         "Anything containing a space is treated as a KnotPlot command "
         "instead and passed through untouched, so generators work too. On "
-        "the command line such an item has to be quoted.",
+        "the command line such an item has to be quoted. For torus, note "
+        "that the order of its two numbers is not the one every text "
+        "uses - click the ? beside it.",
         "4.1 6.3.2 \"torus 2 3\"\n"
         "  4.1          -> load 4.1\n"
         "  6.3.2        -> load 6.3.2      (a 3-component link)\n"
-        "  torus 2 3    -> the (2,3) torus knot, built on the fly\n"
+        "  torus 2 3    -> the trefoil, built on the fly; see the\n"
+        "                  torus  ?  about the index order\n"
         "  8.19 / 8_19  -> the two mirror images,\n"
         "                  writhe -8.626478 / +8.626478"),
+    "torus": (
+        "torus p q, and which number is which",
+        "KnotPlot's `torus p q` winds the curve p times around the z axis, "
+        "the axis of the torus, and q times around the tube itself. "
+        "Measured here: torus 2 3 goes twice around the axis and three "
+        "times around the tube.\n\n"
+        "That index order is not universal. The common parametrisation, and "
+        "so most software, puts the axis winding first and calls this the "
+        "(2,3) torus knot. Other sources, including Adams' The Knot Book, "
+        "put the winding around the tube first, and in that convention the "
+        "same curve is the (3,2) torus knot. So a (p,q) quoted in a paper "
+        "may be KnotPlot's `torus q p`.\n\n"
+        "The knot type is safe either way, because T(p,q) and T(q,p) are the "
+        "same knot. What differs is the shape you get: the number of lobes, "
+        "and the crossings in the view down z. If you are reproducing a "
+        "figure and the shape looks wrong, swap the two numbers.",
+        "torus 2 3   2 turns about the axis, 3 about the tube\n"
+        "            trefoil, 3 crossings seen down z\n"
+        "torus 3 2   3 turns about the axis, 2 about the tube\n"
+        "            the same trefoil, 4 crossings seen down z\n"
+        "torus 2 5   the 5.1 knot, 5 crossings seen down z"),
     "catalogue": (
         "KnotPlot's shipped catalogue, and chirality",
         "The basic/ folder inside KnotPlot's Resources holds every knot and "
@@ -343,19 +367,15 @@ HELP = {
         "  component B:  97 points\n"
         "  component C:  95 points"),
     "conformations": (
-        "These are shipped shapes, not ideal knots",
-        "Every curve here is the conformation KnotPlot ships for that knot "
-        "or link. It has the right topology, and it is a clean smooth "
-        "embedding, but it is NOT an ideal knot: not tight, not "
-        "ropelength-minimising, and not a canonical shape anyone else will "
-        "reproduce exactly.\n\n"
-        "This tool exports those shipped conformations as they are. It does "
-        "not relax, tighten, smooth or otherwise modify the geometry, and it "
-        "offers no relaxation button. Points per curve only redistributes "
-        "vertices along the same curve, which is not a relaxation either, "
-        "and mirroring reflects the shape without changing it.\n\n"
-        "If you need genuinely ideal conformations, use published ideal knot "
-        "coordinates instead and load them as ordinary .xyz files.",
+        "The shapes KnotPlot ships",
+        "Every curve is the conformation KnotPlot ships for that knot or "
+        "link, exported as it is. This tool does not relax, tighten or "
+        "smooth the geometry.\n\n"
+        "They are clean, smooth embeddings with the right topology, but they "
+        "are not tight or ropelength-minimising, so read their length and "
+        "curvature as properties of this shape rather than of the knot type. "
+        "If you need ideal conformations, load published ideal-knot "
+        "coordinates as ordinary .xyz files instead.",
         None),
     "split": (
         "One file per component",
@@ -1389,6 +1409,63 @@ def component_guidance(files):
     return lines
 
 
+def preview(paths, closed=True):
+    """Open Curve It's own curve viewer on the files just written.
+
+    view_xyzV3 ends in a blocking plt.show(), so it is run as a separate
+    process: the GUI stays usable and several previews can be open at once.
+    Returns the paths actually opened.
+    """
+    viewer = resource_path(os.path.join("curve_it_lib", "view_xyzV3.py"))
+    if not os.path.isfile(viewer):
+        raise ValueError("the curve viewer is missing: %s" % viewer)
+    opened = []
+    for path in paths:
+        if not os.path.isfile(path):
+            continue
+        command = [sys.executable, viewer, path]
+        if not closed:
+            command.append("--open")
+        try:
+            subprocess.Popen(command)
+        except OSError as exc:
+            raise ValueError("could not start the curve viewer: %s" % exc)
+        opened.append(path)
+    if not opened:
+        raise ValueError("there is nothing to preview yet - extract first")
+    return opened
+
+
+PREVIEW_LIMIT = 6
+
+
+def preview_selection(written):
+    """Which files a preview should open, and what to say when it trims.
+
+    A whole-catalogue run writes hundreds of files; opening a window for each
+    would be unusable, so only the first few are shown.
+    """
+    chosen = list(written)[:PREVIEW_LIMIT]
+    note = ""
+    if len(written) > len(chosen):
+        note = ("previewing the first %d of %d files; the rest are on disk"
+                % (len(chosen), len(written)))
+    return chosen, note
+
+
+def torus_note(targets):
+    """Warn about `torus p q`'s index order, which no convention agrees on."""
+    used = [t for t in targets if str(t).strip().lower().startswith("torus")]
+    if not used:
+        return []
+    return ["",
+            "TORUS INDEX ORDER",
+            "  KnotPlot's torus p q winds p times about the axis and q times",
+            "  about the tube. Some texts name that same curve (q,p), so a",
+            "  (p,q) from a paper may be this tool's torus q p. The knot type",
+            "  is the same either way; the shape is not. See the torus help."]
+
+
 def mirror_flags(result):
     """path -> the axis it was reflected on, for every reflected file.
 
@@ -1449,6 +1526,7 @@ def describe(result, targets, outdir, guidance=True):
         lines.append("KnotPlot's own output is in _knotplot.log")
     if guidance:
         lines += component_guidance(result.get("files", []))
+    lines += torus_note(targets)
     return "\n".join(lines)
 
 
@@ -1510,6 +1588,9 @@ def build_parser():
                    help="write the original AND the mirror, the reflected "
                         "one as <name>_mirror.xyz; never implied, since with "
                         "--all it writes 1044 files")
+    p.add_argument("--preview", action="store_true",
+                   help="open each written curve in Curve It's own 3D viewer "
+                        "after extracting (at most %d windows)" % PREVIEW_LIMIT)
     p.add_argument("--precision", type=int, default=DEFAULT_PRECISION,
                    help="decimal places written per coordinate (default 6)")
     p.add_argument("--no-comments", action="store_true",
@@ -1611,6 +1692,15 @@ def run_cli(args):
                   "Being executable does not make a file KnotPlot, which is "
                   "why nothing could be\nextracted. Run --check for the whole "
                   "picture." % (install.executable, detail), file=sys.stderr)
+    if args.preview and result["written"]:
+        chosen, note = preview_selection(result["written"])
+        if note:
+            print(note)
+        try:
+            preview(chosen)
+        except ValueError as exc:
+            # A failed preview must not fail the extraction that succeeded.
+            print("preview unavailable: %s" % exc, file=sys.stderr)
     # A scripted --all has to be able to tell a partial run from a whole one.
     return 0 if result["written"] and not result["failed"] else 1
 
@@ -1776,6 +1866,10 @@ def run_gui(initial_outdir=None):
     tk.Label(ft, text="mirror-image pairs such as 8.19 / 8_19 are always kept",
              font=("Helvetica", 10), fg="#8a929b").grid(
                  row=5, column=0, columnspan=3, sticky="w")
+    tk.Label(ft, text="torus p q: p turns about the axis, q about the tube",
+             font=("Helvetica", 10), fg="#8a929b").grid(
+                 row=6, column=0, columnspan=2, sticky="w", pady=(3, 0))
+    chip(ft, "torus").grid(row=6, column=2, padx=(6, 0), pady=(3, 0))
 
     # extraction ------------------------------------------------------------
     fe = ttk.LabelFrame(left, text="Extraction", padding=8)
@@ -1808,11 +1902,10 @@ def run_gui(initial_outdir=None):
                       "projection you see",
              font=("Helvetica", 10), fg="#8a929b").grid(
                  row=5, column=0, columnspan=4, sticky="w")
-    tk.Label(fe, text="shipped conformations, not ideal knots",
-             font=("Helvetica", 11, "bold"), fg="#8a4b00", bg="#fff2e0",
-             padx=6, pady=2).grid(row=6, column=0, columnspan=2, sticky="w",
-                                  pady=(8, 0))
-    chip(fe, "conformations").grid(row=6, column=2, padx=(6, 0), pady=(8, 0))
+    tk.Label(fe, text="shapes are the ones KnotPlot ships, exported unchanged",
+             font=("Helvetica", 10), fg="#8a929b").grid(
+                 row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+    chip(fe, "conformations").grid(row=6, column=2, padx=(6, 0), pady=(6, 0))
 
     # output ----------------------------------------------------------------
     fo = ttk.LabelFrame(left, text="Output", padding=8)
@@ -1837,6 +1930,8 @@ def run_gui(initial_outdir=None):
     recheck_btn.pack(side="left")
     list_btn = ttk.Button(bar, text="List catalogue")
     list_btn.pack(side="left", padx=6)
+    preview_btn = ttk.Button(bar, text="Preview")
+    preview_btn.pack(side="left", padx=(0, 6))
     extract_btn = ttk.Button(bar, text="Extract")
     extract_btn.pack(side="left")
     txt = tk.Text(right, wrap="none", font=("Menlo", 11), height=26)
@@ -1957,6 +2052,7 @@ def run_gui(initial_outdir=None):
                      "KnotPlot" % (install.executable, install.source),
                 fg="#0a7")
             extract_btn.configure(state="normal")
+            preview_btn.configure(state="normal")
             status.configure(text="KnotPlot ready", foreground="#0a7")
         elif install:
             # The full reason is in the report pane below; the banner keeps
@@ -1971,6 +2067,7 @@ def run_gui(initial_outdir=None):
                       % (install.executable, detail)),
                 fg="#c00")
             extract_btn.configure(state="disabled")
+            preview_btn.configure(state="disabled")
             status.configure(text="found, but it is not KnotPlot",
                              foreground="#c00")
         else:
@@ -1980,6 +2077,7 @@ def run_gui(initial_outdir=None):
                       "Download: %s" % DOWNLOAD_URL),
                 fg="#c00")
             extract_btn.configure(state="disabled")
+            preview_btn.configure(state="disabled")
             status.configure(text="KnotPlot not found", foreground="#c00")
         if announce:
             show(message + "\n")
@@ -2157,6 +2255,69 @@ def run_gui(initial_outdir=None):
             targets += catalogue_names(state["install"], dedupe=V["dedupe"].get())
         return targets
 
+    def do_preview():
+        """Extract into a scratch folder and open the 3D viewer on it.
+
+        Deliberately does not touch the output folder: this is for looking at
+        a knot before committing to it.  The files land in a temporary
+        directory that the viewer processes read immediately.
+        """
+        install = state["install"]
+        probe = state["probe"]
+        if not install or not (probe and probe[0]):
+            messagebox.showerror(
+                "KnotPlot not ready",
+                "Preview needs a working KnotPlot.\n\n"
+                "Use Locate KnotPlot... to point at the binary, or download "
+                "it from\n%s" % DOWNLOAD_URL)
+            return
+        try:
+            targets = gui_targets()
+            nbeads = optional("nbeads")
+            precision = int(fnum("precision", DEFAULT_PRECISION))
+        except Exception as exc:            # noqa: BLE001
+            messagebox.showerror("Preview failed", str(exc))
+            return
+        if not targets:
+            messagebox.showwarning(
+                "Nothing to preview",
+                "No targets given.\n\n"
+                "Type a name such as 4.1, or pick some with Browse "
+                "catalogue...")
+            return
+        shown, trimmed = preview_selection(targets)
+        status.configure(text="extracting %d target(s) to preview..."
+                              % len(shown), foreground="#8a929b")
+        root.update_idletasks()
+        try:
+            scratch = tempfile.mkdtemp(prefix="kp2xyz-preview-")
+            result = extract(shown, scratch, install=install,
+                             nbeads=int(nbeads) if nbeads is not None else None,
+                             split=False, precision=precision,
+                             timeout=GUI_TIMEOUT,
+                             comments=V["comments"].get(),
+                             mirror=V["mirror"].get(),
+                             mirror_axis=V["mirror_axis"].get(),
+                             both=V["both"].get(),
+                             explicit_label=LOCATED_LABEL)
+            opened = preview(result["written"])
+        except Exception as exc:            # noqa: BLE001
+            messagebox.showerror("Preview failed", str(exc))
+            status.configure(text="preview failed", foreground="#c00")
+            return
+        lines = ["PREVIEW", "",
+                 "%d viewer window(s) opening. These files are temporary and "
+                 "were NOT" % len(opened),
+                 "written to the output folder - use Extract to keep them.",
+                 ""]
+        lines += ["  " + os.path.basename(f) for f in opened]
+        if trimmed:
+            lines += ["", trimmed]
+        lines += torus_note(shown)
+        show("\n".join(lines) + "\n")
+        status.configure(text="preview open -- nothing written to the output "
+                              "folder", foreground="#0a7")
+
     def do_extract():
         install = state["install"]
         if not install:
@@ -2252,11 +2413,13 @@ def run_gui(initial_outdir=None):
                 report += "\n  ... and %d more" % (len(written) - len(shown))
             report += ("\n\nLoad %s in Curve It as the Curve XYZ/txt input.\n"
                        % os.path.basename(written[0]))
-            report += ("These are KnotPlot's shipped conformations, not ideal "
-                       "knots; click the  ?  beside the orange badge.")
+
         guidance = component_guidance(result.get("files", []))
         if guidance:
             report += "\n" + "\n".join(guidance)
+        note = torus_note(targets)
+        if note:
+            report += "\n" + "\n".join(note)
         if result["failed"]:
             report += "\n\nFAILED\n" + "\n".join("  " + f
                                                  for f in result["failed"][:40])
@@ -2271,6 +2434,7 @@ def run_gui(initial_outdir=None):
         else:
             status.configure(text="nothing written", foreground="#c00")
 
+    preview_btn.configure(command=do_preview)
     extract_btn.configure(command=do_extract)
 
     # refresh_install has already set the banner, the status label and
@@ -2305,9 +2469,7 @@ def run_gui(initial_outdir=None):
          "Mirror image reflects whatever you extract: one coordinate is\n"
          "negated, which negates writhe and linking number. z is the default\n"
          "axis because it keeps the projection and swaps every crossing.\n\n"
-         "The shapes are the ones KnotPlot ships. They are not ideal knots.\n"
-         "This tool exports them as they are and does not relax, tighten or\n"
-         "otherwise modify the geometry.\n\n"
+         "Shapes are the ones KnotPlot ships, exported unchanged.\n\n"
          "Click any light-blue  ?  for an explanation and examples.\n")
 
     root.after(120, lambda: (root.lift(), root.attributes("-topmost", True),
