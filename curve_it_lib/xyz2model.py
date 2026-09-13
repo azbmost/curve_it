@@ -36,6 +36,17 @@ import sys
 
 import numpy as np
 
+# Optional Geomview VECT support.  VECT is the one curve format that states
+# per component whether it is a closed loop, so a .vect input answers --closed
+# instead of leaving it to the looks_closed heuristic below.
+try:
+    from . import vect_io
+except ImportError:
+    try:
+        import vect_io  # type: ignore[no-redef]
+    except ImportError:
+        vect_io = None  # type: ignore[assignment]
+
 __version__ = "1.0"
 
 TOOL_NAME = "XYZ to 3D Model"
@@ -77,11 +88,16 @@ DEFAULT_COLORS = [
 # --------------------------------------------------------------------------
 HELP = {
     "file": (
-        "Input .xyz file",
+        "Input curve file",
         "One or more space curves. Components are separated by blank lines, or "
         "by the count + comment header of a standard XYZ frame. Each line may be "
         "\"x y z\" or \"element x y z\". macOS Finder aliases are followed to the "
         "original file.\n\n"
+        "A Geomview VECT file (.vect) is also accepted, recognised by its header "
+        "word rather than its extension. Each of its polylines is one component, "
+        "and because VECT states which of them are closed loops, a VECT input "
+        "answers Closed curves by itself instead of leaving it to the "
+        "last-point-to-first measurement.\n\n"
         "An STL / OBJ / PLY / GLB / 3MF / OFF mesh is also accepted -- see the "
         "Input mode help. A mesh is only scaled.",
         "x y z form              element form           standard XYZ\n"
@@ -178,9 +194,10 @@ HELP = {
     "closed": (
         "Closed curves",
         "Whether each curve is a loop that joins back to its start.\n\n"
-        "auto  -- decide per component: a curve is closed when its last point "
-        "sits within about 2.5 median steps of its first. This is right almost "
-        "always.\n"
+        "auto  -- decide per component. A Geomview VECT input states closure in "
+        "its own header and is believed; anything else is measured, and a curve "
+        "is closed when its last point sits within about 2.5 median steps of its "
+        "first. This is right almost always.\n"
         "yes   -- force every component closed (a seamless loop, no end caps).\n"
         "no    -- force every component open (rounded caps on both ends).\n\n"
         "Get this wrong on a loop and you will see a small gap with two caps "
@@ -263,9 +280,35 @@ def resolve_path(path):
 
 def load_xyz(path):
     """Return [(N,3) float array, ...], one entry per component."""
+    return load_curves(path)[0]
+
+
+def load_curves(path):
+    """Return (components, stated_closure).
+
+    stated_closure is one bool per component for a VECT input, which records
+    closure in the sign of each vertex count, and None for every other format,
+    which leaves closure unsaid.  None means "nobody said", not "open", so the
+    caller can fall back to looks_closed rather than assuming.
+    """
     path = resolve_path(path)
-    with open(path) as fh:
-        lines = fh.read().splitlines()
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        text = fh.read()
+
+    if vect_io is not None and vect_io.looks_like_vect(text):
+        curves = vect_io.read_vect_text(text, source=path)
+        blocks = [b for b in curves.components if len(b) >= 2]
+        if len(blocks) != len(curves.components):
+            raise ValueError("%s has a component with fewer than 2 points" % path)
+        if not blocks:
+            raise ValueError("no coordinate blocks found in %s" % path)
+        return blocks, list(curves.closed)
+    if vect_io is None and text.lstrip()[:4].upper() == "VECT":
+        raise ValueError(
+            "%s is a Geomview VECT file, which needs vect_io.py from "
+            "curve_it_lib. Make sure that file sits beside this one." % path)
+
+    lines = text.splitlines()
 
     blocks, cur, i = [], [], 0
     while i < len(lines):
@@ -298,7 +341,33 @@ def load_xyz(path):
     blocks = [b for b in blocks if len(b) >= 2]
     if not blocks:
         raise ValueError("no coordinate blocks found in %s" % path)
-    return blocks
+    return blocks, None
+
+
+def closure_flags(components, closed="auto"):
+    """One closed/open decision per component.
+
+    `closed` is "auto", "yes" or "no" for the whole input, or one such value
+    per component.  The per-component form is what a VECT input supplies: VECT
+    states closure per polyline, and a link may mix closed loops with open
+    arcs, which a single setting cannot express.
+    """
+    if isinstance(closed, str):
+        settings = [closed] * len(components)
+    else:
+        settings = list(closed)
+        if len(settings) != len(components):
+            raise ValueError("got %d closure setting(s) for %d component(s)"
+                             % (len(settings), len(components)))
+    return [looks_closed(pts) if setting == "auto" else (setting == "yes")
+            for pts, setting in zip(components, settings)]
+
+
+def stated_closure_setting(stated):
+    """Turn a per-component closure statement into a `closed` setting."""
+    if not stated:
+        return "auto"
+    return ["yes" if flag else "no" for flag in stated]
 
 
 def looks_closed(pts, factor=2.5):
@@ -438,8 +507,7 @@ def build_meshes(components, scale=1.0, diameter=1.0, segments=None, sides=24,
 
     centre = np.vstack(components).mean(axis=0) if recentre else np.zeros(3)
     out = []
-    for pts in components:
-        shut = looks_closed(pts) if closed == "auto" else (closed == "yes")
+    for pts, shut in zip(components, closure_flags(components, closed)):
         P = (pts - centre) * scale
         if segments:
             P = resample(P, int(segments), shut)
@@ -457,8 +525,7 @@ def auto_segments(components, scale, diameter, closed="auto"):
     """Enough samples that facets stay well under the rod radius."""
     target = max(diameter / 8.0, 1e-6)
     n = 0
-    for pts in components:
-        shut = looks_closed(pts) if closed == "auto" else (closed == "yes")
+    for pts, shut in zip(components, closure_flags(components, closed)):
         p = np.vstack([pts, pts[0]]) if shut else pts
         length = np.linalg.norm(np.diff(p, axis=0), axis=1).sum() * scale
         n = max(n, int(length / target))
@@ -535,8 +602,8 @@ def describe(components, scale=1.0, diameter=None, closed="auto"):
     L.append("  centre             %9.3f , %9.3f , %9.3f" % tuple((hi + lo) / 2))
     L.append("")
     total = 0.0
-    for i, pts in enumerate(components):
-        shut = looks_closed(pts) if closed == "auto" else (closed == "yes")
+    for i, (pts, shut) in enumerate(zip(components,
+                                        closure_flags(components, closed))):
         p = np.vstack([pts, pts[0]]) if shut else pts
         seg = np.linalg.norm(np.diff(p, axis=0), axis=1) * scale
         total += seg.sum()
@@ -563,8 +630,7 @@ def render_preview(components, scale=1.0, colors=None, path=None, closed="auto")
         path = os.path.join(tempfile.gettempdir(), "xyz2model_preview.png")
 
     curves = []
-    for pts in components:
-        shut = looks_closed(pts) if closed == "auto" else (closed == "yes")
+    for pts, shut in zip(components, closure_flags(components, closed)):
         curves.append((np.vstack([pts, pts[0]]) if shut else pts) * scale)
     mid = np.vstack(curves).mean(axis=0)
     curves = [c - mid for c in curves]
@@ -600,7 +666,7 @@ def render_preview(components, scale=1.0, colors=None, path=None, closed="auto")
 # Mesh input (STL and friends) -- scaling only
 # --------------------------------------------------------------------------
 MESH_EXTS = {".stl", ".obj", ".ply", ".off", ".glb", ".gltf", ".3mf"}
-CURVE_EXTS = {".xyz", ".txt", ".dat", ".csv"}
+CURVE_EXTS = {".xyz", ".txt", ".dat", ".csv", ".vect"}
 MAX_PARTS = 256          # beyond this, treat a mesh as one piece
 
 
@@ -813,7 +879,10 @@ def build_parser():
     p.add_argument("--sides", type=int, default=24,
                    help="facets around the rod (default 24)")
     p.add_argument("--closed", choices=["auto", "yes", "no"], default="auto",
-                   help="treat curves as closed loops (default auto-detect)")
+                   help="treat curves as closed loops. Default auto: a Geomview "
+                        "VECT input states closure per component and is believed; "
+                        "any other format is measured by the gap back to the "
+                        "first point")
     p.add_argument("--as", dest="kind", choices=["auto", "curves", "mesh"],
                    default="auto",
                    help="how to read the input (default: from the extension). "
@@ -877,22 +946,31 @@ def run_cli(args):
         return 0
 
     # ---------------- curve input: sweep a rod ---------------------------
-    comps = load_xyz(args.xyz)
+    comps, stated = load_curves(args.xyz)
+    closed = args.closed
+    if stated and closed == "auto":
+        # VECT states closure per polyline, so believe the file rather than
+        # measuring the gap back to the first vertex.  An explicit --closed
+        # still wins, which is why this only fires on the "auto" default.
+        closed = stated_closure_setting(stated)
+        shut = sum(1 for flag in stated if flag)
+        print("  closure from the VECT file: %d closed, %d open"
+              % (shut, len(stated) - shut))
     print("Loaded %s  [curves]" % real)
-    print(describe(comps, args.scale, args.diameter, args.closed))
+    print(describe(comps, args.scale, args.diameter, closed))
     if args.info:
         return 0
 
     seg = args.segments
     if seg is None:
-        seg = auto_segments(comps, args.scale, args.diameter, args.closed)
+        seg = auto_segments(comps, args.scale, args.diameter, closed)
         print("  segments per curve: %d (auto)" % seg)
     need_mesh = not (args.no_stl and args.no_glb and not args.split)
     meshes = []
     if need_mesh:
         print("\nMeshing ...")
         meshes = build_meshes(comps, args.scale, args.diameter, seg, args.sides,
-                              args.closed, recentre=not args.keep_origin)
+                              closed, recentre=not args.keep_origin)
         tight = all(m.is_watertight for m in meshes)
         print("  %d triangles, watertight=%s"
               % (sum(len(m.faces) for m in meshes), tight))
@@ -909,7 +987,7 @@ def run_cli(args):
         written += export_stl_split(meshes, prefix)
     if args.preview:
         written.append(render_preview(comps, args.scale, colors,
-                                      prefix + "_preview.png", args.closed))
+                                      prefix + "_preview.png", closed))
     for w in written:
         print("  wrote %s" % w)
     return 0
@@ -929,7 +1007,14 @@ def run_gui(initial_file=None):
     set_optional_window_icon(
         root, tk, ["xyz2model_icon.png", "icon.png"], "_xyz2model_icon_image")
 
-    state = {"comps": None, "path": None, "kind": None}
+    state = {"comps": None, "path": None, "kind": None, "stated_closure": None}
+
+    def gui_closed():
+        """The closure setting to use, letting a VECT file answer "auto"."""
+        setting = V["closed"].get()
+        if setting == "auto" and state.get("stated_closure"):
+            return stated_closure_setting(state["stated_closure"])
+        return setting
     colors = list(DEFAULT_COLORS)
     V = {
         "file":     tk.StringVar(value=initial_file or ""),
@@ -1020,8 +1105,10 @@ def run_gui(initial_file=None):
     def browse():
         p = filedialog.askopenfilename(
             title="Select an .xyz or mesh file",
-            filetypes=[("Curves and meshes", "*.xyz *.stl *.obj *.ply *.glb *.3mf"),
+            filetypes=[("Curves and meshes",
+                        "*.xyz *.vect *.stl *.obj *.ply *.glb *.3mf"),
                        ("XYZ curves", "*.xyz"),
+                       ("Geomview VECT curves", "*.vect"),
                        ("Meshes", "*.stl *.obj *.ply *.off *.glb *.gltf *.3mf"),
                        ("All files", "*.*")])
         if p:
@@ -1175,12 +1262,16 @@ def run_gui(initial_file=None):
             return
         try:
             kind = detect_kind(p)
-            comps = load_mesh(p) if kind == "mesh" else load_xyz(p)
+            if kind == "mesh":
+                comps, stated = load_mesh(p), None
+            else:
+                comps, stated = load_curves(p)
         except Exception as exc:            # noqa: BLE001
             messagebox.showerror("Load failed", str(exc))
             status.configure(text="load failed", foreground="#c00")
             return
-        state.update(comps=comps, path=resolve_path(p), kind=kind)
+        state.update(comps=comps, path=resolve_path(p), kind=kind,
+                     stated_closure=stated)
         set_mode(kind)
         if kind == "mesh":
             lbl.configure(text="%d component(s), %d triangles"
@@ -1206,7 +1297,7 @@ def run_gui(initial_file=None):
                 show(describe_meshes(state["comps"], fnum("scale", 1.0)))
             else:
                 show(describe(state["comps"], fnum("scale", 1.0),
-                              fnum("diameter", 1.0), V["closed"].get()))
+                              fnum("diameter", 1.0), gui_closed()))
         except Exception as exc:            # noqa: BLE001
             show("cannot evaluate:\n  %s" % exc)
 
@@ -1228,7 +1319,7 @@ def run_gui(initial_file=None):
                 status.configure(text="", foreground="#0a7")
             else:
                 png = render_preview(state["comps"], fnum("scale", 1.0), colors,
-                                     None, V["closed"].get())
+                                     None, gui_closed())
             top = tk.Toplevel(root); top.title("Preview")
             try:
                 from PIL import Image, ImageTk
@@ -1258,7 +1349,7 @@ def run_gui(initial_file=None):
                 meshes = scale_meshes(comps, scale, recentre=V["centre"].get())
             else:
                 dia = fnum("diameter", 1.0)
-                closed = V["closed"].get()
+                closed = gui_closed()
                 seg_txt = V["segments"].get().strip().lower()
                 seg = (auto_segments(comps, scale, dia, closed)
                        if seg_txt in ("", "auto") else int(float(seg_txt)))

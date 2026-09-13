@@ -41,6 +41,22 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, CheckButtons
 from mpl_toolkits.mplot3d import Axes3D, proj3d  # noqa: F401  needed for 3D projection
 
+# Optional Geomview VECT support.  VECT is the one curve format that states
+# per component whether it is a closed loop; only .vect input reaches this, so
+# a missing vect_io.py costs that one format and nothing else.
+try:
+    from . import vect_io
+except ImportError:
+    try:
+        import vect_io  # type: ignore[no-redef]
+    except ImportError:
+        vect_io = None  # type: ignore[assignment]
+
+VECT_MISSING_MESSAGE = (
+    "{} is a Geomview VECT file, which needs vect_io.py from curve_it_lib. "
+    "Make sure that file sits beside this one."
+)
+
 
 def token_to_float(token: str) -> Optional[float]:
     """Return float(token), or None if token is not a plain numeric token."""
@@ -145,28 +161,56 @@ def parse_component_selection(selection: Optional[str], n_components: int) -> Li
     return unique
 
 
+def is_vect_text(text: str) -> bool:
+    """True when this text is a Geomview VECT file, by its header word."""
+    return vect_io is not None and vect_io.looks_like_vect(text)
+
+
+def read_vect_curves(filename: str, text: str):
+    """Parse VECT text, raising ValueError so existing handlers keep working."""
+    if vect_io is None:
+        stripped = text.lstrip()
+        if stripped[:4].upper() == "VECT":
+            raise ValueError(VECT_MISSING_MESSAGE.format(filename))
+        raise ValueError("{} is not a VECT file.".format(filename))
+    return vect_io.read_vect_text(text, source=filename)
+
+
 def read_xyz_like_components(filename: str, file_format: str = "auto") -> List[np.ndarray]:
     """
     Read one or more components from a plain coordinate file or molecular XYZ file.
 
     In plain/auto coordinate mode, blank lines separate components A, B, C...
     In molecular XYZ mode, the file is treated as one molecule-like component.
+    In VECT mode, each polyline of the file is one component.
     """
-    with open(filename, "r") as f:
-        raw_lines = f.readlines()
+    if file_format not in ("auto", "plain", "molecule", "vect"):
+        raise ValueError("file_format must be auto, plain, molecule, or vect.")
 
-    if not raw_lines:
+    with open(filename, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+
+    if file_format == "vect" or (file_format == "auto" and is_vect_text(text)):
+        return read_vect_curves(filename, text).components
+
+    # Read as coordinates only once VECT has been ruled out.  A VECT file taken
+    # for coordinates yields its counts line and its trailing colours as if
+    # they were points, which is a wrong answer rather than an error.
+    if file_format in ("plain", "molecule") and is_vect_text(text):
+        raise ValueError(
+            "{} is a Geomview VECT file; use file_format 'vect' or 'auto'. "
+            "Read as coordinates its counts and colours would be taken for "
+            "points.".format(filename))
+
+    lines = text.splitlines()
+    if not lines:
         raise ValueError("The file is empty: {}".format(filename))
 
-    lines = [line.rstrip("\n") for line in raw_lines]
     nonempty_indices = [i for i, line in enumerate(lines) if line.strip()]
     if not nonempty_indices:
         raise ValueError("The file contains no readable lines: {}".format(filename))
 
     start_index = nonempty_indices[0]
-
-    if file_format not in ("auto", "plain", "molecule"):
-        raise ValueError("file_format must be auto, plain, or molecule.")
 
     is_molecule = file_format == "molecule" or (
         file_format == "auto"
@@ -211,14 +255,33 @@ def read_xyz_like_components(filename: str, file_format: str = "auto") -> List[n
     return components
 
 
+def stated_closure(filename: str, file_format: str = "auto") -> Optional[List[bool]]:
+    """Per-component closure when the file states it, else None.
+
+    Only VECT records this; None means "nobody said" rather than "open".
+    """
+    if file_format not in ("auto", "vect"):
+        return None
+    try:
+        with open(filename, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        return None
+    if not is_vect_text(text):
+        return None
+    return list(read_vect_curves(filename, text).closed)
+
+
 def read_xyz_like(filename: str, file_format: str = "auto") -> np.ndarray:
     """
     Read points from a plain coordinate file or a molecular XYZ file.
 
     file_format:
-      auto      detect molecular XYZ if the first non-empty line is an atom count
+      auto      detect Geomview VECT by its header word, then molecular XYZ if
+                the first non-empty line is an atom count
       plain     treat all lines as potential x y z coordinate lines
       molecule  skip the first two lines as standard XYZ header
+      vect      Geomview VECT; every polyline is concatenated in file order
     """
     components = read_xyz_like_components(filename, file_format=file_format)
     return np.vstack(components)
@@ -645,9 +708,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--format",
-        choices=["auto", "plain", "molecule"],
+        choices=["auto", "plain", "molecule", "vect"],
         default="auto",
-        help="Input format. Default: auto.",
+        help="Input format. Default: auto (detects Geomview VECT and molecular XYZ).",
     )
     parser.add_argument(
         "-m",
@@ -661,7 +724,15 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Treat the curve as open and do not connect last point to first.",
     )
-    parser.set_defaults(closed=True)
+    parser.add_argument(
+        "--closed",
+        dest="closed",
+        action="store_true",
+        help="Treat the curve as closed and connect the last point to the first.",
+    )
+    # None means "neither flag was given", which lets a Geomview VECT file
+    # answer the question itself; every other format stays closed by default.
+    parser.set_defaults(closed=None)
     parser.add_argument(
         "--projections",
         action="store_true",
@@ -670,7 +741,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--components",
         default="all",
-        help="For blank-line-separated coordinate files, show components such as A, B,C, A-C, or all.",
+        help=("Show components such as A, B,C, A-C, or all. Components are "
+              "blank-line-separated in a coordinate file and are the polylines "
+              "of a Geomview VECT file."),
     )
     return parser.parse_args()
 
@@ -695,6 +768,19 @@ def main() -> None:
     components = read_xyz_like_components(filename, file_format=file_format)
     selected_indices = parse_component_selection(args.components, len(components))
     points = np.vstack([components[i] for i in selected_indices])
+
+    # --open/--closed always win; otherwise a VECT file is believed, since it
+    # is the one input format that states closure instead of leaving the
+    # viewer to join the last point back to the first on principle.
+    if args.closed is None:
+        args.closed = True
+        stated = stated_closure(filename, file_format)
+        if stated is not None:
+            selected = [stated[i] for i in selected_indices]
+            args.closed = all(selected)
+            print("[INFO] Curve file states the selected component(s) are {}."
+                  .format("closed" if args.closed else "open"
+                          if not any(selected) else "mixed; drawing them open"))
 
     if len(components) > 1:
         summary = ", ".join(

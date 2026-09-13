@@ -6,7 +6,8 @@ control, path-start control, and axial twist control).
 This script takes:
     (1) a PDB file containing a roughly straight DNA/RNA helix, protein helix,
         or other filament-like PDB structure, and
-    (2) optionally, an XYZ-like text file defining a 3D curve.
+    (2) optionally, a curve file defining a 3D curve: coordinate XYZ/txt,
+        molecular XYZ, or Geomview VECT.
 
 It produces a new PDB in which the structure has been "bent" so that its
 principal axis follows the curve.
@@ -30,7 +31,7 @@ Two modes:
     - GUI mode (when no arguments or only --gui/-g are given):
         opens a simple Tkinter GUI where you can:
             * Choose the helix PDB file and see the estimated helix axis length.
-            * Choose the curve (XYZ/txt) file and see its length, total curvature,
+            * Choose the curve file (XYZ/txt or VECT) and see its length, total curvature,
               and writhe (if curvature tools are available).
             * View the 3D curve using the view_xyzV3.py plotting code (if importable).
             * Adjust all mapping parameters (scale-mode, scale-anchor, path-type,
@@ -92,9 +93,10 @@ Path start (via --path-start / GUI):
       around the loop, etc. For open paths this option is ignored.
 
 Additional behavior:
-    - If a user-supplied curve_xyz file is rescaled ('curve_to_helix' or a
+    - If a user-supplied curve file is rescaled ('curve_to_helix' or a
       numeric --scale-mode that changes length), a rescaled XYZ file is written
-      alongside the original, named '<curve_xyz_basename>_rescaled.ext'.
+      alongside the original, named '<curve_basename>_rescaled.ext'. Its body
+      is always plain coordinate rows, so a VECT input gets a '.xyz' sidecar.
     - '--helix_phase ANGLE' (degrees) rotates the helix cross-sections about
       their own axis before embedding.
     - '--twist ANGLE' (degrees) applies an additional linear twist of the helix
@@ -139,8 +141,23 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_9"
+APP_VERSION = "V3_10"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
+
+
+# Optional import of Geomview VECT support.  It is only reached by .vect
+# input or output, so a missing vect_io.py costs that format and nothing else.
+try:
+    from curve_it_lib import vect_io  # noqa: F401
+    HAVE_VECT_IO = True
+except Exception:
+    vect_io = None  # type: ignore[assignment]
+    HAVE_VECT_IO = False
+
+VECT_MISSING_MESSAGE = (
+    "This is a Geomview VECT file, which needs curve_it_lib/vect_io.py. "
+    "Make sure that file is present beside curve_it.py."
+)
 
 
 # Optional import of curve interpolation helper.
@@ -395,8 +412,62 @@ def format_curve_component_selection(indices: List[int]) -> str:
     return ",".join(curve_component_label(i) for i in indices)
 
 
+def require_vect_io(xyz_text: str) -> bool:
+    """True for VECT text, raising if the text is VECT but vect_io is absent.
+
+    Detection is by the VECT magic word rather than by filename, so a .txt
+    holding VECT is still read as VECT.  The raise matters: without it a VECT
+    file would fall through to the coordinate reader and come back as the
+    wrong curve rather than as an error.
+    """
+    if HAVE_VECT_IO:
+        return vect_io.looks_like_vect(xyz_text)
+    stripped = xyz_text.lstrip()
+    if stripped[:4].upper() == "VECT":
+        raise ValueError(VECT_MISSING_MESSAGE)
+    return False
+
+
+def read_vect_components_from_text(xyz_text: str) -> List[np.ndarray]:
+    """Read the components of a VECT file, ignoring its closure and colours."""
+    return read_vect_curves_from_text(xyz_text).components
+
+
+def read_vect_curves_from_text(xyz_text: str) -> "vect_io.VectCurves":
+    """Parse VECT text, raising a plain ValueError the GUI can show."""
+    if not HAVE_VECT_IO:
+        raise ValueError(VECT_MISSING_MESSAGE)
+    curves = vect_io.read_vect_text(xyz_text)
+    if sum(component.shape[0] for component in curves.components) < 2:
+        raise ValueError("VECT file does not contain at least two 3D points.")
+    return curves
+
+
+def read_curve_closure_from_text(xyz_text: str) -> Optional[List[bool]]:
+    """Return per-component closure when the file states it, else None.
+
+    Only VECT records this.  A coordinate or molecular XYZ file leaves it
+    unsaid, and this returns None rather than guessing, so that callers can
+    tell "the file says open" apart from "the file does not say".
+    """
+    if not require_vect_io(xyz_text):
+        return None
+    return read_vect_curves_from_text(xyz_text).closed
+
+
+def read_curve_closure(path: str) -> Optional[List[bool]]:
+    """Per-component closure for a curve file on disk, or None if unstated."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return read_curve_closure_from_text(handle.read())
+    except (OSError, ValueError):
+        return None
+
+
 def read_xyz_curve_components_from_text(xyz_text: str) -> List[np.ndarray]:
-    """Read one or more curve components from XYZ-like text."""
+    """Read one or more curve components from XYZ-like text or VECT."""
+    if require_vect_io(xyz_text):
+        return read_vect_components_from_text(xyz_text)
     raw_lines = xyz_text.splitlines()
     nonempty_indices = [i for i, line in enumerate(raw_lines) if line.strip()]
     if not nonempty_indices:
@@ -441,12 +512,27 @@ def read_xyz_curve_components_from_text(xyz_text: str) -> List[np.ndarray]:
 
 
 def read_xyz_curve_components_from_text_as(xyz_text: str, input_format: str = "auto") -> List[np.ndarray]:
-    """Read XYZ-like text as auto, coordinate XYZ/txt, or molecular XYZ."""
+    """Read curve text as auto, coordinate XYZ/txt, molecular XYZ, or VECT."""
     fmt = (input_format or "auto").strip().lower()
     if fmt in {"auto", ""}:
         return read_xyz_curve_components_from_text(xyz_text)
+    if fmt in {"vect", "geomview", "geomview_vect"}:
+        if not HAVE_VECT_IO:
+            raise ValueError(VECT_MISSING_MESSAGE)
+        if not vect_io.looks_like_vect(xyz_text):
+            raise ValueError("VECT input must begin with the word VECT.")
+        return read_vect_components_from_text(xyz_text)
     if fmt not in {"coordinate", "coordinate_xyz", "plain", "plain_xyz", "molecular", "molecular_xyz"}:
-        raise ValueError(f"Unsupported XYZ input format: {input_format}")
+        raise ValueError(f"Unsupported curve input format: {input_format}")
+
+    # Reading VECT as coordinate or molecular XYZ silently yields the counts
+    # line and the trailing colours as if they were points, so it is refused
+    # rather than allowed to produce a curve with garbage at both ends.
+    if HAVE_VECT_IO and vect_io.looks_like_vect(xyz_text):
+        raise ValueError(
+            "This is a Geomview VECT file. Choose the VECT input format; "
+            "read as %s its counts and colours would be taken for points."
+            % ("molecular XYZ" if fmt.startswith("molecular") else "coordinate XYZ"))
 
     raw_lines = xyz_text.splitlines()
     nonempty_indices = [i for i, line in enumerate(raw_lines) if line.strip()]
@@ -2000,6 +2086,134 @@ def write_output_pdb(pdb_text: str,
         f.write("\n".join(out_lines) + "\n")
 
 
+CONVERT_OUTPUT_EXTENSIONS = {
+    ".vect": "vect",
+    ".pdb": "fake-pdb",
+    ".ent": "fake-pdb",
+}
+
+
+def resolve_convert_target(requested: str, output_path: str) -> str:
+    """Decide the output format, from the option or from the extension.
+
+    A .xyz can be either coordinate or molecular XYZ, so it cannot settle the
+    question on its own and falls back to molecular, which is what the Convert
+    XYZ dialog offers first.
+    """
+    target = (requested or "auto").strip().lower()
+    if target != "auto":
+        return target
+    ext = os.path.splitext(output_path)[1].lower()
+    return CONVERT_OUTPUT_EXTENSIONS.get(ext, "molecular")
+
+
+def resolve_convert_closure(setting: str,
+                            components: List[np.ndarray],
+                            stated: Optional[List[bool]]) -> List[bool]:
+    """One closed/open flag per component for --convert-closed.
+
+    'auto' believes a VECT input, because it is the one format that states
+    closure, and otherwise says open -- it never guesses from the geometry,
+    since a wrong guess here silently changes what the output file means.
+    """
+    n = len(components)
+    text = (setting or "auto").strip().lower()
+    if text in {"all", "closed", "yes"}:
+        return [True] * n
+    if text in {"none", "open", "no"}:
+        return [False] * n
+    if text == "auto":
+        if stated is not None and len(stated) == n:
+            return list(stated)
+        return [False] * n
+    indices = set(parse_curve_component_selection(setting, n))
+    return [index in indices for index in range(n)]
+
+
+def run_convert_cli(args: argparse.Namespace) -> None:
+    """Convert one curve file to another format (the CLI Convert XYZ)."""
+    input_path, output_path = args.convert
+    target = resolve_convert_target(args.convert_to, output_path)
+    if target not in {"coordinate", "molecular", "fake-pdb", "fake_pdb", "vect"}:
+        raise SystemExit(f"Unsupported --convert-to value: {args.convert_to}")
+    if target == "fake_pdb":
+        target = "fake-pdb"
+
+    try:
+        with open(input_path, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError as exc:
+        raise SystemExit(f"Failed to read {input_path}: {exc}")
+
+    try:
+        components = read_xyz_curve_components_from_text_as(text, input_format=args.convert_from)
+        stated = read_curve_closure_from_text(text)
+        scale_factor = float(args.convert_scale)
+        components = scale_xyz_components(components, scale_factor)
+        flags = resolve_convert_closure(args.convert_closed, components, stated)
+    except Exception as exc:
+        raise SystemExit(f"Failed to read {input_path}: {exc}")
+
+    total_points = int(sum(component.shape[0] for component in components))
+    print(f"[INFO] Read {len(components)} component(s), {total_points} point(s): "
+          f"{describe_curve_components(components)}")
+    if stated is not None:
+        shut = sum(1 for flag in stated if flag)
+        print(f"[INFO] The input states {shut} closed and {len(stated) - shut} open component(s).")
+
+    try:
+        if target == "vect":
+            if not HAVE_VECT_IO:
+                raise ValueError(VECT_MISSING_MESSAGE)
+            vect_io.write_vect(
+                output_path,
+                components,
+                closed=flags,
+                colors=args.convert_color or None,
+                source=os.path.basename(input_path),
+                tool=f"{APP_NAME} {APP_VERSION}",
+            )
+            closed_label = format_curve_component_selection(
+                [i for i, flag in enumerate(flags) if flag]) if any(flags) else "none"
+            print(f"[INFO] Wrote Geomview VECT: {output_path} "
+                  f"({len(components)} component(s), closed: {closed_label})")
+        elif target == "fake-pdb":
+            closed_indices = [i for i, flag in enumerate(flags) if flag]
+            count = write_fake_pdb_from_components(
+                output_path,
+                components,
+                atom_name=args.convert_atom_name,
+                resname=args.convert_resname,
+                element=args.convert_element,
+                start_resseq=1,
+                closed_chain_indices=closed_indices,
+            )
+            closed_label = format_curve_component_selection(closed_indices) if closed_indices else "none"
+            print(f"[INFO] Wrote fake PDB: {output_path} ({count} atom(s), closed chains: {closed_label})")
+        elif target == "molecular":
+            points = combine_curve_components(components)
+            write_molecular_xyz_curve(
+                output_path, points, element=args.convert_element,
+                comment=f"Curve points converted by {APP_NAME} {APP_VERSION}")
+            if len(components) > 1:
+                print(f"[WARN] Molecular XYZ has no component separator; "
+                      f"{len(components)} components were joined into one block.")
+            print(f"[INFO] Wrote molecular XYZ: {output_path} ({points.shape[0]} point(s))")
+        else:
+            points = combine_curve_components(components)
+            write_plain_xyz_curve(output_path, points)
+            if len(components) > 1:
+                print(f"[WARN] {len(components)} components were joined into one block, "
+                      f"which is what the Convert XYZ dialog does too. Write VECT to keep "
+                      f"them apart, or select one component at a time.")
+            print(f"[INFO] Wrote coordinate XYZ/txt: {output_path} ({points.shape[0]} point(s))")
+    except Exception as exc:
+        raise SystemExit(f"Failed to write {output_path}: {exc}")
+
+    if scale_factor != 1.0:
+        print(f"[INFO] Scale factor applied: {scale_factor:g}")
+
+
 def write_rescaled_curve_xyz(curve_xyz_path: Optional[str],
                              scaled_curve_pts: np.ndarray,
                              scaling_applied: bool) -> None:
@@ -2014,6 +2228,12 @@ def write_rescaled_curve_xyz(curve_xyz_path: Optional[str],
     base_curve = os.path.basename(curve_xyz_path)
     stem_c, ext_c = os.path.splitext(base_curve)
     if not ext_c:
+        ext_c = ".xyz"
+    # The body written below is always plain coordinate rows, so a .vect input
+    # must not hand its extension to the sidecar: that would produce a file
+    # named VECT that no VECT reader could open.  Use Convert XYZ... to turn
+    # the rescaled curve back into VECT.
+    if ext_c.lower() == ".vect":
         ext_c = ".xyz"
     rescaled_name = f"{stem_c}_rescaled{ext_c}"
     rescaled_path = os.path.join(curve_dir, rescaled_name)
@@ -2132,12 +2352,13 @@ def launch_gui() -> None:
             "Compact globular proteins may not fit well because one principal axis is not a good shape description."
         ),
         "curve_xyz": (
-            "Curve XYZ/txt",
-            "Choose an optional curve file containing 3D points. Plain x y z rows and standard XYZ-like files are accepted.\n\n"
+            "Curve file",
+            "Choose an optional curve file containing 3D points. Plain x y z rows, standard molecular XYZ, and Geomview VECT are all accepted, and the format is recognised from the contents rather than the extension.\n\n"
             "Example plain file:\n"
             "0 0 0\n"
             "5 0 2\n"
             "10 4 6\n\n"
+            "A VECT file is what Geomview reads and what ridgerunner writes. It is the one curve format that states whether each component is a closed loop, so loading one sets Path type for you; changing Path type afterwards still wins.\n\n"
             "If no curve file is selected, Curve It uses a default planar ring."
         ),
         "curve_metrics": (
@@ -2150,7 +2371,7 @@ def launch_gui() -> None:
         ),
         "curve_components": (
             "Curve Components",
-            "Blank lines in a coordinate XYZ/txt file split the curve into components A, B, C, and so on.\n\n"
+            "Blank lines in a coordinate XYZ/txt file split the curve into components A, B, C, and so on. In a Geomview VECT file each polyline is one component, in the order the file lists them.\n\n"
             "Use Select components to choose which components are used for fitting. Selected components are concatenated in file order for fitting and metrics."
         ),
         "xyz_convert": (
@@ -2164,7 +2385,17 @@ def launch_gui() -> None:
             "comment line\n"
             "X x y z\n"
             "X x y z\n\n"
-            "Fake PDB output writes one atom per residue for molecular visualization. By default each point becomes atom CA in residue ALA; blank-line-separated coordinate components become chains A, B, C, and so on. Closed chains can be marked with LINK records.\n\n"
+            "Geomview VECT format:\n"
+            "VECT\n"
+            "n_components n_points n_colours\n"
+            "points per component (negative means closed)\n"
+            "colours per component\n"
+            "x y z ...\n"
+            "r g b a ...\n\n"
+            "VECT is what Geomview reads and what ridgerunner writes. It is the only format here that records whether each component is a closed loop, in the sign of its vertex count, so a closed component never repeats its first point. Loading a VECT input fills in Closed components from its header.\n\n"
+            "Colours are one per component, separated by commas: red,blue or #ff0000 or 1 0 0 1, 0 0 1 1. Fewer colours than components cycle. Leave it blank for opaque white. Colours are not geometry and are lost through any format that cannot hold them, which is all the others.\n\n"
+            "Fake PDB output writes one atom per residue for molecular visualization. By default each point becomes atom CA in residue ALA; blank-line-separated coordinate components become chains A, B, C, and so on. Closed chains can be marked with LINK records, and a VECT input fills those in from its own header.\n\n"
+            "Coordinate and molecular XYZ output join every component into one block. Only VECT and fake PDB keep them apart.\n\n"
             "The scale factor multiplies every output x/y/z coordinate before writing."
         ),
         "svg2xyz": (
@@ -2229,7 +2460,8 @@ def launch_gui() -> None:
             "Path Type",
             "closed treats the curve as a periodic loop and can wrap the fitted PDB around the curve.\n\n"
             "open treats the curve as a path with distinct start and end points.\n\n"
-            "Example: use closed for rings; use open for arcs, spirals, or drawn centerlines."
+            "Example: use closed for rings; use open for arcs, spirals, or drawn centerlines.\n\n"
+            "A Geomview VECT curve states this in its own header, in the sign of each component's vertex count, and loading one sets this menu to match. Every other format leaves it unsaid. Whatever this menu shows when the run starts is what is used."
         ),
         "interp_mode": (
             "Interpolation Mode",
@@ -2661,7 +2893,7 @@ def launch_gui() -> None:
     help_button(file_frame, "helix_pdb").grid(row=0, column=7, sticky="w", padx=(0, 4), pady=2)
 
     # Curve XYZ
-    tk.Label(file_frame, text="Curve XYZ/txt:").grid(row=1, column=0, sticky="e", padx=4, pady=2)
+    tk.Label(file_frame, text="Curve file:").grid(row=1, column=0, sticky="e", padx=4, pady=2)
     curve_entry = tk.Entry(file_frame, textvariable=curve_path_var, width=44)
     curve_entry.grid(row=1, column=1, columnspan=5, sticky="we", padx=4, pady=2)
 
@@ -2675,6 +2907,14 @@ def launch_gui() -> None:
             curve_points = None
             curve_xyz_path = path
             selected_curve_component_indices = list(range(len(components_raw)))
+
+            # A Geomview VECT curve states closure in its own header, so set
+            # Path type to match instead of leaving the GUI's default standing
+            # over a file that says otherwise.  The menu stays editable, so a
+            # deliberate choice afterwards is what the run uses.
+            stated_closure = read_curve_closure_from_text(xyz_text)
+            if stated_closure:
+                path_type_var.set("closed" if all(stated_closure) else "open")
 
             # Select all components by default, then apply interpolation and
             # refresh the displayed metrics.
@@ -2701,8 +2941,13 @@ def launch_gui() -> None:
 
     def browse_curve():
         path = filedialog.askopenfilename(
-            title="Select curve XYZ/text file",
-            filetypes=[("XYZ / text files", "*.xyz *.XYZ *.txt *.TXT"), ("All files", "*.*")]
+            title="Select curve file",
+            filetypes=[
+                ("Curve files", "*.xyz *.XYZ *.txt *.TXT *.vect *.VECT"),
+                ("XYZ / text files", "*.xyz *.XYZ *.txt *.TXT"),
+                ("Geomview VECT", "*.vect *.VECT"),
+                ("All files", "*.*"),
+            ]
         )
         if not path:
             return
@@ -2827,19 +3072,25 @@ def launch_gui() -> None:
         pdb_start_resseq_var = tk.StringVar(value="1")
         close_all_chains_var = tk.BooleanVar(value=True)
         closed_chains_var = tk.StringVar(value="")
+        vect_close_all_var = tk.BooleanVar(value=False)
+        vect_closed_var = tk.StringVar(value="")
+        vect_color_var = tk.StringVar(value="")
         component_summary_var = tk.StringVar(value="Choose an input file to preview components.")
         status_convert_var = tk.StringVar(value="Ready.")
         last_default_output = {"path": ""}
+        last_vect_prefill = {"path": "", "text": ""}
 
         input_format_labels = {
             "Auto": "auto",
             "Coordinate XYZ/txt": "coordinate",
             "Molecular XYZ": "molecular",
+            "Geomview VECT": "vect",
         }
         output_format_specs = {
             "Molecular XYZ": ("molecular", "molecular", ".xyz"),
             "Coordinate XYZ/txt": ("coordinate", "coordinates", ".xyz"),
             "Fake PDB": ("fake_pdb", "fake", ".pdb"),
+            "Geomview VECT": ("vect", "vect", ".vect"),
         }
 
         def input_format_key() -> str:
@@ -2872,6 +3123,22 @@ def launch_gui() -> None:
                 xyz_text = f.read()
             return read_xyz_curve_components_from_text_as(xyz_text, input_format=input_format_key())
 
+        def prefill_vect_closure(input_path: str, n_components: int) -> Optional[List[bool]]:
+            """Let a VECT input answer "which components are closed?" itself.
+
+            The entry is only filled while it still holds what this filled in
+            last, so a value the user typed is never overwritten.
+            """
+            stated = read_curve_closure(input_path)
+            if stated is None or len(stated) != n_components:
+                return stated
+            text = format_curve_component_selection([i for i, flag in enumerate(stated) if flag])
+            current = vect_closed_var.get().strip()
+            if not current or current == last_vect_prefill.get("text", ""):
+                vect_closed_var.set(text)
+                last_vect_prefill.update(path=input_path, text=text)
+            return stated
+
         def update_component_summary() -> None:
             input_path = input_path_var.get().strip()
             if not input_path:
@@ -2880,9 +3147,15 @@ def launch_gui() -> None:
             try:
                 components = read_conversion_components()
                 total_points = int(sum(component.shape[0] for component in components))
-                component_summary_var.set(
-                    f"{len(components)} component(s), {total_points} point(s): {describe_curve_components(components)}"
+                summary = (
+                    f"{len(components)} component(s), {total_points} point(s): "
+                    f"{describe_curve_components(components)}"
                 )
+                stated = prefill_vect_closure(input_path, len(components))
+                if stated:
+                    shut = sum(1 for flag in stated if flag)
+                    summary += f"; the file states {shut} closed, {len(stated) - shut} open"
+                component_summary_var.set(summary)
             except Exception as exc:
                 component_summary_var.set(f"Preview error: {exc}")
 
@@ -2895,11 +3168,14 @@ def launch_gui() -> None:
         molecular_widgets: List[Any] = []
         fake_pdb_widgets: List[Any] = []
         closed_chains_widgets: List[Any] = []
+        vect_widgets: List[Any] = []
+        vect_closed_widgets: List[Any] = []
 
         def update_conversion_state(*_args: Any) -> None:
             mode = output_format_key()
             molecular_on = mode == "molecular"
             fake_pdb_on = mode == "fake_pdb"
+            vect_on = mode == "vect"
             for widget in molecular_widgets:
                 set_widget_enabled(widget, molecular_on)
             for widget in fake_pdb_widgets:
@@ -2907,12 +3183,21 @@ def launch_gui() -> None:
             closed_entry_on = fake_pdb_on and not bool(close_all_chains_var.get())
             for widget in closed_chains_widgets:
                 set_widget_enabled(widget, closed_entry_on)
+            for widget in vect_widgets:
+                set_widget_enabled(widget, vect_on)
+            for widget in vect_closed_widgets:
+                set_widget_enabled(widget, vect_on and not bool(vect_close_all_var.get()))
             refresh_default_output(force=False)
 
         def browse_input() -> None:
             path = filedialog.askopenfilename(
-                title="Select XYZ/txt input",
-                filetypes=[("XYZ / text files", "*.xyz *.XYZ *.txt *.TXT *.dat *.DAT *.csv *.CSV"), ("All files", "*.*")],
+                title="Select curve input",
+                filetypes=[
+                    ("Curve files", "*.xyz *.XYZ *.txt *.TXT *.dat *.DAT *.csv *.CSV *.vect *.VECT"),
+                    ("XYZ / text files", "*.xyz *.XYZ *.txt *.TXT *.dat *.DAT *.csv *.CSV"),
+                    ("Geomview VECT", "*.vect *.VECT"),
+                    ("All files", "*.*"),
+                ],
                 parent=dialog,
             )
             if not path:
@@ -2930,6 +3215,7 @@ def launch_gui() -> None:
                 filetypes=[
                     ("PDB files", "*.pdb"),
                     ("XYZ files", "*.xyz"),
+                    ("Geomview VECT", "*.vect"),
                     ("Text files", "*.txt"),
                     ("All files", "*.*"),
                 ],
@@ -2949,6 +3235,16 @@ def launch_gui() -> None:
             if not text:
                 return []
             return parse_curve_component_selection(text, n_components)
+
+        def vect_closed_flags(n_components: int) -> List[bool]:
+            """One closed/open flag per component for VECT output."""
+            if bool(vect_close_all_var.get()):
+                return [True] * n_components
+            text = vect_closed_var.get().strip()
+            if not text:
+                return [False] * n_components
+            indices = set(parse_curve_component_selection(text, n_components))
+            return [index in indices for index in range(n_components)]
 
         def run_conversion() -> None:
             try:
@@ -2975,6 +3271,22 @@ def launch_gui() -> None:
                     write_plain_xyz_curve(output_path, points)
                     mode_label = "coordinate XYZ/txt"
                     count = int(points.shape[0])
+                elif mode == "vect":
+                    if not HAVE_VECT_IO:
+                        raise ValueError(VECT_MISSING_MESSAGE)
+                    flags = vect_closed_flags(len(components))
+                    vect_io.write_vect(
+                        output_path,
+                        components,
+                        closed=flags,
+                        colors=vect_color_var.get().strip() or None,
+                        source=os.path.basename(input_path_var.get().strip()),
+                        tool=f"{APP_NAME} {APP_VERSION}",
+                    )
+                    closed_label = format_curve_component_selection(
+                        [i for i, flag in enumerate(flags) if flag]) if any(flags) else "none"
+                    mode_label = f"Geomview VECT; closed components: {closed_label}"
+                    count = total_points
                 else:
                     closed_indices = closed_chain_indices(len(components))
                     count = write_fake_pdb_from_components(
@@ -3006,7 +3318,8 @@ def launch_gui() -> None:
 
         ttk.Label(
             dialog,
-            text="Convert coordinate XYZ/txt or molecular XYZ to another XYZ form, or write a fake PDB for visualization.",
+            text=("Convert between coordinate XYZ/txt, molecular XYZ and Geomview VECT, "
+                  "or write a fake PDB for visualization."),
             justify="left",
             anchor="w",
         ).grid(row=1, column=0, columnspan=3, sticky="we", padx=12, pady=(0, 10))
@@ -3081,11 +3394,42 @@ def launch_gui() -> None:
         ])
         closed_chains_widgets.extend([closed_label, closed_entry, closed_hint])
 
+        vect_frame = ttk.LabelFrame(dialog, text="Geomview VECT output", padding=8)
+        vect_frame.grid(row=10, column=0, columnspan=3, sticky="we", padx=12, pady=4)
+        for col in range(6):
+            vect_frame.columnconfigure(col, weight=0)
+        vect_frame.columnconfigure(5, weight=1)
+
+        vect_close_all_check = ttk.Checkbutton(
+            vect_frame, text="All components are closed loops", variable=vect_close_all_var)
+        vect_close_all_check.grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
+        vect_closed_label = ttk.Label(vect_frame, text="Closed components:")
+        vect_closed_label.grid(row=1, column=0, sticky="e", padx=(0, 6), pady=2)
+        vect_closed_entry = ttk.Entry(vect_frame, textvariable=vect_closed_var, width=20)
+        vect_closed_entry.grid(row=1, column=1, columnspan=2, sticky="w", padx=(0, 12), pady=2)
+        vect_closed_hint = ttk.Label(
+            vect_frame,
+            text="Example: A,C or A-C. A VECT input fills this in from its own header.")
+        vect_closed_hint.grid(row=1, column=3, columnspan=3, sticky="w", pady=2)
+        vect_color_label = ttk.Label(vect_frame, text="Colours:")
+        vect_color_label.grid(row=2, column=0, sticky="e", padx=(0, 6), pady=2)
+        vect_color_entry = ttk.Entry(vect_frame, textvariable=vect_color_var, width=20)
+        vect_color_entry.grid(row=2, column=1, columnspan=2, sticky="w", padx=(0, 12), pady=2)
+        vect_color_hint = ttk.Label(
+            vect_frame,
+            text="One per component: 'red,blue', '1 0 0 1, 0 0 1 1' or '#ff0000'. Blank is white.")
+        vect_color_hint.grid(row=2, column=3, columnspan=3, sticky="w", pady=2)
+        vect_widgets.extend([
+            vect_close_all_check, vect_closed_label, vect_closed_hint,
+            vect_color_label, vect_color_entry, vect_color_hint,
+        ])
+        vect_closed_widgets.append(vect_closed_entry)
+
         status_label = ttk.Label(dialog, textvariable=status_convert_var, wraplength=660, justify="left")
-        status_label.grid(row=10, column=0, columnspan=3, sticky="we", padx=12, pady=(8, 4))
+        status_label.grid(row=11, column=0, columnspan=3, sticky="we", padx=12, pady=(8, 4))
 
         button_frame = ttk.Frame(dialog)
-        button_frame.grid(row=11, column=0, columnspan=3, sticky="e", padx=12, pady=(4, 12))
+        button_frame.grid(row=12, column=0, columnspan=3, sticky="e", padx=12, pady=(4, 12))
         ttk.Button(button_frame, text="Convert", command=run_conversion).pack(side="left", padx=(0, 6))
         ttk.Button(button_frame, text="Close", command=dialog.destroy).pack(side="left")
 
@@ -3093,6 +3437,7 @@ def launch_gui() -> None:
         input_format_var.trace_add("write", lambda *_args: update_component_summary())
         output_format_var.trace_add("write", update_conversion_state)
         close_all_chains_var.trace_add("write", update_conversion_state)
+        vect_close_all_var.trace_add("write", update_conversion_state)
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
         update_conversion_state()
 
@@ -4027,9 +4372,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         "curve_xyz",
         nargs="?",
         default=None,
-        help=("Optional XYZ-like file containing 3D points of the "
-              "target curve (CLI mode). If omitted, a default planar ring "
-              "curve is used."),
+        help=("Optional curve file containing 3D points of the target curve "
+              "(CLI mode): coordinate XYZ/txt, molecular XYZ, or Geomview "
+              "VECT. If omitted, a default planar ring curve is used."),
     )
     parser.add_argument(
         "-o", "--output-pdb",
@@ -4054,9 +4399,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--path-type",
         choices=["open", "closed"],
-        default="open",
-        help=("Whether the input curve should be treated as an open path "
-              "(default) or a closed periodic loop."),
+        default=None,
+        help=("Whether the input curve should be treated as an open path or a "
+              "closed periodic loop. A Geomview VECT curve states this per "
+              "component and is believed when this option is not given; every "
+              "other curve format leaves it unsaid and defaults to open. "
+              "Giving the option always wins."),
     )
     parser.add_argument(
         "--helix_phase",
@@ -4128,9 +4476,76 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--curve-components",
         default="all",
-        help=("For plain XYZ/txt curve files with blank-line-separated components, choose which "
-              "components to use. Components are labeled A, B, C... in file order. Examples: "
-              "'A', 'B,C', 'A-C', or 'all' (default). Molecular XYZ files are treated as one component."),
+        help=("For curve files holding several components, choose which to use. Components are "
+              "blank-line-separated in a plain XYZ/txt file and are the polylines of a Geomview "
+              "VECT file. They are labeled A, B, C... in file order. Examples: 'A', 'B,C', 'A-C', "
+              "or 'all' (default). Molecular XYZ files are treated as one component."),
+    )
+
+    convert_group = parser.add_argument_group(
+        "curve file conversion",
+        "The command-line form of Convert XYZ..., and the only place Curve It "
+        "writes Geomview VECT.")
+    convert_group.add_argument(
+        "--convert",
+        nargs=2,
+        metavar=("INPUT", "OUTPUT"),
+        default=None,
+        help=("Convert one curve file to another format and exit. Every other "
+              "option except the --convert-* ones is ignored."),
+    )
+    convert_group.add_argument(
+        "--convert-from",
+        choices=["auto", "coordinate", "molecular", "vect"],
+        default="auto",
+        help=("Input format. Default: auto, which detects Geomview VECT by its "
+              "header word and molecular XYZ by its atom-count line."),
+    )
+    convert_group.add_argument(
+        "--convert-to",
+        choices=["auto", "coordinate", "molecular", "fake-pdb", "vect"],
+        default="auto",
+        help=("Output format. Default: auto, from the OUTPUT extension: .vect "
+              "writes VECT and .pdb writes a fake PDB. A .xyz could be either "
+              "XYZ form, so it writes molecular; say coordinate for the other."),
+    )
+    convert_group.add_argument(
+        "--convert-scale",
+        type=float,
+        default=1.0,
+        help="Multiply every output coordinate by this value. Default: 1.0.",
+    )
+    convert_group.add_argument(
+        "--convert-closed",
+        default="auto",
+        help=("Which components are closed loops, for the formats that record "
+              "it: VECT in the sign of each vertex count, fake PDB in LINK "
+              "records. 'all', 'none', a selection such as 'A,C' or 'A-C', or "
+              "'auto' (default), which believes a VECT input and otherwise "
+              "writes them open rather than guessing from the geometry."),
+    )
+    convert_group.add_argument(
+        "--convert-color",
+        default=None,
+        help=("VECT output only: one colour per component, separated by commas. "
+              "Names, #hex, or 3-4 numbers -- 'red,blue', '#ff0000', "
+              "'1 0 0 1, 0 0 1 1'. Fewer colours than components cycle. "
+              "Default: opaque white."),
+    )
+    convert_group.add_argument(
+        "--convert-element",
+        default="X",
+        help="Atom symbol for molecular XYZ output, and element for fake PDB. Default: X.",
+    )
+    convert_group.add_argument(
+        "--convert-atom-name",
+        default="CA",
+        help="Fake PDB output only: atom name. Default: CA.",
+    )
+    convert_group.add_argument(
+        "--convert-resname",
+        default="ALA",
+        help="Fake PDB output only: residue name. Default: ALA.",
     )
 
     parser.add_argument(
@@ -4191,6 +4606,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             raise SystemExit(f"Failed to launch KnotPlot to XYZ: {exc}")
         return
 
+    if args.convert is not None:
+        run_convert_cli(args)
+        return
+
     # Decide whether to use GUI:
     non_gui_tokens = [a for a in argv if a not in ("--gui", "-g")]
     use_gui = (len(non_gui_tokens) == 0)
@@ -4230,6 +4649,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     # Read or generate curve.
     curve_component_selection_label: Optional[str] = None
+    curve_closure_for_selection: Optional[List[bool]] = None
     if curve_xyz_path is None:
         print("[INFO] No curve XYZ provided; using default planar ring curve.")
         curve_points = generate_ring_curve()
@@ -4245,6 +4665,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                 len(curve_components),
             )
             curve_points = combine_curve_components(curve_components, selected_curve_components)
+            stated_closure = read_curve_closure_from_text(xyz_text)
+            if stated_closure is not None:
+                curve_closure_for_selection = [stated_closure[i]
+                                               for i in selected_curve_components]
         except Exception as e:
             raise SystemExit(f"Failed to read curve components: {e}")
 
@@ -4261,6 +4685,25 @@ def main(argv: Optional[List[str]] = None) -> None:
             )
         else:
             print(f"[INFO] Parsed {curve_points.shape[0]} points from curve file.")
+
+    # Resolve --path-type.  An explicit option always wins; otherwise a VECT
+    # curve is believed, because it is the one input format that states
+    # closure instead of leaving it to be guessed from the last gap.  A
+    # partially closed selection is not a path type Curve It can honour, so it
+    # is reported and left open rather than silently rounded either way.
+    if args.path_type is None:
+        stated = curve_closure_for_selection
+        if stated and all(stated):
+            args.path_type = "closed"
+            print("[INFO] Curve file states a closed curve; using --path-type closed.")
+        elif stated and any(stated):
+            args.path_type = "open"
+            print("[WARN] Curve file states a mix of closed and open components; "
+                  "using --path-type open. Pass --path-type closed to override.")
+        else:
+            args.path_type = "open"
+            if stated:
+                print("[INFO] Curve file states an open curve; using --path-type open.")
 
     # Optional curve interpolation (resample/insert points before embedding).
     interp_closed = (args.path_type == "closed")

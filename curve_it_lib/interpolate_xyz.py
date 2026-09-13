@@ -48,6 +48,18 @@ from typing import List, Optional
 import numpy as np
 
 
+# Optional Geomview VECT support.  VECT is the one curve format that states
+# per component whether it is a closed loop, so a .vect input answers --closed
+# instead of leaving it to the default.
+try:
+    from . import vect_io
+except ImportError:
+    try:
+        import vect_io  # type: ignore[no-redef]
+    except ImportError:
+        vect_io = None  # type: ignore[assignment]
+
+
 def first_token_is_integer(line: str) -> bool:
     """Return True if the first token in a line is an integer atom count."""
     parts = line.split()
@@ -73,10 +85,27 @@ def parse_xyz_coordinate_line(line: str) -> Optional[List[float]]:
     return None
 
 
+def is_vect_text(text: str) -> bool:
+    """True when this text is a Geomview VECT file, by its header word."""
+    return vect_io is not None and vect_io.looks_like_vect(text)
+
+
+def read_vect_curves(text: str, source: Optional[str] = None):
+    """Parse VECT text, raising ValueError so existing handlers keep working."""
+    if vect_io is None:
+        raise ValueError(
+            "This is a Geomview VECT file, which needs vect_io.py from "
+            "curve_it_lib. Make sure that file sits beside this one.")
+    return vect_io.read_vect_text(text, source=source)
+
+
 def read_xyz_curve_from_text(xyz_text: str) -> np.ndarray:
-    """Read a 3D polyline from a generic XYZ-like text string.
+    """Read a 3D polyline from a generic XYZ-like text string, or from VECT.
 
     Accepts:
+    - Geomview VECT, detected by its header word. Every polyline is
+      concatenated in file order, matching how the coordinate reader below
+      treats blank-line-separated components.
     - Standard XYZ: first line = number of atoms, second = comment, remaining
       lines 'Element x y z'
     - Or a simple whitespace separated 'x y z' per line (with optional comments
@@ -88,6 +117,12 @@ def read_xyz_curve_from_text(xyz_text: str) -> np.ndarray:
     - Otherwise, on each non-comment line, collect numeric tokens and use the
       first three as x,y,z.
     """
+    if is_vect_text(xyz_text) or xyz_text.lstrip()[:4].upper() == "VECT":
+        pts = read_vect_curves(xyz_text).points
+        if pts.shape[0] < 2:
+            raise ValueError("VECT file does not contain at least two 3D points.")
+        return pts
+
     raw_lines = xyz_text.splitlines()
     nonempty_indices = [i for i, line in enumerate(raw_lines) if line.strip()]
     if not nonempty_indices:
@@ -115,9 +150,27 @@ def read_xyz_curve_from_text(xyz_text: str) -> np.ndarray:
 
 def read_xyz_curve(path: str) -> np.ndarray:
     """Read curve points from a file path."""
-    with open(path, "r") as f:
+    return read_curve_file(path)[0]
+
+
+def read_curve_file(path: str):
+    """Return (points, stated_closure, n_components).
+
+    stated_closure is True/False for a VECT input, which records closure in the
+    sign of each vertex count, and None for every other format, which leaves it
+    unsaid.  A VECT file whose polylines disagree reports None too, since the
+    concatenated curve this tool interpolates is then neither.
+    """
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
         txt = f.read()
-    return read_xyz_curve_from_text(txt)
+    if is_vect_text(txt) or txt.lstrip()[:4].upper() == "VECT":
+        curves = read_vect_curves(txt, source=path)
+        pts = curves.points
+        if pts.shape[0] < 2:
+            raise ValueError("VECT file does not contain at least two 3D points.")
+        stated = curves.closed[0] if len(set(curves.closed)) == 1 else None
+        return pts, stated, len(curves)
+    return read_xyz_curve_from_text(txt), None, 1
 
 
 def write_xyz_curve(path: str, points: np.ndarray) -> None:
@@ -457,6 +510,11 @@ def _default_output_path(input_path: str) -> str:
     stem, ext = os.path.splitext(base)
     if not ext:
         return os.path.join(d, stem + "_interpolated")
+    # write_xyz_curve always writes plain coordinate rows, so a .vect input
+    # must not hand its extension to the output: that would produce a file
+    # named VECT that no VECT reader could open.
+    if ext.lower() == ".vect":
+        ext = ".xyz"
     return os.path.join(d, stem + "_interpolated" + ext)
 
 
@@ -485,12 +543,23 @@ def main(argv: Optional[List[str]] = None) -> None:
         help="Insert p equally spaced points between each adjacent pair.",
     )
 
-    parser.add_argument(
+    closure_group = parser.add_mutually_exclusive_group()
+    closure_group.add_argument(
         "--closed",
         action="store_true",
         help=(
             "Treat the input curve as a closed loop for interpolation (includes the "
             "segment from the last point back to the first)."
+        ),
+    )
+    closure_group.add_argument(
+        "--open",
+        dest="open_curve",
+        action="store_true",
+        help=(
+            "Treat the input curve as an open path. Only needed to override a "
+            "Geomview VECT file that states it is closed; every other format "
+            "leaves closure unsaid and is treated as open already."
         ),
     )
     parser.add_argument(
@@ -505,12 +574,25 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     args = parser.parse_args(argv)
 
-    pts = read_xyz_curve(args.input_xyz)
+    pts, stated, n_components = read_curve_file(args.input_xyz)
+
+    # An explicit flag always wins; otherwise a VECT file is believed, because
+    # it is the one input format that states closure rather than leaving it to
+    # be guessed from the gap back to the first point.
+    closed = bool(args.closed)
+    if not args.closed and not args.open_curve and stated is not None:
+        closed = stated
+        print(f"[INFO] Curve file states {'a closed' if closed else 'an open'} "
+              f"curve; interpolating that way.")
+    if n_components > 1:
+        print(f"[WARN] Input holds {n_components} components, joined end to end "
+              f"into one curve of {pts.shape[0]} points. Split the file first "
+              f"to interpolate them separately.")
 
     if args.n is not None:
-        out_pts = interpolate_curve_n_points(pts, args.n, closed=args.closed)
+        out_pts = interpolate_curve_n_points(pts, args.n, closed=closed)
     else:
-        out_pts = interpolate_curve_insert_p(pts, args.p, closed=args.closed)
+        out_pts = interpolate_curve_insert_p(pts, args.p, closed=closed)
 
     out_path = args.output or _default_output_path(args.input_xyz)
     write_xyz_curve(out_path, out_pts)

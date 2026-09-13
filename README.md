@@ -2,13 +2,13 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_9`
+Version: `V3_10`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
 
 - Reads a PDB file containing a roughly straight DNA/RNA helix, protein helix, or other filament-like structure.
-- Reads an optional XYZ/text curve file. If no curve is supplied, it uses a default planar ring.
+- Reads an optional curve file: coordinate XYZ/text, molecular XYZ, or Geomview VECT. If no curve is supplied, it uses a default planar ring.
 - Maps the PDB onto the curve using a rotation-minimizing frame.
 - Preserves local geometry with rigid group mapping:
   - nucleic acids: phosphate, sugar, and base groups
@@ -150,7 +150,24 @@ x y z
 
 They can also be standard XYZ-like files with an atom count/comment header and an element label before each coordinate triplet.
 
-Plain coordinate files may contain multiple components separated by one or more blank lines. Curve It labels those components `A`, `B`, `C`, and so on in file order. By default, all components are concatenated in file order and used as the curve. Use `--curve-components` in CLI mode, or **Select components...** in the GUI, to choose a subset such as `A`, `B,C`, or `A-C`.
+They can also be Geomview **VECT** files, the polyline format Geomview reads and that ridgerunner and the knot-theory tools around it write:
+
+```text
+VECT
+NPolylines NVertices NColors
+Nv[0] ... Nv[NPolylines-1]     vertex count per polyline; negative means closed
+Nc[0] ... Nc[NPolylines-1]     colour count per polyline: 0, 1, or one per vertex
+x y z                          NVertices of these, polylines in order
+r g b a                        NColors of these, polylines in order
+```
+
+Every tool in this package reads VECT, and the format is recognised from the file's header word rather than from its extension, so a `.txt` holding VECT still works. `#` starts a comment that runs to the end of the line and may appear anywhere, including trailing a coordinate row; count lists may wrap across lines.
+
+VECT is the only curve format here that **states** whether each component is a closed loop, in the sign of its vertex count. Everything else leaves closure unsaid and is either assumed open or measured from the gap back to the first point. So a VECT file answers the question for the tool that reads it: it sets `--path-type` in Curve It and Get phase, `--closed` in XYZ to 3D Model and Interpolate, the drawn closure in View curve, and `--closed-chains` in Plane It, exactly as `LINK` records do for a PDB. An explicit option always wins over the file. A closed VECT component does not repeat its first vertex, which is the same invariant Curve It's own curve files hold, so geometry crosses between the two formats unchanged.
+
+Colours are read and reported but are not geometry. No other format here can hold them, so they are lost through any conversion that does not end in VECT.
+
+Curve files may contain multiple components: separated by one or more blank lines in a plain coordinate file, and one per polyline in a VECT file. Curve It labels those components `A`, `B`, `C`, and so on in file order. By default, all components are concatenated in file order and used as the curve. Use `--curve-components` in CLI mode, or **Select components...** in the GUI, to choose a subset such as `A`, `B,C`, or `A-C`.
 
 The GUI **View curve** window can show all parsed components or the currently selected components. When the mouse cursor is close to the plotted curve or points, the viewer reports the normalized path location `u` from `0` to `1`. Molecular XYZ files are treated as one component and can also be used directly as the curve input.
 
@@ -169,7 +186,19 @@ python3 curve_it_lib/get_curve_it_phaseV5_1.py input.pdb curve.xyz \
     --real-atom A:12:P --real-atom B:12:P --target-mode curvature_angle
 ```
 
-**Convert XYZ...** opens a small conversion window for coordinate XYZ/txt, molecular XYZ, and fake-PDB output. An optional scale factor multiplies every output coordinate before writing. Fake PDB output is meant for molecular visualization: each point becomes one atom in one residue, using residue `ALA` and atom `CA` by default. Blank-line-separated coordinate components become chains `A`, `B`, `C`, and so on; selected closed chains can be written with `LINK` records.
+**Convert XYZ...** opens a small conversion window for coordinate XYZ/txt, molecular XYZ, Geomview VECT, and fake-PDB output. An optional scale factor multiplies every output coordinate before writing. Fake PDB output is meant for molecular visualization: each point becomes one atom in one residue, using residue `ALA` and atom `CA` by default. Blank-line-separated coordinate components become chains `A`, `B`, `C`, and so on; selected closed chains can be written with `LINK` records.
+
+This window, and its command-line form below, are the only places the package **writes** VECT; every tool reads it, but the generators keep writing coordinate XYZ. Loading a VECT input fills in **Closed components** from the file's own header, and **Colours** takes one entry per component — `red,blue`, `#ff0000`, or `1 0 0 1, 0 0 1 1` — cycling when there are fewer colours than components and defaulting to opaque white. Only VECT and fake PDB keep components apart on the way out; both XYZ forms join them into one block.
+
+```bash
+# Same window, from the command line. The output extension picks the format.
+python3 curve_it.py --convert curve.xyz curve.vect --convert-closed all
+python3 curve_it.py --convert curve.xyz link.vect --convert-closed A,C --convert-color "red,blue"
+python3 curve_it.py --convert knot.vect knot.pdb          # closure becomes LINK records
+python3 curve_it.py --convert knot.vect knot.xyz --convert-to coordinate
+```
+
+`--convert-closed` takes `all`, `none`, a selection such as `A,C` or `A-C`, or `auto` (the default), which believes a VECT input and otherwise writes components open rather than guessing from the geometry.
 
 **SVG to XYZ...** opens `curve_it_lib/svg2xyz.py`, which turns a 2D vector drawing into space curves. Every drawn `<path>`, `<polyline>`, `<polygon>`, `<line>`, `<rect>`, `<circle>`, and `<ellipse>` becomes one component of a coordinate XYZ/txt file, so a drawing holding several curves produces a curve file holding the same number of space curves, selectable as components `A`, `B`, `C`, and so on. The drawing is flat, so every `z` is the same constant, `0` by default.
 
@@ -434,6 +463,7 @@ Supporting scripts live in `curve_it_lib/`:
 - `svg2xyz.py`
 - `view_xyzV3.py`
 - `xyz2model.py`
+- `vect_io.py` (Geomview VECT reading and writing, shared by every tool above)
 
 They can still be run directly, for example:
 
@@ -449,6 +479,17 @@ python3 curve_it_lib/svg2xyz.py drawing.svg --info
 python3 curve_it_lib/view_xyzV3.py curve.xyz
 python3 curve_it_lib/view_xyzV3.py multi_component.txt --components A,C
 python3 curve_it_lib/xyz2model.py curve.xyz -d 2.0 -s 0.25
+```
+
+Every one of these accepts a Geomview VECT file wherever it accepts a curve file, and takes the closure it states rather than measuring or assuming it:
+
+```bash
+python3 curve_it.py helix.pdb knot.vect                    # --path-type comes from the file
+python3 curve_it_lib/interpolate_xyz.py knot.vect --n 400  # closed loop; writes knot_interpolated.xyz
+python3 curve_it_lib/cal_xyz_total_curvature_writheV2.py knot.vect
+python3 curve_it_lib/view_xyzV3.py link.vect --components A,C
+python3 curve_it_lib/xyz2model.py knot.vect -d 2.0         # no end caps on a closed component
+python3 curve_it_lib/plane_itV3_8.py link.vect --atom-types X   # polylines become chains A, B, C
 ```
 
 ## License

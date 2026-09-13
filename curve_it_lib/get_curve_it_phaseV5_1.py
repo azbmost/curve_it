@@ -43,6 +43,17 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
+# Optional Geomview VECT support.  VECT is the one curve format that states
+# per component whether it is a closed loop, so a .vect curve answers
+# --path-type instead of leaving it to the default.
+try:
+    from . import vect_io
+except ImportError:
+    try:
+        import vect_io  # type: ignore[no-redef]
+    except ImportError:
+        vect_io = None  # type: ignore[assignment]
+
 
 def resource_path(relative_path: str) -> str:
     """Return a resource path that also works from a PyInstaller bundle."""
@@ -292,8 +303,28 @@ def parse_curve_component_selection(selection: Optional[str], n_components: int)
     return unique
 
 
+def is_vect_text(text: str) -> bool:
+    """True when this text is a Geomview VECT file, by its header word."""
+    return vect_io is not None and vect_io.looks_like_vect(text)
+
+
+def read_vect_curves(text: str, source: Optional[str] = None):
+    """Parse VECT text, raising ValueError so existing handlers keep working."""
+    if vect_io is None:
+        raise ValueError(
+            "This is a Geomview VECT file, which needs vect_io.py from "
+            "curve_it_lib. Make sure that file sits beside this one.")
+    return vect_io.read_vect_text(text, source=source)
+
+
 def read_xyz_curve_components_from_text(xyz_text: str) -> List[np.ndarray]:
-    """Read one or more curve components from XYZ-like text."""
+    """Read one or more curve components from XYZ-like text or VECT."""
+    if is_vect_text(xyz_text) or xyz_text.lstrip()[:4].upper() == "VECT":
+        components = read_vect_curves(xyz_text).components
+        if sum(c.shape[0] for c in components) < 2:
+            raise ValueError("VECT file does not contain at least two 3D points.")
+        return components
+
     raw_lines = xyz_text.splitlines()
     nonempty_indices = [i for i, line in enumerate(raw_lines) if line.strip()]
     if not nonempty_indices:
@@ -990,6 +1021,26 @@ def build_atom_groups(atoms: List[AtomRecord], s_vals: np.ndarray) -> Tuple[List
     return group_atom_indices, group_s
 
 
+def read_curve_closure(curve_xyz: str, components: Optional[str]) -> Optional[List[bool]]:
+    """Per-component closure for the selected components, or None if unstated.
+
+    Only VECT records this; every other curve format leaves it unsaid, and
+    None means "nobody said" rather than "open".
+    """
+    try:
+        with open(curve_xyz, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        return None
+    if not is_vect_text(text):
+        return None
+    curves = read_vect_curves(text, source=curve_xyz)
+    if not components:
+        return list(curves.closed)
+    indices = parse_curve_component_selection(components, len(curves.components))
+    return [curves.closed[i] for i in indices]
+
+
 def read_curve_points(curve_xyz: str, components: Optional[str]) -> np.ndarray:
     """Read a Curve It XYZ/text curve, honoring optional component selection."""
     with open(curve_xyz, "r", encoding="utf-8", errors="ignore") as handle:
@@ -1437,6 +1488,22 @@ def compute_phase(args: argparse.Namespace) -> str:
     selection_local = selection_radial @ basis
 
     curve_points = read_curve_points(args.curve_xyz, args.curve_components)
+
+    # An explicit --path-type always wins; otherwise a VECT curve is believed,
+    # because it is the one input format that states closure.  A selection that
+    # mixes the two is not a path type Curve It can honour, so it is reported
+    # and left open rather than silently rounded either way.
+    if args.path_type is None:
+        stated = read_curve_closure(args.curve_xyz, args.curve_components)
+        if stated and all(stated):
+            args.path_type = "closed"
+            print("[INFO] Curve file states a closed curve; using --path-type closed.")
+        else:
+            if stated and any(stated):
+                print("[WARN] Curve file states a mix of closed and open components; "
+                      "using --path-type open. Pass --path-type closed to override.")
+            args.path_type = "open"
+
     closed_for_interp = args.path_type.strip().lower() == "closed"
     curve_points = apply_curve_interpolation(
         curve_points,
@@ -1642,7 +1709,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     mapg = parser.add_argument_group("Curve It mapping options")
     mapg.add_argument("--scale-mode", default="none", help="Curve It scale mode: none, curve_to_helix, helix_to_curve, or numeric length.")
-    mapg.add_argument("--path-type", choices=["open", "closed"], default="open", help="Curve It path type.")
+    mapg.add_argument("--path-type", choices=["open", "closed"], default=None,
+                      help="Curve It path type. A Geomview VECT curve states this per component "
+                           "and is believed when the option is not given; every other curve "
+                           "format leaves it unsaid and defaults to open.")
     mapg.add_argument("--scale-anchor", default="centroid", help="Curve It scale anchor: centroid, origin, or x,y,z.")
     mapg.add_argument("--path-start", type=float, default=0.0, help="Curve It path_start for closed curves.")
     mapg.add_argument("--twist", type=float, default=0.0, help="Curve It total additional twist in degrees.")

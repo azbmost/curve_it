@@ -42,6 +42,22 @@ from scipy.interpolate import CubicSpline
 from scipy.integrate import quad
 from scipy.signal import savgol_filter
 
+# Optional Geomview VECT support.  VECT is the one curve format that states
+# per component whether it is a closed loop; only .vect input reaches this, so
+# a missing vect_io.py costs that one format and nothing else.
+try:
+    from . import vect_io
+except ImportError:
+    try:
+        import vect_io  # type: ignore[no-redef]
+    except ImportError:
+        vect_io = None  # type: ignore[assignment]
+
+VECT_MISSING_MESSAGE = (
+    "{} is a Geomview VECT file, which needs vect_io.py from curve_it_lib. "
+    "Make sure that file sits beside this one."
+)
+
 
 def token_to_float(token: str) -> Optional[float]:
     """Return float(token), or None if token is not a plain numeric token."""
@@ -85,30 +101,59 @@ def first_token_is_integer(line: str) -> bool:
         return False
 
 
+def is_vect_text(text: str) -> bool:
+    """True when this text is a Geomview VECT file, by its header word."""
+    return vect_io is not None and vect_io.looks_like_vect(text)
+
+
+def read_vect_curves(filename: str, text: str):
+    """Parse VECT text, raising ValueError so existing handlers keep working."""
+    if vect_io is None:
+        stripped = text.lstrip()
+        if stripped[:4].upper() == "VECT":
+            raise ValueError(VECT_MISSING_MESSAGE.format(filename))
+        raise ValueError("{} is not a VECT file.".format(filename))
+    return vect_io.read_vect_text(text, source=filename)
+
+
 def read_xyz_like_raw(filename: str, file_format: str = "auto") -> np.ndarray:
     """
     Read raw 3D points from a plain coordinate file or molecular XYZ file.
 
     file_format:
-      auto      detect molecular XYZ if the first non-empty line is an atom count
+      auto      detect Geomview VECT by its header word, then molecular XYZ if
+                the first non-empty line is an atom count
       plain     treat all lines as potential x y z coordinate lines
       molecule  skip the first two lines as standard XYZ header
+      vect      Geomview VECT; every polyline is concatenated in file order
     """
-    with open(filename, "r") as f:
-        raw_lines = f.readlines()
+    if file_format not in ("auto", "plain", "molecule", "vect"):
+        raise ValueError("file_format must be auto, plain, molecule, or vect.")
 
-    if not raw_lines:
+    with open(filename, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+
+    if file_format == "vect" or (file_format == "auto" and is_vect_text(text)):
+        return read_vect_curves(filename, text).points
+
+    # Read as coordinates only once VECT has been ruled out.  A VECT file taken
+    # for coordinates yields its counts line and its trailing colours as if
+    # they were points, which is a wrong answer rather than an error.
+    if file_format in ("plain", "molecule") and is_vect_text(text):
+        raise ValueError(
+            "{} is a Geomview VECT file; use file_format 'vect' or 'auto'. "
+            "Read as coordinates its counts and colours would be taken for "
+            "points.".format(filename))
+
+    lines = text.splitlines()
+    if not lines:
         raise ValueError("The file is empty: {}".format(filename))
 
-    lines = [line.rstrip("\n") for line in raw_lines]
     nonempty_indices = [i for i, line in enumerate(lines) if line.strip()]
     if not nonempty_indices:
         raise ValueError("The file contains no readable lines: {}".format(filename))
 
     start_index = nonempty_indices[0]
-
-    if file_format not in ("auto", "plain", "molecule"):
-        raise ValueError("file_format must be auto, plain, or molecule.")
 
     if file_format == "molecule":
         data_start = start_index + 2
@@ -454,9 +499,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--format",
-        choices=["auto", "plain", "molecule"],
+        choices=["auto", "plain", "molecule", "vect"],
         default="auto",
-        help="Input format. Default: auto."
+        help="Input format. Default: auto (detects Geomview VECT and molecular XYZ)."
     )
     parser.add_argument(
         "-m",

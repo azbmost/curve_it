@@ -72,6 +72,23 @@ def set_optional_window_icon(root, tk_module, icon_filenames: List[str], image_a
             continue
 
 
+# Optional Geomview VECT support.  VECT is the one curve format that states
+# per component whether it is a closed loop; only .vect input reaches this, so
+# a missing vect_io.py costs that one format and nothing else.
+try:
+    from . import vect_io
+except ImportError:
+    try:
+        import vect_io  # type: ignore[no-redef]
+    except ImportError:
+        vect_io = None  # type: ignore[assignment]
+
+VECT_MISSING_MESSAGE = (
+    "{} is a Geomview VECT file, which needs vect_io.py from curve_it_lib. "
+    "Make sure that file sits beside this one."
+)
+
+
 try:
     # Reuse the parser and closed-curve smoothing behavior from the companion
     # Curve It helper when this file is placed in curve_it_lib/.
@@ -125,25 +142,41 @@ except ImportError:
         Read raw 3D points from a plain coordinate file or molecular XYZ file.
 
         file_format:
-          auto      detect molecular XYZ if the first non-empty line is an atom count
+          auto      detect Geomview VECT by its header word, then molecular XYZ
+                    if the first non-empty line is an atom count
           plain     treat all lines as potential x y z coordinate lines
           molecule  skip the first two lines as standard XYZ header
+          vect      Geomview VECT; every polyline is concatenated in file order
         """
-        with open(filename, "r") as f:
-            raw_lines = f.readlines()
+        if file_format not in ("auto", "plain", "molecule", "vect"):
+            raise ValueError("file_format must be auto, plain, molecule, or vect.")
 
-        if not raw_lines:
+        with open(filename, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+
+        if file_format == "vect" or (file_format == "auto"
+                                     and vect_io is not None
+                                     and vect_io.looks_like_vect(text)):
+            if vect_io is None:
+                raise ValueError(VECT_MISSING_MESSAGE.format(filename))
+            return vect_io.read_vect_text(text, source=filename).points
+
+        if (file_format in ("plain", "molecule")
+                and vect_io is not None and vect_io.looks_like_vect(text)):
+            raise ValueError(
+                "{} is a Geomview VECT file; use file_format 'vect' or 'auto'. "
+                "Read as coordinates its counts and colours would be taken for "
+                "points.".format(filename))
+
+        lines = text.splitlines()
+        if not lines:
             raise ValueError("The file is empty: {}".format(filename))
 
-        lines = [line.rstrip("\n") for line in raw_lines]
         nonempty_indices = [i for i, line in enumerate(lines) if line.strip()]
         if not nonempty_indices:
             raise ValueError("The file contains no readable lines: {}".format(filename))
 
         start_index = nonempty_indices[0]
-
-        if file_format not in ("auto", "plain", "molecule"):
-            raise ValueError("file_format must be auto, plain, or molecule.")
 
         if file_format == "molecule":
             data_start = start_index + 2
@@ -1010,9 +1043,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--format",
-        choices=["auto", "plain", "molecule"],
+        choices=["auto", "plain", "molecule", "vect"],
         default="auto",
-        help="Input format. Default: auto.",
+        help="Input format. Default: auto (detects Geomview VECT and molecular XYZ).",
     )
     parser.add_argument(
         "-m",
@@ -1159,9 +1192,10 @@ def launch_gui() -> None:
 
     def browse_input() -> None:
         filename = filedialog.askopenfilename(
-            title="Select coordinate/XYZ file",
+            title="Select coordinate/XYZ/VECT file",
             filetypes=[
-                ("Coordinate or XYZ files", "*.txt *.xyz *.dat *.csv"),
+                ("Coordinate, XYZ or VECT files", "*.txt *.xyz *.dat *.csv *.vect"),
+                ("Geomview VECT", "*.vect"),
                 ("All files", "*.*"),
             ],
         )
@@ -1266,7 +1300,7 @@ def launch_gui() -> None:
     ttk.Combobox(
         main_frame,
         textvariable=format_var,
-        values=["auto", "plain", "molecule"],
+        values=["auto", "plain", "molecule", "vect"],
         state="readonly",
         width=15,
     ).grid(row=2, column=1, sticky="w", padx=6, pady=4)

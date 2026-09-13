@@ -86,6 +86,18 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+# Optional Geomview VECT support.  VECT is the one coordinate format that
+# states per component whether it is a closed loop, which is exactly what
+# --closed-chains needs and what a PDB gets from its LINK records.
+try:
+    from . import vect_io
+except ImportError:
+    try:
+        import vect_io  # type: ignore[no-redef]
+    except ImportError:
+        vect_io = None  # type: ignore[assignment]
+
+
 TOOL_NAME = "Plane It"
 TOOL_VERSION = "V3.8"
 
@@ -435,10 +447,14 @@ def resolve_input_format(input_file: Path, requested_format: str = "auto") -> st
         "coordinate_xyz": "xyz",
         "coord-xyz": "xyz",
         "coord_xyz": "xyz",
+        "vect": "vect",
+        "geomview": "vect",
+        "geomview-vect": "vect",
+        "geomview_vect": "vect",
         "auto": "auto",
     }
     if requested not in aliases:
-        raise ValueError("--input-format must be auto, pdb, xyz, molecular-xyz, or coordinate-xyz")
+        raise ValueError("--input-format must be auto, pdb, xyz, molecular-xyz, coordinate-xyz, or vect")
     requested = aliases[requested]
     if requested != "auto":
         return requested
@@ -446,6 +462,12 @@ def resolve_input_format(input_file: Path, requested_format: str = "auto") -> st
     suffix = input_file.suffix.lower()
     if suffix in {".pdb", ".ent"}:
         return "pdb"
+
+    # VECT is checked by content before any extension is trusted, because a
+    # VECT file read as coordinates yields its counts line and its trailing
+    # colours as if they were atoms -- a wrong answer rather than an error.
+    if file_is_vect(input_file):
+        return "vect"
     if suffix == ".xyz":
         return "xyz"
 
@@ -462,6 +484,61 @@ def resolve_input_format(input_file: Path, requested_format: str = "auto") -> st
     except OSError:
         pass
     return "xyz"
+
+
+def file_is_vect(input_file: Path) -> bool:
+    """True when this file is a Geomview VECT file, by its header word."""
+    if vect_io is None:
+        return False
+    try:
+        with input_file.open("r", encoding="utf-8", errors="replace") as handle:
+            return vect_io.looks_like_vect(handle.read(4096))
+    except OSError:
+        return False
+
+
+def parse_vect_atoms(vect_file: Path) -> Tuple[List[AtomRecord], List[bool]]:
+    """Parse a Geomview VECT file into AtomRecords plus per-chain closure.
+
+    Each polyline becomes one chain, labelled A, B, C... in file order, exactly
+    as blank-line-separated components do in a coordinate XYZ file. The second
+    return value is the file's own statement of which of those chains are
+    closed loops, which is what --closed-chains would otherwise have to guess.
+    """
+    if vect_io is None:
+        raise ValueError(
+            "{0} is a Geomview VECT file, which needs vect_io.py from "
+            "curve_it_lib. Make sure that file sits beside this one.".format(vect_file))
+    text = vect_file.read_text(encoding="utf-8", errors="replace")
+    curves = vect_io.read_vect_text(text, source=str(vect_file))
+
+    atoms: List[AtomRecord] = []
+    serial = 1
+    for component_index, points in enumerate(curves.components):
+        chain = chain_id_from_index(component_index)
+        for x, y, z in points:
+            atoms.append(
+                AtomRecord(
+                    model=1,
+                    record="XYZ",
+                    serial=str(serial),
+                    atom_name="X",
+                    element="X",
+                    altloc="",
+                    resname="XYZ",
+                    chain=chain,
+                    resseq=str(serial),
+                    icode="",
+                    x=float(x),
+                    y=float(y),
+                    z=float(z),
+                    line_number=serial,
+                )
+            )
+            serial += 1
+    if not atoms:
+        raise ValueError("No coordinates could be parsed from: {0}".format(vect_file))
+    return atoms, list(curves.closed)
 
 
 def parse_xyz_atoms(xyz_file: Path, input_format: str = "auto") -> List[AtomRecord]:
@@ -573,6 +650,12 @@ def parse_structure_atoms(input_file: Path, args: argparse.Namespace) -> Tuple[L
             resname=args.resname,
             altloc=args.altloc,
         )
+    elif input_format == "vect":
+        atoms, stated_closure = parse_vect_atoms(input_file)
+        # Stash it for the caller: this is the VECT counterpart of the LINK
+        # records a PDB uses to say which chains close.
+        args.vect_closed_chains = [chain_id_from_index(i)
+                                   for i, closed in enumerate(stated_closure) if closed]
     else:
         atoms = parse_xyz_atoms(input_file, getattr(args, "input_format", "auto"))
     return atoms, input_format
@@ -3188,6 +3271,9 @@ def run_processing(args: argparse.Namespace) -> str:
     if resolved_input_format != "pdb":
         if getattr(args, "draw_base_pairs", False):
             raise ValueError("DSSR base-pair lines require PDB input; XYZ input does not contain residue/chain records for DSSR.")
+        detected_closed_chains = list(getattr(args, "vect_closed_chains", []) or [])
+        if detected_closed_chains and not bool(getattr(args, "close_all_chains", False)):
+            args.closed_chains = merge_closed_chain_text(getattr(args, "closed_chains", ""), detected_closed_chains)
     else:
         detected_closed_chains = detect_closed_chains_from_link(pdb_file)
         if detected_closed_chains and not bool(getattr(args, "close_all_chains", False)):
@@ -3282,7 +3368,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("-a", "--atom-type", action="append", default=None, help="Atom selector value. Can be repeated or comma-separated.")
     parser.add_argument("--atom-types", default=None, help="Comma-, semicolon-, or newline-separated atom selector values, e.g. P,C1',O3'")
     parser.add_argument("--select-by", choices=["name", "element", "auto"], default="name", help="Select by PDB atom name, element, or either. Default: name")
-    parser.add_argument("--input-format", choices=["auto", "pdb", "xyz", "molecular-xyz", "coordinate-xyz"], default="auto", help="Input file format. Default: auto")
+    parser.add_argument("--input-format", choices=["auto", "pdb", "xyz", "molecular-xyz", "coordinate-xyz", "vect"], default="auto", help="Input file format. Default: auto, which detects Geomview VECT by its header word. A VECT polyline becomes one chain, and the closure it states fills --closed-chains the way PDB LINK records do.")
     parser.add_argument("--records", choices=["all", "ATOM", "HETATM"], default="all", help="Which PDB coordinate records to use. Default: all")
     parser.add_argument("--model", default="first", help="Model to use: first, all, or an integer. Default: first")
     parser.add_argument("--chain", default=None, help="Optional chain ID filter")
@@ -3738,7 +3824,7 @@ def run_gui() -> int:
             closed_chains_var.set(format_chain_list(closed))
 
     def browse_pdb() -> None:
-        path = filedialog.askopenfilename(title="Choose structure or coordinate file", filetypes=[("Structure/coordinate files", "*.pdb *.ent *.xyz *.txt *.csv *.tsv *.dat"), ("PDB files", "*.pdb *.ent"), ("XYZ/coordinate files", "*.xyz *.txt *.csv *.tsv *.dat"), ("All files", "*.*")])
+        path = filedialog.askopenfilename(title="Choose structure or coordinate file", filetypes=[("Structure/coordinate files", "*.pdb *.ent *.xyz *.txt *.csv *.tsv *.dat *.vect"), ("PDB files", "*.pdb *.ent"), ("XYZ/coordinate files", "*.xyz *.txt *.csv *.tsv *.dat"), ("Geomview VECT", "*.vect"), ("All files", "*.*")])
         if path:
             pdb_var.set(path)
             update_default_paths(force=True, update_closed_chains=True)
@@ -3804,7 +3890,7 @@ def run_gui() -> int:
     ttk.Button(input_frame, text="Browse", command=browse_pdb).grid(row=0, column=5, sticky="e", padx=(6, 0), pady=4)
 
     ttk.Label(input_frame, text="Input format").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=4)
-    input_format_combo = ttk.Combobox(input_frame, textvariable=input_format_var, values=["auto", "pdb", "xyz", "molecular-xyz", "coordinate-xyz"], width=14, state="readonly")
+    input_format_combo = ttk.Combobox(input_frame, textvariable=input_format_var, values=["auto", "pdb", "xyz", "molecular-xyz", "coordinate-xyz", "vect"], width=14, state="readonly")
     input_format_combo.grid(row=1, column=1, sticky="w", pady=4)
 
     label_with_help(input_frame, "Select by", "Select by", help_texts["select_by"]).grid(row=1, column=2, sticky="w", padx=(18, 6), pady=4)
