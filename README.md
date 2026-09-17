@@ -401,13 +401,17 @@ input coordinates  x --scale  ->  centre-line  + --diameter  ->  solid
 
 `MODEL SIZE` is the printed extent and is the number to compare against a build volume. A rod of radius `r` reaches `r` beyond the centerline in every direction, so the solid is exactly one rod diameter larger than the centerline extent on each of the three axes, rounded end caps included. The measured size read back from the finished mesh is slightly under `MODEL SIZE` because the tube is a 24-sided prism inscribed in the true circle rather than touching it.
 
+The report states the closest approach between every pair of components, and the gap the chosen rod leaves between their surfaces. A rod of radius `r` grows each curve by `r` in every direction, so two centerlines passing `d` apart leave `d - diameter` of air between the solids, and a gap at or below zero means the two components fuse into one piece. That is what you want for a sculpture and not what you want for a link whose parts have to move, so the report also names the thickest rod that keeps everything separate. The centerline distance is exact: it is measured segment to segment rather than sampled at the vertices, so a coarse curve does not overstate its own clearance. A mesh input has no centerline, so its clearance is measured between the nearest vertices of the shells instead, an upper bound on the true surface gap that is tight to about one edge length.
+
+Output names carry the settings that change the solid without changing the file it came from: the rod diameter for a curve input, the scale factor for a mesh. `curve.xyz -d 2.0` writes `curve-D2.0.stl`, so two rod sizes swept from one curve no longer overwrite each other, and re-running on an output's own name replaces that tag rather than stacking a second one. Explicit `--stl` and `--glb` paths are used exactly as given. A run that would write over its own input stops before writing anything and says so.
+
 An existing `STL`, `OBJ`, `PLY`, `GLB`, `3MF`, or `OFF` mesh is also accepted. A mesh is only rescaled, so rod diameter, segments, facets, and the closed-curve setting do not apply. The input mode is taken from the file extension, then from the file's first bytes, and can be forced with `--as`.
 
 ```bash
-python3 curve_it_lib/xyz2model.py curve.xyz --info
-python3 curve_it_lib/xyz2model.py curve.xyz -d 2.0 -s 0.25
+python3 curve_it_lib/xyz2model.py curve.xyz --info          # report only, writes nothing
+python3 curve_it_lib/xyz2model.py curve.xyz -d 2.0 -s 0.25  # curve-D2.0.stl, curve-D2.0.glb
 python3 curve_it_lib/xyz2model.py curve.xyz -d 1.5 --split --preview
-python3 curve_it_lib/xyz2model.py model.stl --as mesh -s 0.5
+python3 curve_it_lib/xyz2model.py model.stl --as mesh -s 0.5   # model-S0.5.stl
 ```
 
 ## Outputs

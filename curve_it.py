@@ -2454,6 +2454,8 @@ def launch_gui() -> None:
             "The scale factor is applied to the centerline first, then the rod is swept, so the rod diameter is in final output units and the scale factor does not change it:\n"
             "input coordinates x scale -> centerline + diameter -> solid\n\n"
             "MODEL SIZE is the printed extent. A rod of radius r reaches r beyond the centerline on every axis, so the solid is exactly one rod diameter larger than the centerline extent on each of the three axes; compare that number against the build volume. The measured size read back from the finished mesh comes out slightly under MODEL SIZE because the tube is a 24-sided prism inscribed in the true circle.\n\n"
+            "CLEARANCE is the closest approach between each pair of components, measured exactly segment to segment on the centerlines, less one rod diameter to give the gap between the finished surfaces. A gap at or below zero means those components fuse into one piece, so the report also names the thickest rod that keeps every component separate.\n\n"
+            "Output names carry the rod diameter, so curve.xyz at diameter 2.0 writes curve-D2.0.stl and two rod sizes off one curve do not overwrite each other. A mesh input carries the scale factor instead.\n\n"
             "When the main window already has a curve file loaded, it opens with that file selected. Requires the trimesh package."
         ),
         "path_type": (
