@@ -27,6 +27,11 @@ swept, so --diameter is in FINAL output units and --scale does not change it:
     python3 xyz2model.py curves.xyz --info                 # just describe it
     python3 xyz2model.py curves.xyz -d 2.0 -s 0.25
     python3 xyz2model.py curves.xyz -d 1.5 --colors "#e6194b,#3cb44b,#4363d8"
+    python3 xyz2model.py curves.xyz -d 1.5 --palette DiLiuLab-T80
+
+The component colours are this tool's own unless --palette names the DiLiuLab
+figure colours (read through lab_colors.py from assets/diliulab_colors.json);
+--colors, when given, wins over both.
 
 Requires numpy, scipy, trimesh (and matplotlib for --preview / colour names).
 Run with no arguments, or with --gui, for the graphical interface.
@@ -53,7 +58,17 @@ except ImportError:
     except ImportError:
         vect_io = None  # type: ignore[assignment]
 
-__version__ = "1.1"
+# Optional DiLiuLab palette.  Without it the tool keeps its own colours and
+# only a non-default --palette fails.
+try:
+    from . import lab_colors
+except ImportError:
+    try:
+        import lab_colors  # type: ignore[no-redef]
+    except ImportError:
+        lab_colors = None  # type: ignore[assignment]
+
+__version__ = "1.2"
 
 TOOL_NAME = "XYZ to 3D Model"
 
@@ -87,6 +102,38 @@ DEFAULT_COLORS = [
     "#42d4f4", "#f032e6", "#bfef45", "#fabed4", "#469990",
     "#dcbeff", "#9a6324", "#800000", "#808000", "#000075",
 ]
+
+
+def check_palette(value):
+    """A palette name as "default" or "DiLiuLab T80"; ValueError otherwise.
+
+    Without lab_colors the tool still runs on its own colours, and asking for
+    the lab's says what is missing rather than quietly using the default.
+    """
+    if lab_colors is not None:
+        return lab_colors.check_palette(value)
+    if value is None or str(value).strip().lower() in ("", "default", "none", "auto"):
+        return "default"
+    raise ValueError("palette %r needs lab_colors.py from curve_it_lib. Make "
+                     "sure that file sits beside this one." % value)
+
+
+def palette_arg(value):
+    """argparse type= for --palette, so a bad name is a usage error."""
+    try:
+        return check_palette(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+
+
+def palette_colors(palette="default"):
+    """The component colours a palette stands for: DEFAULT_COLORS unchanged,
+    or the nine DiLiuLab colours at the tint it names.  The lab's neutral is
+    left out -- every component here is a category, and black or gray would
+    read as "no colour" beside the hues."""
+    if check_palette(palette) == "default":
+        return list(DEFAULT_COLORS)
+    return lab_colors.resolve_palette(palette, DEFAULT_COLORS)
 
 
 # --------------------------------------------------------------------------
@@ -222,13 +269,38 @@ HELP = {
 
     "colors": (
         "Component colours",
-        "One colour per component, used by the GLB only. Click a swatch to "
-        "change it. The swatches rebuild to match the component count when a "
-        "file loads.\n\n"
+        "One colour per component, used by the GLB and the PNG preview. Click "
+        "a swatch to change it. The swatches rebuild to match the component "
+        "count when a file loads, and the palette menu refills them all at "
+        "once.\n\n"
         "STL has no concept of colour, so the .stl file is unaffected. If you "
         "want colours in a print, use the split STLs and assign a material per "
         "part in the slicer.",
         None),
+
+    "palette": (
+        "Palette",
+        "Where the swatches get their colours. They colour the GLB components "
+        "and the PNG preview; the STL has no colour and is unaffected.\n\n"
+        "default -- this tool's own fifteen colours, exactly as before.\n"
+        "DiLiuLab T100 -- the lab's nine figure colours from gr_colors, in the "
+        "order red, blue, magenta, cyan, orange, purple, green, yellow, mint "
+        "green. A tenth component starts again at red.\n"
+        "T80, T60, T40, T20 -- the same nine mixed toward white, lighter at "
+        "each step. T40 and T20 are pale and can be hard to see against a "
+        "white background.\n\n"
+        "The lab's neutral (black at T100, gray below) is not used: every "
+        "component gets one of the nine hues.\n\n"
+        "Choosing a palette refills every swatch, so choosing it again undoes "
+        "any swatch changed by hand; a swatch can still be clicked and changed "
+        "afterwards. The colours are read from assets/diliulab_colors.json, "
+        "which the other curve_it tools share. On the command line this is "
+        "--palette; --colors, when given, wins over it.",
+        "--palette DiLiuLab      (or DiLiuLab-T80, -T60 ...)\n"
+        "  component  1    2     3        4     5       6\n"
+        "  colour     red  blue  magenta  cyan  orange  purple\n"
+        "  component  7      8       9           10\n"
+        "  colour     green  yellow  mint green  red again"),
 
     "output": (
         "Output files",
@@ -1180,7 +1252,17 @@ def build_parser():
     p.add_argument("--no-glb", action="store_true")
     p.add_argument("--split", action="store_true",
                    help="also write one STL per component")
-    p.add_argument("--colors", help="comma separated hex colours for the GLB")
+    p.add_argument("--colors", help="comma separated hex colours for the GLB "
+                                    "and the preview; wins over --palette")
+    p.add_argument("--palette", type=palette_arg, default="default",
+                   help="component colours for the GLB and the preview: default "
+                        "(this tool's own 15) or DiLiuLab, the lab's nine figure "
+                        "colours from gr_colors -- red, blue, magenta, cyan, "
+                        "orange, purple, green, yellow, mint green, repeating "
+                        "after nine -- optionally at a lighter tint mixed toward "
+                        "white: DiLiuLab-T80, -T60, -T40 or -T20 (default tint "
+                        "T100; T40 and T20 are pale). Read from "
+                        "assets/diliulab_colors.json; --colors wins over it")
     p.add_argument("--preview", action="store_true", help="write a PNG preview")
     p.add_argument("--info", action="store_true",
                    help="describe the file and exit without meshing")
@@ -1191,7 +1273,17 @@ def run_cli(args):
     real = resolve_path(args.xyz)
     kind = detect_kind(args.xyz) if args.kind == "auto" else args.kind
     colors = ([c.strip() for c in args.colors.split(",")] if args.colors
-              else DEFAULT_COLORS)
+              else palette_colors(args.palette))
+    # Only a palette other than the default is reported, so a default run
+    # prints exactly what it always has.
+    if args.palette == "default":
+        palette_note = None
+    elif args.colors:
+        palette_note = "  note: --palette ignored -- --colors names the colours"
+    else:
+        palette_note = "  colours: %s palette" % args.palette
+    if args.no_glb and not args.preview:
+        palette_note = None                 # nothing written carries colour
     prefix = args.output or os.path.splitext(real)[0]
 
     # ---------------- mesh input: scale only -----------------------------
@@ -1224,6 +1316,8 @@ def run_cli(args):
         if args.preview:
             written.append(render_mesh_preview(meshes, colors,
                                                prefix + "_preview.png"))
+        if palette_note:
+            print(palette_note)
         for w in written:
             print("  wrote %s" % w)
         return 0
@@ -1274,6 +1368,8 @@ def run_cli(args):
     if args.preview:
         written.append(render_preview(comps, args.scale, colors,
                                       prefix + "_preview.png", closed))
+    if palette_note:
+        print(palette_note)
     for w in written:
         print("  wrote %s" % w)
     return 0
@@ -1282,7 +1378,7 @@ def run_cli(args):
 # --------------------------------------------------------------------------
 # GUI
 # --------------------------------------------------------------------------
-def run_gui(initial_file=None):
+def run_gui(initial_file=None, palette="default"):
     import tkinter as tk
     from tkinter import ttk, filedialog, colorchooser, messagebox
 
@@ -1302,8 +1398,9 @@ def run_gui(initial_file=None):
         if setting == "auto" and state.get("stated_closure"):
             return stated_closure_setting(state["stated_closure"])
         return setting
-    colors = list(DEFAULT_COLORS)
+    colors = palette_colors(palette)
     V = {
+        "palette":  tk.StringVar(value=check_palette(palette)),
         "file":     tk.StringVar(value=initial_file or ""),
         "scale":    tk.StringVar(value="1.0"),
         "diameter": tk.StringVar(value="1.0"),
@@ -1330,6 +1427,7 @@ def run_gui(initial_file=None):
             except Exception:               # noqa: BLE001
                 pass
         top = tk.Toplevel(root)
+        top.withdraw()                  # placed first, then shown: no flash at 0,0
         open_help["win"] = top
         top.title(title)
         top.transient(root)
@@ -1354,12 +1452,22 @@ def run_gui(initial_file=None):
             box.pack(fill="x")
         tk.Button(frm, text="Close", command=top.destroy).pack(pady=(12, 0))
         top.bind("<Escape>", lambda e: top.destroy())
+        # Beside the chip, but kept on the screen, as Multicolor Split does:
+        # the lower chips carry long texts whose Close button would otherwise
+        # land below the screen's bottom edge.  Tk measures only the main
+        # display, so a chip on another one keeps the plain placement.
         try:
-            x = near.winfo_rootx() + 26
-            y = near.winfo_rooty() - 10
+            top.update_idletasks()
+            sw, sh = top.winfo_screenwidth(), top.winfo_screenheight()
+            cx, cy = near.winfo_rootx(), near.winfo_rooty()
+            x, y = cx + 26, cy - 10
+            if 0 <= cx < sw and 0 <= cy < sh:
+                x = min(x, sw - top.winfo_reqwidth() - 8)
+                y = min(y, sh - top.winfo_reqheight() - 100)    # title bar and Dock
             top.geometry("+%d+%d" % (max(x, 0), max(y, 0)))
         except Exception:                   # noqa: BLE001
             pass
+        top.deiconify()
         top.focus_set()
 
     def chip(parent, key):
@@ -1470,12 +1578,20 @@ def run_gui(initial_file=None):
     chip(fg, "centre").grid(row=6, column=2, padx=(6, 0), pady=(4, 0))
 
     # colours ---------------------------------------------------------------
-    fc = ttk.LabelFrame(left, text="Component colours (GLB only)", padding=8)
+    fc = ttk.LabelFrame(left, text="Component colours (GLB and preview)", padding=8)
     fc.pack(fill="x", pady=(0, 8))
     head = ttk.Frame(fc); head.pack(fill="x")
     tk.Label(head, text="click a swatch to change it", font=("Helvetica", 10),
              fg="#8a929b").pack(side="left")
     chip(head, "colors").pack(side="right")
+    pal = ttk.Frame(fc)
+    pal.pack(fill="x", pady=(4, 0))
+    ttk.Label(pal, text="palette").pack(side="left")
+    ttk.Combobox(pal, textvariable=V["palette"], width=14, state="readonly",
+                 values=(lab_colors.palette_choices("default")
+                         if lab_colors is not None else ["default"])
+                 ).pack(side="left", padx=(4, 0))
+    chip(pal, "palette").pack(side="left", padx=(6, 0))
     row = ttk.Frame(fc); row.pack(fill="x", pady=(4, 0))
     swatches = []
 
@@ -1486,12 +1602,22 @@ def run_gui(initial_file=None):
             colors[i] = hx
             swatches[i].configure(bg=hx)
 
+    def apply_palette(*_):
+        """Refill every swatch from the chosen palette, hand edits included."""
+        base = palette_colors(V["palette"].get())
+        colors[:] = [base[i % len(base)] for i in range(len(colors))]
+        for i, w in enumerate(swatches):
+            w.configure(bg=colors[i])
+
+    V["palette"].trace_add("write", apply_palette)
+
     def build_swatches(n):
         for w in swatches:
             w.destroy()
         swatches.clear()
+        base = palette_colors(V["palette"].get())
         while len(colors) < n:
-            colors.append(DEFAULT_COLORS[len(colors) % len(DEFAULT_COLORS)])
+            colors.append(base[len(colors) % len(base)])
         for i in range(n):
             b = tk.Button(row, text=" %d " % (i + 1), bg=colors[i], fg="white",
                           width=3, command=lambda i=i: pick(i))
@@ -1691,7 +1817,7 @@ def run_gui(initial_file=None):
                 rep = describe_meshes(comps, scale, gaps=gaps_now())
                 rep += ("\n\nRESULT\n  scaled by %g (lengths), %g (areas), "
                         "%g (volume)\n  measured size  %.3f x %.3f x %.3f"
-                        "\n  %d triangles, watertight=%s\n\nWROTE\n"
+                        "\n  %d triangles, watertight=%s"
                         % (scale, scale ** 2, scale ** 3, msz[0], msz[1], msz[2],
                            sum(len(m.faces) for m in meshes),
                            all(m.is_watertight for m in meshes)))
@@ -1699,10 +1825,19 @@ def run_gui(initial_file=None):
                 rep = describe(comps, scale, dia, closed, gaps=gaps_now())
                 rep += ("\n\nMESH\n  segments/curve %d, facets %d"
                         "\n  measured size  %.3f x %.3f x %.3f"
-                        "\n  %d triangles, watertight=%s\n\nWROTE\n"
+                        "\n  %d triangles, watertight=%s"
                         % (seg, int(fnum("sides", 24)), msz[0], msz[1], msz[2],
                            sum(len(m.faces) for m in meshes),
                            all(m.is_watertight for m in meshes)))
+            # the palette is named only when it is not the default one
+            if V["palette"].get() != "default" and (V["glb"].get() or V["png"].get()):
+                base = palette_colors(V["palette"].get())
+                changed = sum(1 for i in range(len(comps))
+                              if colors[i].lower() != base[i % len(base)])
+                rep += "\n  colours from the %s palette%s" % (
+                    V["palette"].get(),
+                    ", %d changed by hand" % changed if changed else "")
+            rep += "\n\nWROTE\n"
             rep += "\n".join("  " + w for w in written) or "  (nothing selected)"
             show(rep)
             status.configure(text="done -- %d file(s)" % len(written),
@@ -1739,7 +1874,7 @@ def main(argv=None):
         return run_gui()
     args = parser.parse_args(argv)
     if args.gui:
-        return run_gui(args.xyz)
+        return run_gui(args.xyz, args.palette)
     if not args.xyz:
         parser.error("an input .xyz file is required (or use --gui)")
     try:

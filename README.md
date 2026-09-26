@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_10`
+Version: `V3_11`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -20,11 +20,12 @@ GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along An
 
 - Python 3.9 or newer
 - Required: `numpy`
-- Required by **Generate SC**; otherwise optional but recommended: `scipy` for curvature/writhe reporting and the local curvature/torsion tool
-- Optional: `matplotlib` for the GUI curve viewer, local analysis plots, and the SVG to XYZ preview
+- Required by **Generate SC** and **Multicolor Split**; otherwise optional but recommended: `scipy` for curvature/writhe reporting and the local curvature/torsion tool
+- Optional: `matplotlib` for the GUI curve viewer, local analysis plots, the SVG to XYZ preview, and the Multicolor Split preview image
 - **SVG to XYZ** needs nothing beyond `numpy` and the standard library
-- Required by **XYZ to 3D Model**; not needed otherwise: `trimesh` for STL/GLB mesh output
+- Required by **XYZ to 3D Model** and **Multicolor Split**; not needed otherwise: `trimesh` for STL/GLB mesh output
 - Required by **KnotPlot to XYZ**; not needed otherwise: a local KnotPlot installation. KnotPlot is third-party software under its own license and is not bundled with this package; download it from https://knotplot.com/download/. The tool finds a normal installation on its own; set the `KNOTPLOT` environment variable to the full path of the executable if yours is elsewhere.
+- Required by **Multicolor Split**; not needed otherwise: `manifold3d` for the exact mesh booleans, and a local UCSF ChimeraX installation, which the tool runs headless for `molmap` and its contour surfaces. ChimeraX is third-party software under its own license and is not bundled with this package; download it from https://www.cgl.ucsf.edu/chimerax/download.html. The tool finds a normal installation on its own; if yours is elsewhere, set the `CHIMERAX` environment variable to the full path of the executable, pass `--chimerax` with the executable or the `.app`, or fill in the tool's **ChimeraX** field, which it remembers.
 - Optional: Tkinter for GUI mode. It is included with many Python installations.
 
 Install the Python packages:
@@ -188,7 +189,7 @@ python3 curve_it_lib/get_curve_it_phaseV5_1.py input.pdb curve.xyz \
 
 **Convert XYZ...** opens a small conversion window for coordinate XYZ/txt, molecular XYZ, Geomview VECT, and fake-PDB output. An optional scale factor multiplies every output coordinate before writing. Fake PDB output is meant for molecular visualization: each point becomes one atom in one residue, using residue `ALA` and atom `CA` by default. Blank-line-separated coordinate components become chains `A`, `B`, `C`, and so on; selected closed chains can be written with `LINK` records.
 
-This window, and its command-line form below, are the only places the package **writes** VECT; every tool reads it, but the generators keep writing coordinate XYZ. Loading a VECT input fills in **Closed components** from the file's own header, and **Colours** takes one entry per component — `red,blue`, `#ff0000`, or `1 0 0 1, 0 0 1 1` — cycling when there are fewer colours than components and defaulting to opaque white. Only VECT and fake PDB keep components apart on the way out; both XYZ forms join them into one block.
+This window, and its command-line form below, are the only places the package **writes** VECT; every tool reads it, but the generators keep writing coordinate XYZ. Loading a VECT input fills in **Closed components** from the file's own header, and **Colours** takes one entry per component — `red,blue`, `#ff0000`, or `1 0 0 1, 0 0 1 1` — cycling when there are fewer colours than components and defaulting to opaque white. **Colours** also takes the name of a whole palette, `DiLiuLab` or a tint such as `DiLiuLab-T80`, which gives the components the lab's figure colours in turn, and the **Palette** menu below it writes that name in; see [DiLiuLab Palette](#diliulab-palette). Only VECT and fake PDB keep components apart on the way out; both XYZ forms join them into one block.
 
 ```bash
 # Same window, from the command line. The output extension picks the format.
@@ -414,6 +415,73 @@ python3 curve_it_lib/xyz2model.py curve.xyz -d 1.5 --split --preview
 python3 curve_it_lib/xyz2model.py model.stl --as mesh -s 0.5   # model-S0.5.stl
 ```
 
+**Multicolor Split...** opens `curve_it_lib/multicolor_split.py`, which turns a PDB or mmCIF model into one printable solid per colour for a multi-material printer. Each part is one chain or a group of chains, and together the part STLs tile the model's ChimeraX `molmap` surface exactly, with no gap, no overlap, and no wrong-colour slivers. This tool requires a local ChimeraX, which it runs headless, and `scipy`, `trimesh`, and `manifold3d`.
+
+The split is built so that the parts cannot leave a gap between them. One molmap of the whole and one per part are made on the same grid, 0.5 Angstrom by default, which is fine enough to resolve the colour interface. Each part gets an ownership field that equals the whole map wherever that part is densest and drops steeply across the boundary to a neighbour. Two solids contoured independently from such fields leave a void about 0.25 Angstrom wide between them, which prints as a visible groove, so the parts are peeled in order instead: each part is what is left of the whole intersected with its own field, and the last part is the remainder. Every colour boundary therefore has one side built from a field and the other as its exact complement. The contour level is scanned around molmap's own level and accepted only when every check passes: the whole and every part's field solid are closed 2-manifolds with the expected number of pieces, and the parts sum to the whole within 0.001 % with no overlap and no void. `surface dust` removes specks and fills small cavities of the whole without ever removing its largest piece or a piece that carries a part's main piece, and the exported files are read back from disk and checked again.
+
+From Curve It, the tool opens with the curved **Output PDB** when that file exists, and otherwise with the loaded input PDB. Its default output folder, `<structure stem>_molmap<resolution>_split/`, is made in the working directory, and the launcher starts the tool in that PDB's folder, so the results land beside the model. Every file starts with the same tag, `<structure stem>_molmap<resolution>_split` unless `--tag` gives another; without `--out` the tag also names the folder:
+
+```text
+<tag>_p1_chainA.stl, <tag>_p2_chainC.stl, ...   the parts, one per colour, all in one frame
+<tag>_whole.stl                                 the whole molmap, for reference; do not print it with the parts
+<tag>_report.txt / .json                        level scan, validation, printing notes, REPRODUCE command
+<tag>_preview.png / .glb                        colour previews
+<tag>_work/                                     ChimeraX jobs and logs; <tag>_work_failed/ if a run did not finish
+```
+
+Outputs are staged, and only once the report is written does a re-run with the same tag move that tag's previous set into `_previous_<timestamp>/` and then move the new set in, so the folder holds one complete set per tag and never two runs' files mixed. A run that stops with an error or is interrupted leaves the previous set in place, while one that exits with `3` replaces it like any other, so read its report before printing; other files there are never touched. The exit code is `0` when every check passes, warnings allowed, `3` when the files were exported but a check FAILED, `1` for an error, `2` for bad options, and `130` when stopped.
+
+STL units are Angstrom and slicers read them as millimetres, so the default is 1 Angstrom to 1 mm; `--scale` changes that. Import **all the part STLs at once**: in Bambu Studio this makes one object with one sub-model per part, already in register, so give each part its own filament and never move the parts apart. Lay long models flat, with `--lay-flat` or by rotating the object, since purge scales with the number of layers. The colour boundary sits about 0.1-0.2 mm into the earlier part of each pair at 1:1, because that part carries the field-built face; reorder `--parts` to choose which side of a boundary takes it. A few pinch edges after welding are normal where the complement closes to zero thickness, and slicers repair them.
+
+Before opening the window, the Curve It launcher checks for ChimeraX and the three packages, and if something is missing it says so and asks whether to open the tool anyway. Every field and checkbox in the window has a light-blue `?` beside it that opens an explanation, with an example for every entry field.
+
+```bash
+python3 curve_it_lib/multicolor_split.py MODEL.pdb                   # every chain its own colour
+python3 curve_it_lib/multicolor_split.py MODEL.pdb --parts A C       # choose and order the parts
+python3 curve_it_lib/multicolor_split.py MODEL.pdb --parts A,B C     # chains A and B share one colour
+python3 curve_it_lib/multicolor_split.py MODEL.pdb --resolution 3.7  # K is rescaled and checked
+python3 curve_it_lib/multicolor_split.py MODEL.pdb --lay-flat        # fewer layers, less purge
+python3 curve_it_lib/multicolor_split.py MODEL.pdb --gui             # the window, pre-filled
+```
+
+## DiLiuLab Palette
+
+Every tool that tells components, chains, or parts apart by colour can use the DiLiuLab figure palette instead of its own colours. The palette is the lab's nine figure colours from gr_colors (https://github.com/DiLiuLab/gr_colors), always in the lab's order: red, blue, magenta, cyan, orange, purple, green, yellow, mint green. It comes at five tint levels. T100 is the full colour, and T80, T60, T40, and T20 are the same colours mixed toward white, so T20 is nearly white and T40 and T20 can be hard to see on a white background. Each tint also has a matching neutral, black at T100 and gray below. The tools use only the nine colours: the first item is red, the second blue, and so on, starting again at red after the ninth. None of them uses the neutral.
+
+The palette is stored once, in `assets/diliulab_colors.json`, and read through `curve_it_lib/lab_colors.py`; no tool keeps its own copy of the colours. Any other script can read the JSON directly or import the reader:
+
+```python
+from curve_it_lib import lab_colors                 # plain "import lab_colors" inside curve_it_lib/
+lab_colors.lab_colors("T80")                        # ['#eb7070', '#7094eb', '#eb70db', ...] in lab order
+lab_colors.lab_named_colors("T100", neutral=True)   # [('red', '#e64c4c'), ..., ('black', '#000000')]
+```
+
+The values come from gr_colors V3.3's own formula: golden-ratio HSV hues at saturation 0.67 and value 0.90, the lab's indexes 0, 1, 3, 4, 5, 6, 7, 10, and 12, and each tint mixed toward white with gr_colors' rounding. So T100 matches the table in the gr_colors README, and every tint matches gr_colors' shipped `grcT100.clr` to `grcT20.clr` colour lists swatch for swatch. If the asset is missing or cannot be read, the reader falls back to the formula.
+
+Curve It does not depend on gr_colors. Nothing in this package imports, runs, or reads the gr_colors script: the colours live in the asset, the fallback formula is `lab_colors.py`'s own code, and the tests check both against values recorded from gr_colors V3.3. A gr_colors checkout is therefore never needed, and a later gr_colors release cannot change these colours; to adopt new lab colours, edit or regenerate the asset.
+
+```bash
+python3 curve_it_lib/lab_colors.py                # print every tint, neutral included
+python3 curve_it_lib/lab_colors.py --write-asset  # regenerate the asset from the formula
+```
+
+Every tool keeps its own colours as the default, unchanged. `--palette DiLiuLab` picks the T100 colours, and `--palette DiLiuLab-T80`, `-T60`, `-T40`, or `-T20` picks a tint. Case and the separator are ignored, so `"DiLiuLab T80"` and `diliulab80` are read the same way, and `none` or `auto` mean `default`; any other name, or a tint such as `DiLiuLab-T50`, is refused. Each tool's window has a matching palette menu, explained in the window's own help. A tool records the palette where it already records its settings, such as a report line, the JSON, SVG metadata, or a `REPRODUCE` line, but only when it is not `default`. What the palette colours in each tool:
+
+- **XYZ to 3D Model**: the GLB components and the PNG previews; the STL has no colour. `--colors` wins over `--palette`. The window's menu sits with the component swatches and refills them.
+- **SVG to XYZ**: the components in the Preview window and the `--preview` PNG. The `.xyz` files carry no colour.
+- **KnotPlot to XYZ**: a link's components in the Preview windows. A knot's single component looks the same either way, and the `.xyz` files carry no colour.
+- **View curve** (`view_xyzV3.py`): the components of a multi-component file. A single-component curve keeps its gray line with points coloured by position, and the red start and black end markers never change. In Curve It, the menu sits under **View curve** and changes only the view.
+- **Convert XYZ...** and `curve_it.py --convert`: the VECT colours. There is no separate option, because the palette's name is itself a colour value, `--convert-color DiLiuLab-T80`. The file's colour comment names the palette.
+- **Plane It**: the chain colours with `--color-by chain`. With `--color-by atom-type`, it gives each atom type its fill and line colour, unless `--style` or the window's atom-type row sets them.
+- **Multicolor Split**: the part colours of the preview PNG and GLB, the window's swatches, and each part's colour name in the log, report, and JSON. The STLs carry no colour.
+- **Local curvature/torsion**: the pop-up plot's three traces, curvature red, torsion blue, and local writhe density magenta. The CSV does not change.
+
+The other tools draw nothing in categorical colours, so they have no palette. Colour maps that run continuously along a curve, and fixed interface colours, are left as they were.
+
+```bash
+python3 curve_it_lib/xyz2model.py link.xyz -d 2.0 --preview --palette DiLiuLab-T80   # A light red, B light blue, C light magenta
+```
+
 ## Outputs
 
 - The curved PDB is written to `-o/--output-pdb`, or to `<input>_curved.pdb` if no output path is given.
@@ -444,12 +512,14 @@ PyInstaller is one common option:
 ```bash
 python3 -m pip install pyinstaller
 python3 -m PyInstaller --onefile --name curve_it --add-data "assets:assets" --add-data "curve_it_lib:curve_it_lib" curve_it.py
-python3 -m PyInstaller --onefile --name plane_it --add-data "assets:assets" --add-data "curve_it_lib/plane_itV3_8.py:curve_it_lib" plane_it.py
+python3 -m PyInstaller --onefile --name plane_it --add-data "assets:assets" --add-data "curve_it_lib/plane_itV3_8.py:curve_it_lib" --add-data "curve_it_lib/lab_colors.py:curve_it_lib" --add-data "curve_it_lib/vect_io.py:curve_it_lib" plane_it.py
 ```
 
-For a GUI-style app bundle, you can add `--windowed`. On macOS, PyInstaller's `--icon` option expects an `.icns` file, so PNG files in `assets/` are included as GUI/task-menu assets but are not required for the scripts to run. The `assets/` folder includes optional task-menu/window icons for Curve It, Plane It, and the helper tools. If the Plane It implementation file is updated later, replace `plane_itV3_8.py` in the PyInstaller command with the current `plane_itV*.py` file.
+For a GUI-style app bundle, you can add `--windowed`. On macOS, PyInstaller's `--icon` option expects an `.icns` file, so PNG files in `assets/` are included as GUI/task-menu assets but are not required for the scripts to run. The `assets/` folder includes optional task-menu/window icons for Curve It, Plane It, and the helper tools, and `diliulab_colors.json`, the DiLiuLab palette, which `lab_colors.py` recomputes from its formula if the file is missing. If the Plane It implementation file is updated later, replace `plane_itV3_8.py` in the PyInstaller command with the current `plane_itV*.py` file. `plane_it.py` loads that file by path, so PyInstaller cannot see what it imports: `lab_colors.py` and `vect_io.py` are added beside it by hand, and a Plane It built without them offers only the default palette and reads a `.vect` file as plain XYZ.
 
 The scripts check for their icons at runtime and continue normally if an icon is missing.
+
+In a one-file build there is no Python interpreter to hand a script to, so Multicolor Split's window runs each split as a child process through `curve_it --multicolor-split ...`, and Curve It forwards everything after that flag to the tool. ChimeraX stays an external program and is never bundled, and `scipy`, `trimesh`, and `manifold3d` must be importable by the Python that runs PyInstaller.
 
 ## Helper Modules
 
@@ -468,6 +538,8 @@ Supporting scripts live in `curve_it_lib/`:
 - `view_xyzV3.py`
 - `xyz2model.py`
 - `vect_io.py` (Geomview VECT reading and writing, shared by every tool above)
+- `multicolor_split.py` (Multicolor Split; reads PDB or mmCIF rather than curve files)
+- `lab_colors.py` (the DiLiuLab figure palette, read from `assets/diliulab_colors.json` and shared by every tool that offers the palette)
 
 They can still be run directly, for example:
 
@@ -483,6 +555,8 @@ python3 curve_it_lib/svg2xyz.py drawing.svg --info
 python3 curve_it_lib/view_xyzV3.py curve.xyz
 python3 curve_it_lib/view_xyzV3.py multi_component.txt --components A,C
 python3 curve_it_lib/xyz2model.py curve.xyz -d 2.0 -s 0.25
+python3 curve_it_lib/multicolor_split.py MODEL.pdb --parts A C
+python3 curve_it_lib/lab_colors.py --tint T80
 ```
 
 Every one of these accepts a Geomview VECT file wherever it accepts a curve file, and takes the closure it states rather than measuring or assuming it:

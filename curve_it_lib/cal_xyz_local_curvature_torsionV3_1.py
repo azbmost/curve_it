@@ -22,6 +22,7 @@ Example commands:
   python curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py tk_200.txt
   python curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py tk_200.txt --open --out tk_200_local.csv
   python curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py tk_200.txt --no-smooth --nsamples 1000
+  python curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py tk_200.txt --palette DiLiuLab-T80
   python curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py --example-trefoil --no-plot
 
 Notes:
@@ -33,6 +34,11 @@ Notes:
   - Local writhe density is a distribution of the Gauss writhe double integral
     along the curve. It is local only as an assigned density; each value still
     depends on all other sampled curve positions.
+  - The plot uses Matplotlib's own colours by default. --palette DiLiuLab, or
+    DiLiuLab-T80, -T60, -T40, -T20 for lighter tints, draws curvature, torsion,
+    and local writhe density in the first three DiLiuLab figure colours, red,
+    blue, and magenta, read through lab_colors.py from
+    assets/diliulab_colors.json. The CSV table does not depend on the palette.
 """
 
 import argparse
@@ -85,6 +91,22 @@ except ImportError:
 
 VECT_MISSING_MESSAGE = (
     "{} is a Geomview VECT file, which needs vect_io.py from curve_it_lib. "
+    "Make sure that file sits beside this one."
+)
+
+
+# Optional DiLiuLab plot colours.  Only a non-default --palette reaches this,
+# so a missing lab_colors.py costs that option and nothing else.
+try:
+    from . import lab_colors
+except ImportError:
+    try:
+        import lab_colors  # type: ignore[no-redef]
+    except ImportError:
+        lab_colors = None  # type: ignore[assignment]
+
+LAB_COLORS_MISSING_MESSAGE = (
+    "Palette {!r} needs lab_colors.py from curve_it_lib. "
     "Make sure that file sits beside this one."
 )
 
@@ -878,11 +900,101 @@ def print_summary(data: Dict[str, np.ndarray], output_path: str, closed: bool, s
     print("\n" + format_summary(data, output_path, closed=closed, smoothed=smoothed))
 
 
-def plot_local_geometry(data: Dict[str, np.ndarray], title: str) -> None:
+# The plotted quantities, in the order they take palette colours.
+PLOT_TRACES = ("curvature", "torsion", "local writhe density")
+
+PLOT_PALETTE_HELP_TITLE = "Plot Palette"
+PLOT_PALETTE_HELP = (
+    "Colours of the pop-up plot's three traces: curvature, torsion, and local writhe "
+    "density. The CSV table and the summary are the same whichever palette is chosen.\n\n"
+    "default: Matplotlib's own colours, unchanged. Every panel is drawn in Matplotlib's "
+    "first colour, normally blue.\n\n"
+    "DiLiuLab: the lab's nine figure colours from gr_colors, in the order red, blue, "
+    "magenta, cyan, orange, purple, green, yellow, mint green, repeating after nine. "
+    "The plot has three traces, so it uses the first three, one per quantity: curvature "
+    "red, torsion blue, local writhe density magenta. A quantity keeps its colour when "
+    "the writhe-density panel is skipped. The lab's black/gray neutral is not used; the "
+    "grid lines stay Matplotlib's light gray.\n\n"
+    "T80, T60, T40, and T20 are lighter tints of the same colours, mixed toward white. "
+    "T40 and T20 are pale and can be hard to see on the plot's white background.\n\n"
+    "The colours are read from assets/diliulab_colors.json.\n\n"
+    "Command line example: --palette DiLiuLab-T80"
+)
+
+
+def check_plot_palette(palette: Optional[str]) -> str:
+    """
+    Return "default" or "DiLiuLab T.." for a --palette value.
+
+    Raise ValueError for an unknown palette, or for a DiLiuLab palette when
+    lab_colors.py is missing.
+    """
+    if lab_colors is None:
+        if palette is None or str(palette).strip().lower() in ("", "default", "none", "auto"):
+            return "default"
+        raise ValueError(LAB_COLORS_MISSING_MESSAGE.format(palette))
+    return lab_colors.check_palette(palette)
+
+
+def palette_argument(value: str) -> str:
+    """argparse type for --palette: an unknown palette is a usage error."""
+    try:
+        return check_plot_palette(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+
+
+def plot_trace_colours(palette: Optional[str] = "default") -> Optional[List[str]]:
+    """
+    Return one colour per plotted quantity, in PLOT_TRACES order.
+
+    The default palette returns None, so the plot keeps Matplotlib's own
+    colour for every trace. A DiLiuLab palette gives each quantity its own lab
+    colour in lab order, curvature red, torsion blue, local writhe density
+    magenta, so the stacked panels read as three different quantities. The
+    colour stays with the quantity: torsion is blue whether or not the
+    writhe-density panel is drawn.
+    """
+    label = check_plot_palette(palette)
+    if label == "default":
+        return None
+    colours = lab_colors.resolve_palette(label, ())
+    return [colours[i % len(colours)] for i in range(len(PLOT_TRACES))]
+
+
+def plot_palette_hint(palette: Optional[str]) -> str:
+    """
+    Return the short GUI hint naming the colour each plotted quantity gets.
+
+    It is kept short enough to fit beside the palette menu without reaching
+    the Browse column.
+    """
+    label = check_plot_palette(palette)
+    if label == "default":
+        return "default = Matplotlib's own colours"
+    tint = label.split()[-1]
+    names = [name for name, _code in lab_colors.lab_named_colors(tint)]
+    short_traces = ("curvature", "torsion", "writhe")
+    hint = ", ".join(
+        "{} {}".format(trace, names[i % len(names)]) for i, trace in enumerate(short_traces)
+    )
+    if tint in ("T40", "T20"):
+        hint += " (pale)"
+    return hint
+
+
+def plot_local_geometry(data: Dict[str, np.ndarray], title: str, palette: Optional[str] = "default") -> None:
     """
     Plot curvature, torsion, and local writhe density in a pop-up window.
     """
     import matplotlib.pyplot as plt
+
+    colours = plot_trace_colours(palette)
+
+    def trace_style(index: int) -> Dict[str, str]:
+        # No colour argument for the default palette, so Matplotlib draws the
+        # plot exactly as it did before --palette existed.
+        return {} if colours is None else {"color": colours[index]}
 
     has_writhe_density = "local_writhe_density" in data and np.any(np.isfinite(data["local_writhe_density"]))
     if has_writhe_density:
@@ -890,11 +1002,11 @@ def plot_local_geometry(data: Dict[str, np.ndarray], title: str) -> None:
     else:
         fig, axes = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
 
-    axes[0].plot(data["u"], data["curvature"])
+    axes[0].plot(data["u"], data["curvature"], **trace_style(0))
     axes[0].set_ylabel("curvature")
     axes[0].grid(True, alpha=0.3)
 
-    axes[1].plot(data["u"], data["torsion"])
+    axes[1].plot(data["u"], data["torsion"], **trace_style(1))
     axes[1].set_ylabel("torsion")
     finite_torsion = data["torsion"][np.isfinite(data["torsion"])]
     if len(finite_torsion) >= 10:
@@ -905,7 +1017,7 @@ def plot_local_geometry(data: Dict[str, np.ndarray], title: str) -> None:
     axes[1].grid(True, alpha=0.3)
 
     if has_writhe_density:
-        axes[2].plot(data["u"], data["local_writhe_density"])
+        axes[2].plot(data["u"], data["local_writhe_density"], **trace_style(2))
         axes[2].set_ylabel("local writhe density")
         axes[2].set_xlabel("normalized position along curve, 0=start, 1=end")
         axes[2].grid(True, alpha=0.3)
@@ -930,10 +1042,13 @@ def run_calculation(
     calculate_writhe_density: bool = True,
     torsion_rel_curvature_cutoff: float = 0.05,
     torsion_min_curvature: Optional[float] = None,
+    palette: str = "default",
     log_func: Optional[Callable[[str], None]] = None,
 ) -> Tuple[Dict[str, np.ndarray], str, str]:
     """
     Run the full calculation and return data, output path, and summary text.
+
+    palette colours the pop-up plot only; the CSV table does not depend on it.
     """
     if log_func is None:
         def log_func(message: str) -> None:
@@ -948,6 +1063,7 @@ def run_calculation(
         raise ValueError("nsamples must be at least 4.")
     if polyorder < 0:
         raise ValueError("polyorder must be non-negative.")
+    palette = check_plot_palette(palette)
 
     output_path = output_path.strip() if output_path else output_default_name(filename)
 
@@ -955,6 +1071,9 @@ def run_calculation(
     log_func("[INFO] Input format: {}".format(file_format))
     log_func("[INFO] Curve type: {}".format("closed" if closed else "open"))
     log_func("[INFO] Smoothing: {}".format("on" if smooth else "off"))
+    if show_plot and palette != "default":
+        # Only a chosen palette is logged, so the default log is unchanged.
+        log_func("[INFO] Plot palette: {}".format(palette))
 
     points = read_xyz_like_raw(filename, file_format=file_format)
     if points.ndim != 2 or points.shape[1] != 3:
@@ -1006,7 +1125,7 @@ def run_calculation(
 
     if show_plot:
         plot_title = os.path.basename(filename)
-        plot_local_geometry(data, plot_title)
+        plot_local_geometry(data, plot_title, palette=palette)
 
     return data, output_path, summary_text
 
@@ -1115,6 +1234,19 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Do not show the pop-up plot window.",
     )
     parser.add_argument(
+        "--palette",
+        type=palette_argument,
+        default="default",
+        help=(
+            "Colours of the pop-up plot: default (Matplotlib's own colours, unchanged) or "
+            "DiLiuLab, the lab's figure colours from gr_colors, optionally at a lighter tint: "
+            "DiLiuLab-T80, -T60, -T40, or -T20 (T40 and T20 are pale on white). DiLiuLab draws "
+            "curvature, torsion, and local writhe density in the first three lab colours, red, "
+            "blue, and magenta, read from assets/diliulab_colors.json. The CSV table does not "
+            "change. Default: default."
+        ),
+    )
+    parser.add_argument(
         "--no-writhe-density",
         action="store_true",
         help="Skip the O(N^2) local writhe-density calculation.",
@@ -1152,6 +1284,7 @@ def run_cli(args: argparse.Namespace) -> None:
             calculate_writhe_density=(not args.no_writhe_density),
             torsion_rel_curvature_cutoff=args.torsion_rel_curvature_cutoff,
             torsion_min_curvature=args.torsion_min_curvature,
+            palette=args.palette,
         )
     except Exception as exc:
         raise SystemExit(str(exc))
@@ -1167,7 +1300,9 @@ def launch_gui() -> None:
 
     root = tk.Tk()
     root.title("Local Curvature, Torsion, and Writhe Density")
-    root.geometry("860x700")
+    # 880x720 rather than 860x700 since the Plot palette row: the log keeps the
+    # height it asks for, and the pale tints' longer hint still has room.
+    root.geometry("880x720")
     set_optional_window_icon(root, tk, ["local_curvature_icon.png", "icon.png"], "_local_curvature_icon_image")
 
     input_var = tk.StringVar()
@@ -1182,6 +1317,26 @@ def launch_gui() -> None:
     writhe_density_var = tk.BooleanVar(value=True)
     torsion_rel_cutoff_var = tk.StringVar(value="0.05")
     torsion_min_curv_var = tk.StringVar(value="")
+    palette_var = tk.StringVar(value="default")
+    palette_hint_var = tk.StringVar(value=plot_palette_hint("default"))
+    palette_choices = lab_colors.palette_choices("default") if lab_colors is not None else ["default"]
+
+    def help_button(parent, title: str, body: str):
+        return tk.Button(
+            parent,
+            text="?",
+            width=2,
+            bg="#cfefff",
+            activebackground="#aee6ff",
+            relief=tk.RAISED,
+            borderwidth=1,
+            command=lambda: messagebox.showinfo(title, body, parent=root),
+        )
+
+    def update_palette_hint(*_args) -> None:
+        palette_hint_var.set(plot_palette_hint(palette_var.get()))
+
+    palette_var.trace_add("write", update_palette_hint)
 
     def append_log(message: str) -> None:
         log_text.configure(state="normal")
@@ -1274,6 +1429,7 @@ def launch_gui() -> None:
                 calculate_writhe_density=writhe_density_var.get(),
                 torsion_rel_curvature_cutoff=torsion_rel_cutoff,
                 torsion_min_curvature=torsion_min_curvature,
+                palette=palette_var.get(),
                 log_func=append_log,
             )
             messagebox.showinfo("Finished", "Calculation finished.\n\nOutput:\n{}".format(output_path))
@@ -1286,7 +1442,7 @@ def launch_gui() -> None:
 
     for col in range(3):
         main_frame.columnconfigure(col, weight=1 if col == 1 else 0)
-    main_frame.rowconfigure(12, weight=1)
+    main_frame.rowconfigure(13, weight=1)
 
     ttk.Label(main_frame, text="Input XYZ/coordinate file:").grid(row=0, column=0, sticky="w", pady=4)
     ttk.Entry(main_frame, textvariable=input_var).grid(row=0, column=1, sticky="ew", padx=6, pady=4)
@@ -1331,32 +1487,45 @@ def launch_gui() -> None:
         row=8, column=1, sticky="w", padx=6, pady=4
     )
 
+    ttk.Label(main_frame, text="Plot palette:").grid(row=9, column=0, sticky="w", pady=4)
+    palette_frame = ttk.Frame(main_frame)
+    palette_frame.grid(row=9, column=1, sticky="w", padx=6, pady=4)
+    ttk.Combobox(
+        palette_frame,
+        textvariable=palette_var,
+        values=palette_choices,
+        state="readonly",
+        width=15,
+    ).pack(side="left")
+    help_button(palette_frame, PLOT_PALETTE_HELP_TITLE, PLOT_PALETTE_HELP).pack(side="left", padx=(6, 0))
+    ttk.Label(palette_frame, textvariable=palette_hint_var).pack(side="left", padx=(8, 0))
+
     ttk.Checkbutton(
         main_frame,
         text="Calculate local writhe density (O(N^2))",
         variable=writhe_density_var,
-    ).grid(row=9, column=1, sticky="w", padx=6, pady=4)
+    ).grid(row=10, column=1, sticky="w", padx=6, pady=4)
 
-    ttk.Label(main_frame, text="Torsion rel. curvature cutoff:").grid(row=10, column=0, sticky="w", pady=4)
+    ttk.Label(main_frame, text="Torsion rel. curvature cutoff:").grid(row=11, column=0, sticky="w", pady=4)
     torsion_frame = ttk.Frame(main_frame)
-    torsion_frame.grid(row=10, column=1, sticky="w", padx=6, pady=4)
+    torsion_frame.grid(row=11, column=1, sticky="w", padx=6, pady=4)
     ttk.Entry(torsion_frame, textvariable=torsion_rel_cutoff_var, width=12).pack(side="left")
     ttk.Label(torsion_frame, text="default 0.05; masks near-zero curvature").pack(side="left", padx=(8, 0))
 
-    ttk.Label(main_frame, text="Torsion min curvature:").grid(row=11, column=0, sticky="w", pady=4)
+    ttk.Label(main_frame, text="Torsion min curvature:").grid(row=12, column=0, sticky="w", pady=4)
     torsion_min_frame = ttk.Frame(main_frame)
-    torsion_min_frame.grid(row=11, column=1, sticky="w", padx=6, pady=4)
+    torsion_min_frame.grid(row=12, column=1, sticky="w", padx=6, pady=4)
     ttk.Entry(torsion_min_frame, textvariable=torsion_min_curv_var, width=12).pack(side="left")
     ttk.Label(torsion_min_frame, text="blank = use relative cutoff").pack(side="left", padx=(8, 0))
 
     log_text = tk.Text(main_frame, height=16, wrap="word", state="disabled")
-    log_text.grid(row=12, column=0, columnspan=3, sticky="nsew", pady=(10, 6))
+    log_text.grid(row=13, column=0, columnspan=3, sticky="nsew", pady=(10, 6))
     log_scroll = ttk.Scrollbar(main_frame, orient="vertical", command=log_text.yview)
-    log_scroll.grid(row=12, column=3, sticky="ns", pady=(10, 6))
+    log_scroll.grid(row=13, column=3, sticky="ns", pady=(10, 6))
     log_text.configure(yscrollcommand=log_scroll.set)
 
     button_frame = ttk.Frame(main_frame)
-    button_frame.grid(row=13, column=0, columnspan=3, sticky="e", pady=4)
+    button_frame.grid(row=14, column=0, columnspan=3, sticky="e", pady=4)
     ttk.Button(
         button_frame,
         text="Load trefoil example",

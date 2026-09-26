@@ -27,6 +27,7 @@ plotted in the usual mathematical orientation.
     python3 svg2xyz.py drawing.svg
     python3 svg2xyz.py drawing.svg -s 0.25 --points 400
     python3 svg2xyz.py drawing.svg --exclude xy-plane,scale-bar
+    python3 svg2xyz.py drawing.svg --preview --palette DiLiuLab-T80
 
 Requires numpy; matplotlib is needed only for --preview.  Run with no
 arguments, or with --gui, for the graphical interface.
@@ -71,7 +72,17 @@ except ImportError as exc:                     # pragma: no cover
         "beside this one. (%s)" % exc
     )
 
-__version__ = "1.1"
+# The DiLiuLab palette is optional: without lab_colors.py the preview keeps
+# its own colours and --palette accepts only 'default'.
+try:
+    from . import lab_colors
+except ImportError:
+    try:
+        import lab_colors  # type: ignore[no-redef]
+    except ImportError:
+        lab_colors = None  # type: ignore[assignment]
+
+__version__ = "1.2"
 
 TOOL_NAME = "SVG to XYZ"
 
@@ -421,13 +432,37 @@ HELP = {
         "The comment header records where every component came from. It starts "
         "with '#', which all of the readers skip, so it is safe to leave on.",
         "drawing.xyz\n"
-        "    # SVG to XYZ v1.0 -- 2 component(s) from drawing.svg\n"
+        "    # " + TOOL_NAME + " v" + __version__
+        + " -- 2 component(s) from drawing.svg\n"
         "    # component A: path id=star layer=Layer_1 closed=yes points=214\n"
         "    318.420000 -282.440000 0.000000\n"
         "    ...\n"
         "    <blank line>\n"
         "    # component B: ellipse class=st0 layer=Layer_2 closed=yes ...\n"
         "    446.330000 -482.880000 0.000000"),
+
+    "palette": (
+        "Preview palette",
+        "The colours given to the components in the preview: the Preview "
+        "window and the PNG preview written beside the XYZ file. Each "
+        "component gets one colour, in listing order A, B, C, and the dot "
+        "marking its start point is the same colour.\n\n"
+        "default -- this tool's own 15 colours, unchanged.\n\n"
+        "DiLiuLab -- the lab's nine figure colours from gr_colors, in the "
+        "order red, blue, magenta, cyan, orange, purple, green, yellow, mint "
+        "green. A tenth component starts again at red. T80, T60, T40 and T20 "
+        "are the same hues mixed toward white; T40 and T20 are pale and can "
+        "be hard to see on the white plot. The lab's black/gray neutral is "
+        "not used, because every curve here is a component of its own.\n\n"
+        "The colours are read from assets/diliulab_colors.json. The XYZ "
+        "files carry no colour, so the palette never changes what is "
+        "written to them.",
+        "three components, A B C\n"
+        "    default         red, green, blue\n"
+        "    DiLiuLab        red, blue, magenta\n"
+        "    DiLiuLab T40    the same three, pale\n"
+        "\n"
+        "python3 svg2xyz.py in.svg --preview --palette DiLiuLab-T80"),
 }
 
 
@@ -2075,13 +2110,48 @@ def describe(curves, info=None, z=0.0):
     return "\n".join(lines)
 
 
-def render_preview(curves, path=None, colors=None, z=0.0):
-    """A flat xy plot of the curves, enough to confirm the conversion."""
+def preview_palette(spec):
+    """Validate a --palette value: returns "default" or "DiLiuLab T..".
+
+    Without lab_colors.py only "default" exists, and asking for the lab
+    palette is an error rather than a silent fallback.
+    """
+    if lab_colors is not None:
+        return lab_colors.check_palette(spec)
+    if spec is None or str(spec).strip().lower() in ("", "default", "none", "auto"):
+        return "default"
+    raise ValueError("palette %r needs curve_it_lib/lab_colors.py, which is missing; "
+                     "only 'default' is available" % spec)
+
+
+def preview_colors(palette="default"):
+    """The component colours of the preview for a --palette value."""
+    palette = preview_palette(palette)
+    if palette == "default":
+        return list(DEFAULT_COLORS)
+    return lab_colors.resolve_palette(palette, DEFAULT_COLORS)
+
+
+def _palette_arg(value):
+    """argparse type= for --palette: a bad value becomes a usage error."""
+    try:
+        return preview_palette(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+
+
+def render_preview(curves, path=None, colors=None, z=0.0, palette="default"):
+    """A flat xy plot of the curves, enough to confirm the conversion.
+
+    `palette` is a --palette value; an explicit `colors` list wins over it.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    colors = colors or DEFAULT_COLORS
+    palette = preview_palette(palette)
+    named = None if colors or palette == "default" else palette
+    colors = colors or preview_colors(palette)
     if path is None:
         import tempfile
         path = os.path.join(tempfile.gettempdir(), "svg2xyz_preview.png")
@@ -2100,7 +2170,11 @@ def render_preview(curves, path=None, colors=None, z=0.0):
     ax.grid(alpha=0.3)
     ax.set_xlabel("x")
     ax.set_ylabel("y")
-    ax.set_title("svg2xyz -- %d component(s) at z = %g" % (len(curves), z), fontsize=10)
+    title = "svg2xyz -- %d component(s) at z = %g" % (len(curves), z)
+    if named:
+        # Named only off the default, so a default preview is unchanged.
+        title += ", %s palette" % named
+    ax.set_title(title, fontsize=10)
     if len(curves) <= 14:
         ax.legend(fontsize=8, loc="best")
     fig.tight_layout()
@@ -2195,6 +2269,16 @@ def build_parser():
     p.add_argument("--no-comments", action="store_true",
                    help="omit the '#' header naming each component's source")
     p.add_argument("--preview", action="store_true", help="write a PNG preview")
+    p.add_argument("--palette", type=_palette_arg, default="default",
+                   help="colours of the components in the --preview PNG: "
+                        "default, this tool's own 15 colours and the default, "
+                        "or DiLiuLab, the lab's nine figure colours from "
+                        "gr_colors (red, blue, magenta, cyan, orange, purple, "
+                        "green, yellow, mint green, repeating after nine), "
+                        "optionally at a lighter tint: DiLiuLab-T80, -T60, "
+                        "-T40 or -T20 (T40 and T20 are pale on the white "
+                        "plot). Read from assets/diliulab_colors.json. The "
+                        ".xyz files carry no colour and do not change")
     p.add_argument("--info", action="store_true",
                    help="describe the drawing and exit without writing")
     return p
@@ -2254,6 +2338,9 @@ def run_cli(args):
     parse_spacing_setting(args.spacing)
     if args.fit_size is not None and args.scale != 1.0:
         print("  note: --fit-size overrides --scale")
+    palette = preview_palette(getattr(args, "palette", "default"))
+    if palette != "default" and not args.preview:
+        print("  note: --palette colours only the --preview PNG, which was not asked for")
 
     curves, info = _convert(args)
     print("Loaded %s" % info["path"])
@@ -2274,7 +2361,8 @@ def run_cli(args):
         written += write_xyz_split(prefix, curves, args.z, args.precision,
                                    not args.no_comments, info["path"])
     if args.preview:
-        written.append(render_preview(curves, prefix + "_preview.png", z=args.z))
+        written.append(render_preview(curves, prefix + "_preview.png", z=args.z,
+                                      palette=palette))
     print("\nWROTE")
     for item in written:
         print("  %s" % item)
@@ -2284,7 +2372,7 @@ def run_cli(args):
 # --------------------------------------------------------------------------
 # GUI
 # --------------------------------------------------------------------------
-def run_gui(initial_file=None):
+def run_gui(initial_file=None, palette="default"):
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
 
@@ -2320,6 +2408,7 @@ def run_gui(initial_file=None):
         "split":     tk.BooleanVar(value=False),
         "comments":  tk.BooleanVar(value=True),
         "png":       tk.BooleanVar(value=False),
+        "palette":   tk.StringVar(value=preview_palette(palette)),
     }
 
     # ---- "?" help chips ---------------------------------------------------
@@ -2495,9 +2584,25 @@ def run_gui(initial_file=None):
     # right pane ------------------------------------------------------------
     bar = ttk.Frame(right)
     bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-    ttk.Button(bar, text="Reload", command=lambda: do_load()).pack(side="left")
-    ttk.Button(bar, text="Preview", command=lambda: do_preview()).pack(side="left", padx=6)
-    ttk.Button(bar, text="Write XYZ", command=lambda: do_write()).pack(side="left")
+    buttons = ttk.Frame(bar)
+    buttons.pack(side="top", anchor="w")
+    ttk.Button(buttons, text="Reload", command=lambda: do_load()).pack(side="left")
+    ttk.Button(buttons, text="Preview", command=lambda: do_preview()).pack(side="left", padx=6)
+    ttk.Button(buttons, text="Write XYZ", command=lambda: do_write()).pack(side="left")
+    # Under the buttons it acts on, Preview and the PNG that Write XYZ adds
+    # when PNG preview is ticked; the XYZ itself has no colour.  Up here it
+    # adds no height to the left pane, which sets the window's height, and
+    # stays in view when a short screen cuts the bottom of that pane off.  On
+    # a line of its own it also stays in view in a window narrowed to its
+    # minimum width, which the button line alone was sized for.
+    palettes = (lab_colors.palette_choices("default") if lab_colors is not None
+                else ["default"])
+    palette_row = ttk.Frame(bar)
+    palette_row.pack(side="top", anchor="w", pady=(4, 0))
+    ttk.Label(palette_row, text="palette").pack(side="left")
+    ttk.Combobox(palette_row, textvariable=V["palette"], width=14, state="readonly",
+                 values=palettes).pack(side="left", padx=(4, 0))
+    chip(palette_row, "palette").pack(side="left", padx=(6, 0))
     txt = tk.Text(right, wrap="none", font=("Menlo", 11), height=26)
     txt.grid(row=1, column=0, sticky="nsew")
     sb = ttk.Scrollbar(right, orient="vertical", command=txt.yview)
@@ -2588,7 +2693,8 @@ def run_gui(initial_file=None):
         if not state["curves"]:
             return
         try:
-            png = render_preview(state["curves"], None, z=fnum("z", 0.0))
+            png = render_preview(state["curves"], None, z=fnum("z", 0.0),
+                                 palette=V["palette"].get())
             top = tk.Toplevel(root)
             top.title("Preview")
             try:
@@ -2625,7 +2731,8 @@ def run_gui(initial_file=None):
                 written += write_xyz_split(prefix, curves, z, DEFAULT_PRECISION,
                                            comments, state["path"])
             if V["png"].get():
-                written.append(render_preview(curves, prefix + "_preview.png", z=z))
+                written.append(render_preview(curves, prefix + "_preview.png", z=z,
+                                              palette=V["palette"].get()))
             report = describe(curves, state["info"], z)
             report += "\n\nWROTE\n" + "\n".join("  " + w for w in written)
             report += ("\n\nLoad %s in Curve It as the Curve XYZ/txt input.\n"
@@ -2674,7 +2781,7 @@ def main(argv=None):
         return run_gui()
     args = parser.parse_args(argv)
     if args.gui:
-        return run_gui(args.svg)
+        return run_gui(args.svg, args.palette)
     if not args.svg:
         parser.error("an input .svg file is required (or use --gui)")
     try:

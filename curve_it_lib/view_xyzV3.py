@@ -30,6 +30,7 @@ Example:
   python curve_it_lib/view_xyzV3.py curve.xyz --molecule
   python curve_it_lib/view_xyzV3.py curve.xyz --format auto --projections
   python curve_it_lib/view_xyzV3.py multi_component.txt --components A,C
+  python curve_it_lib/view_xyzV3.py multi_component.txt --palette DiLiuLab
 """
 
 import argparse
@@ -55,6 +56,36 @@ except ImportError:
 VECT_MISSING_MESSAGE = (
     "{} is a Geomview VECT file, which needs vect_io.py from curve_it_lib. "
     "Make sure that file sits beside this one."
+)
+
+# Optional DiLiuLab palette for the component colors.  Only --palette reads
+# it, so a missing lab_colors.py costs that one option; the default tab10
+# colors need nothing.
+try:
+    from . import lab_colors
+except ImportError:
+    try:
+        import lab_colors  # type: ignore[no-redef]
+    except ImportError:
+        lab_colors = None  # type: ignore[assignment]
+
+PALETTE_MISSING_MESSAGE = (
+    "palette {!r} needs lab_colors.py from curve_it_lib; only the default "
+    "palette is available without it."
+)
+
+PALETTE_HELP = (
+    "Component colors for a multi-component file: default (matplotlib's "
+    "tab10, unchanged) or DiLiuLab, the lab's nine figure colors from "
+    "gr_colors in the order red, blue, magenta, cyan, orange, purple, green, "
+    "yellow, mint green, repeating after nine. DiLiuLab-T80, -T60, -T40 or "
+    "-T20 are lighter tints mixed toward white; T40 and T20 are pale and can "
+    "be hard to see on the white background. The lab's gray/black neutral is "
+    "not used. Colors are read from assets/diliulab_colors.json. The red "
+    "start and black end markers are kept, and a single-component file keeps "
+    "its gray line with points colored by position (viridis), as does "
+    "--projections, since neither is a per-component color. Example: "
+    "--palette DiLiuLab-T80 draws A light red, B light blue, C light magenta."
 )
 
 
@@ -507,16 +538,54 @@ def plot_curve(points: np.ndarray, closed: bool = True) -> None:
     plt.show()
 
 
+def check_palette(spec: Optional[str]) -> str:
+    """Validate a --palette value: "default" or "DiLiuLab T80" and so on.
+
+    Raises ValueError for an unknown palette, and for any palette but the
+    default when lab_colors.py is missing.
+    """
+    if lab_colors is not None:
+        return lab_colors.check_palette(spec)
+    if spec is None or str(spec).strip().lower() in ("", "default", "none", "auto"):
+        return "default"
+    raise ValueError(PALETTE_MISSING_MESSAGE.format(spec))
+
+
+def palette_colors(spec: Optional[str]) -> Optional[List[str]]:
+    """The component colors a palette name stands for.
+
+    None for the default palette, which plot_curve_components reads as its
+    own tab10; otherwise the DiLiuLab colors at the tint the name asks for.
+    """
+    label = check_palette(spec)
+    if label == "default":
+        return None
+    return lab_colors.lab_colors(label.split()[-1])
+
+
+def _palette_argument(value: str) -> str:
+    """argparse type for --palette: a bad palette is a usage error."""
+    try:
+        return check_palette(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+
+
 def plot_curve_components(
     components: List[np.ndarray],
     selected_indices: Optional[List[int]] = None,
     closed: bool = True,
+    colors: Optional[List[str]] = None,
 ) -> None:
     """
     Plot multiple curve components with checkboxes and quick all/selected buttons.
 
     selected_indices controls which components are visible when the window opens
     and which components the Selected button restores.
+
+    colors is a list of matplotlib color strings, used in turn and repeated
+    when there are more components than colors; None (or an empty list)
+    keeps matplotlib's tab10.  The start and end markers stay red and black.
     """
     clean_components = [
         np.asarray(component, dtype=float)
@@ -541,13 +610,17 @@ def plot_curve_components(
     fig.subplots_adjust(left=0.24, right=0.96, top=0.92, bottom=0.08)
 
     color_map = plt.get_cmap("tab10")
+    palette = list(colors) if colors else None
     artists_by_component = []
     labels = []
 
     for i, points in enumerate(clean_components):
         label = "{} ({} pts)".format(component_label(i), points.shape[0])
         labels.append(label)
-        color = color_map(i % 10)
+        if palette is None:
+            color = color_map(i % 10)
+        else:
+            color = palette[i % len(palette)]
         visible = i in selected_set
         artists = []
 
@@ -745,6 +818,12 @@ def parse_args() -> argparse.Namespace:
               "blank-line-separated in a coordinate file and are the polylines "
               "of a Geomview VECT file."),
     )
+    parser.add_argument(
+        "--palette",
+        type=_palette_argument,
+        default="default",
+        help=PALETTE_HELP,
+    )
     return parser.parse_args()
 
 
@@ -790,9 +869,15 @@ def main() -> None:
         selected = ",".join(component_label(i) for i in selected_indices)
         print("[INFO] Loaded {} component(s): {}".format(len(components), summary))
         print("[INFO] Showing selected component(s): {} ({} points).".format(selected, len(points)))
-        plot_curve_components(components, selected_indices=selected_indices, closed=args.closed)
+        if args.palette != "default":
+            print("[INFO] Component colors: {} palette.".format(args.palette))
+        plot_curve_components(components, selected_indices=selected_indices, closed=args.closed,
+                              colors=palette_colors(args.palette))
     else:
         print("[INFO] Loaded {} points.".format(len(points)))
+        if args.palette != "default":
+            print("[INFO] --palette colors the components of a multi-component file; "
+                  "one component keeps its gray line and points colored by position.")
         plot_curve(points, closed=args.closed)
 
     if args.projections:

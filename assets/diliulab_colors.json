@@ -1,0 +1,105 @@
+{
+  "name": "DiLiuLab",
+  "description": "The nine DiLiuLab figure colours and their tint-matched neutral at the lab's five tint levels.",
+  "source": "gr_colors V3.3, https://github.com/DiLiuLab/gr_colors: golden-ratio HSV, hue_i = i * 0.618033988749895 mod 1, S 0.67, V 0.90, H start 0; indexes 0 1 3 4 5 6 7 10 12; tint T mixes toward white as round(T * c + (1 - T) * 255); the neutral is black mixed the same way",
+  "tints": [
+    "T100",
+    "T80",
+    "T60",
+    "T40",
+    "T20"
+  ],
+  "default_tint": "T100",
+  "colors": [
+    {
+      "index": 0,
+      "name": "red",
+      "T100": "#e64c4c",
+      "T80": "#eb7070",
+      "T60": "#f09494",
+      "T40": "#f5b7b7",
+      "T20": "#fadbdb"
+    },
+    {
+      "index": 1,
+      "name": "blue",
+      "T100": "#4c79e6",
+      "T80": "#7094eb",
+      "T60": "#94aff0",
+      "T40": "#b7c9f5",
+      "T20": "#dbe4fa"
+    },
+    {
+      "index": 3,
+      "name": "magenta",
+      "T100": "#e64cd2",
+      "T80": "#eb70db",
+      "T60": "#f094e4",
+      "T40": "#f5b7ed",
+      "T20": "#fadbf6"
+    },
+    {
+      "index": 4,
+      "name": "cyan",
+      "T100": "#4ce6cc",
+      "T80": "#70ebd6",
+      "T60": "#94f0e0",
+      "T40": "#b7f5eb",
+      "T20": "#dbfaf5"
+    },
+    {
+      "index": 5,
+      "name": "orange",
+      "T100": "#e69f4c",
+      "T80": "#ebb270",
+      "T60": "#f0c594",
+      "T40": "#f5d9b7",
+      "T20": "#faecdb"
+    },
+    {
+      "index": 6,
+      "name": "purple",
+      "T100": "#724ce6",
+      "T80": "#8e70eb",
+      "T60": "#aa94f0",
+      "T40": "#c7b7f5",
+      "T20": "#e3dbfa"
+    },
+    {
+      "index": 7,
+      "name": "green",
+      "T100": "#52e64c",
+      "T80": "#75eb70",
+      "T60": "#97f094",
+      "T40": "#baf5b7",
+      "T20": "#dcfadb"
+    },
+    {
+      "index": 10,
+      "name": "yellow",
+      "T100": "#d9e64c",
+      "T80": "#e1eb70",
+      "T60": "#e8f094",
+      "T40": "#f0f5b7",
+      "T20": "#f7fadb"
+    },
+    {
+      "index": 12,
+      "name": "mint green",
+      "T100": "#4ce698",
+      "T80": "#70ebad",
+      "T60": "#94f0c1",
+      "T40": "#b7f5d6",
+      "T20": "#dbfaea"
+    }
+  ],
+  "neutral": {
+    "index": "K",
+    "name": "neutral",
+    "T100": "#000000",
+    "T80": "#333333",
+    "T60": "#666666",
+    "T40": "#999999",
+    "T20": "#cccccc"
+  }
+}

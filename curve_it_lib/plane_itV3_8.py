@@ -32,6 +32,7 @@ Examples:
   python plane_it.py input.pdb --atom-type P --draw-lines --closed-chains A,H
   python plane_it.py input.pdb --atom-type P --projection-mode current-xy
   python plane_it.py input.pdb --atom-type P --color-by chain
+  python plane_it.py input.pdb --atom-type P --color-by chain --palette DiLiuLab-T80
   python plane_it.py input.pdb --atom-type P --draw-lines --depth-order-lines --line-underlay
   python plane_it.py input.pdb --atom-type P --style "P draw_lines=true extend_3prime=true"
   python plane_it.py input.pdb --atom-type P --flip-about-y --write-projection-basis
@@ -89,13 +90,32 @@ import numpy as np
 # Optional Geomview VECT support.  VECT is the one coordinate format that
 # states per component whether it is a closed loop, which is exactly what
 # --closed-chains needs and what a PDB gets from its LINK records.
+# plane_it.py loads this file by path, so the package import comes last.
 try:
     from . import vect_io
 except ImportError:
     try:
         import vect_io  # type: ignore[no-redef]
     except ImportError:
-        vect_io = None  # type: ignore[assignment]
+        try:
+            from curve_it_lib import vect_io  # type: ignore[no-redef]
+        except ImportError:
+            vect_io = None  # type: ignore[assignment]
+
+# Optional DiLiuLab palette for --palette; lab_colors.py reads it from
+# assets/diliulab_colors.json.  plane_it.py loads this file by path, with the
+# repository rather than curve_it_lib on sys.path, so the package import is
+# tried last.  Without lab_colors only the default palette is offered.
+try:
+    from . import lab_colors
+except ImportError:
+    try:
+        import lab_colors  # type: ignore[no-redef]
+    except ImportError:
+        try:
+            from curve_it_lib import lab_colors  # type: ignore[no-redef]
+        except ImportError:
+            lab_colors = None  # type: ignore[assignment]
 
 
 TOOL_NAME = "Plane It"
@@ -126,6 +146,7 @@ TWO_LETTER_ELEMENTS = {
 DEFAULT_COLOR_SATURATION = 0.67
 DEFAULT_COLOR_VALUE = 0.90
 GOLDEN_RATIO_CONJUGATE = 0.618033988749895
+DEFAULT_PALETTE = "default"
 XY_PLANE_MARGIN_FRACTION = 0.08
 DEFAULT_SCALE_BAR_LENGTH = 10.0
 DEFAULT_SCALE_BAR_UNIT_LABEL = "\u00c5"
@@ -964,6 +985,52 @@ def color_for_index(index: int) -> str:
     return "#{0:02x}{1:02x}{2:02x}".format(int(red * 255), int(green * 255), int(blue * 255))
 
 
+def normalize_palette_name(value: object) -> str:
+    """Return "default" or the DiLiuLab label, e.g. "DiLiuLab T80", that a --palette value names."""
+    if lab_colors is not None:
+        return lab_colors.check_palette(value)
+    if value is None or str(value).strip().lower() in {"", "default", "none", "auto"}:
+        return DEFAULT_PALETTE
+    raise ValueError(
+        "palette {0!r} needs lab_colors.py from curve_it_lib, which could not be imported; "
+        "only the default palette is available".format(value)
+    )
+
+
+def argparse_palette(value: str) -> str:
+    try:
+        return normalize_palette_name(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def palette_from_args(args: argparse.Namespace) -> str:
+    return normalize_palette_name(getattr(args, "palette", DEFAULT_PALETTE))
+
+
+def palette_choices() -> List[str]:
+    if lab_colors is None:
+        return [DEFAULT_PALETTE]
+    return lab_colors.palette_choices(DEFAULT_PALETTE)
+
+
+def palette_colors(palette: str) -> List[str]:
+    """The DiLiuLab colors a palette names, in lab order; empty for the default palette."""
+    palette = normalize_palette_name(palette)
+    if palette == DEFAULT_PALETTE:
+        return []
+    return lab_colors.resolve_palette(palette, [])
+
+
+def palette_color_for_index(index: int, palette: str = DEFAULT_PALETTE) -> str:
+    """Categorical color number index: golden-ratio HSV for the default palette,
+    otherwise the palette's colors in lab order, repeating after the last one."""
+    colors = palette_colors(palette)
+    if not colors:
+        return color_for_index(index)
+    return colors[index % len(colors)]
+
+
 def parse_bool_text(value: str) -> bool:
     text = value.strip().lower()
     if text in {"1", "true", "t", "yes", "y", "on"}:
@@ -1014,10 +1081,13 @@ def parse_style_specs(
     default_draw_lines: bool,
     default_connection_mode: str,
     default_extend_3prime: bool = False,
+    palette: str = DEFAULT_PALETTE,
 ) -> Dict[str, AtomStyle]:
     styles: Dict[str, AtomStyle] = {}
     for index, atom_type in enumerate(atom_types):
-        color = color_for_index(index)
+        # The palette sets only the starting fill/line_stroke; fill= and
+        # line_stroke= in a style spec below still replace them.
+        color = palette_color_for_index(index, palette)
         default_opacity = 0.2 if index == 0 else 1.0
         styles[atom_type.upper()] = AtomStyle(
             fill=color,
@@ -1208,6 +1278,14 @@ def write_projection_json(
         "default_color_saturation": DEFAULT_COLOR_SATURATION,
         "default_color_value": DEFAULT_COLOR_VALUE,
         "color_by": args.color_by,
+    }
+    # The palette is recorded only when it is not the default, so default
+    # metadata stays exactly as before.
+    palette = palette_from_args(args)
+    if palette != DEFAULT_PALETTE:
+        metadata["palette"] = palette
+        metadata["palette_colors"] = palette_colors(palette)
+    metadata.update({
         "default_connection_mode": getattr(args, "connection_mode", "smooth"),
         "closed_chains": getattr(args, "closed_chains", ""),
         "close_all_chains": bool(getattr(args, "close_all_chains", False)),
@@ -1254,7 +1332,12 @@ def write_projection_json(
             "When SVG depth ordering is enabled, circles, neighbor segments, and/or base-pair lines are written back-to-front using the selected projection depth coordinate.",
             "When color_by is chain, chain colors override per-atom-type fill and line_stroke, but radius, opacity, stroke_width, line_width, and line_opacity remain per atom type.",
         ],
-    }
+    })
+    if palette != DEFAULT_PALETTE:
+        metadata["notes"].append(
+            "The palette gives chain colors in the order chains first appear and the default per-atom-type fill and line_stroke in atom-type order, "
+            "taking palette_colors in order and repeating after the last one; fill and line_stroke set in a style still win."
+        )
     with output_json.open("w", encoding="utf-8") as handle:
         json.dump(metadata, handle, indent=2)
         handle.write("\n")
@@ -2115,9 +2198,10 @@ def write_projection_svg(
     if depth_front not in {"positive", "negative"}:
         raise ValueError("--depth-front must be 'positive' or 'negative'")
     line_underlay = bool(getattr(args, "line_underlay", False)) and depth_order_lines
+    palette = palette_from_args(args)
 
     chain_colors = {
-        chain: color_for_index(index)
+        chain: palette_color_for_index(index, palette)
         for index, (chain, _type_groups) in enumerate(sorted_chain_items(grouped))
     }
 
@@ -2942,6 +3026,12 @@ def write_projection_svg(
             "length_svg_units": scale_bar_length * scale,
         },
     }
+    # A non-default palette is recorded here and as data-palette on the
+    # projection group; default SVGs carry neither.
+    palette_attr = ""
+    if palette != DEFAULT_PALETTE:
+        metadata["palette"] = palette
+        palette_attr = ' data-palette="{0}"'.format(svg_escape(palette))
 
     lines: List[str] = []
     lines.append('<?xml version="1.0" encoding="UTF-8"?>')
@@ -2964,7 +3054,7 @@ def write_projection_svg(
     lines.append("    .smooth-curve { fill: none; }")
     lines.append("  </style>")
     lines.append(
-        '  <g id="projection" data-projection-mode="{0}" data-color-by="{1}" data-invert-y="{2}" data-scale="{3}" data-depth-order-circles="{4}" data-depth-order-lines="{5}" data-depth-order-base-pairs="{6}" data-depth-front="{7}">'.format(
+        '  <g id="projection" data-projection-mode="{0}" data-color-by="{1}" data-invert-y="{2}" data-scale="{3}" data-depth-order-circles="{4}" data-depth-order-lines="{5}" data-depth-order-base-pairs="{6}" data-depth-front="{7}"{8}>'.format(
             svg_escape(projection.mode),
             svg_escape(color_by),
             str(invert_y).lower(),
@@ -2973,6 +3063,7 @@ def write_projection_svg(
             str(depth_order_lines).lower(),
             str(depth_order_base_pairs).lower(),
             svg_escape(depth_front),
+            palette_attr,
         )
     )
 
@@ -3193,6 +3284,10 @@ def format_summary(
         else:
             out.append("Current-XY mode uses original input X/Y as proj_x/proj_y and original input Z as depth.")
     out.append("Color by: {0}".format(args.color_by))
+    palette = palette_from_args(args)
+    if palette != DEFAULT_PALETTE:
+        used_for = "chain colors" if args.color_by == "chain" else "atom-type fill and line colors not set explicitly"
+        out.append("Palette: {0} ({1})".format(palette, used_for))
     out.append("Default connection mode: {0}".format(normalize_connection_mode(getattr(args, "connection_mode", "smooth"))))
     line_enabled = ["{0}({1})".format(atom_type, styles[atom_type.upper()].connection_mode) for atom_type in atom_types if styles[atom_type.upper()].draw_lines]
     out.append("Neighbor connections enabled for atom types: {0}".format(", ".join(line_enabled) if line_enabled else "none"))
@@ -3260,6 +3355,7 @@ def run_processing(args: argparse.Namespace) -> str:
         raise ValueError("Please provide at least one atom type with --atom-type, --atom-types, or the GUI atom-type rows")
 
     validate_svg_args(args)
+    args.palette = palette_from_args(args)
 
     output_csv = Path(args.csv_output) if args.csv_output else None
 
@@ -3304,6 +3400,7 @@ def run_processing(args: argparse.Namespace) -> str:
         args.draw_lines,
         getattr(args, "connection_mode", "smooth"),
         bool(getattr(args, "extend_3prime", False)),
+        args.palette,
     )
 
     filename_tags = default_name_tags_from_args(args, styles)
@@ -3417,6 +3514,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pdb-order-circles", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--pdb-order-lines", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--color-by", choices=["atom-type", "chain"], default="chain", help="Default SVG color mode. Default: chain")
+    parser.add_argument(
+        "--palette", type=argparse_palette, default=DEFAULT_PALETTE,
+        help=(
+            "Color palette for the chain colors (--color-by chain) and for the per-atom-type fill and line colors "
+            "that --style does not set (--color-by atom-type). default keeps Plane It's own golden-ratio HSV colors, unchanged. "
+            "DiLiuLab uses the lab's nine gr_colors figure colors in the order red, blue, magenta, cyan, orange, purple, "
+            "green, yellow, mint green, repeating after nine: the first chain in the input, or the first atom type, is red, "
+            "the second blue. DiLiuLab-T80, -T60, -T40 or -T20 are lighter tints mixed toward white; T40 and T20 are pale "
+            "and can be hard to see on white. In atom-type mode fill= and line_stroke= in --style still win. The palette's neutral is not "
+            "used: circle strokes, base-pair lines, the xy-plane, the underlay and the scale bar keep their own colors. "
+            "The colors are read from assets/diliulab_colors.json. Example: --palette DiLiuLab-T80. Default: default"
+        ),
+    )
     parser.add_argument("--line-width", type=float, default=1.0, help="Default neighbor line width. Default: 1")
     parser.add_argument("--line-opacity", type=float, default=0.65, help="Default neighbor line opacity. Default: 0.65")
     parser.add_argument(
@@ -3491,6 +3601,7 @@ def namespace_from_gui_values(values: dict) -> argparse.Namespace:
         pdb_order_circles=False,
         pdb_order_lines=False,
         color_by=values.get("color_by", "chain"),
+        palette=values.get("palette", DEFAULT_PALETTE),
         line_width=float(values["line_width"]),
         line_opacity=float(values["line_opacity"]),
         style=values.get("style_specs", []),
@@ -3606,7 +3717,18 @@ def run_gui() -> int:
             "using input Z as depth. If enabled, the Y-axis flip is applied before either mode as x -> -x and z -> -z."
         ),
         "color_by": (
-            "chain assigns colors by chain using golden-ratio HSV colors. atom-type uses each row's Fill and Line color values."
+            "chain assigns colors by chain using golden-ratio HSV colors, or the Palette's colors. atom-type uses each row's Fill and Line color values; a blank one takes the Palette's color (golden-ratio HSV under default)."
+        ),
+        "palette": (
+            "Colors for the chains when Color by is chain, and for the atom-type rows whose Fill or line Color is blank when Color by is atom-type.\n\n"
+            "default keeps Plane It's own golden-ratio HSV colors, unchanged.\n\n"
+            "DiLiuLab uses the lab's nine figure colors from gr_colors in the order red, blue, magenta, cyan, orange, purple, green, yellow, mint green, "
+            "repeating after nine: the first chain in the input, or Atom type 1, is red, the second is blue, and so on.\n\n"
+            "T80, T60, T40 and T20 are lighter tints mixed toward white; T40 and T20 are pale and can be hard to see on a white background.\n\n"
+            "When Color by is atom-type, a color typed into a row's Fill or line Color field still wins. The palette's neutral is not used: circle strokes, base-pair lines, "
+            "the xy-plane, the underlay and the scale bar keep their own colors.\n\n"
+            "The colors are read from assets/diliulab_colors.json. A palette other than default is written to the SVG (data-palette on the projection group), "
+            "the JSON and the run log. Command line: --palette DiLiuLab-T80."
         ),
         "connection_mode": (
             "Per-atom-type connection mode. straight draws ordinary straight neighbor connections. smooth draws a cubic-Bezier curve "
@@ -3708,6 +3830,7 @@ def run_gui() -> int:
     height_var = tk.StringVar(value="1000")
     padding_var = tk.StringVar(value="50")
     color_by_var = tk.StringVar(value="chain")
+    palette_var = tk.StringVar(value=DEFAULT_PALETTE)
     connection_mode_var = tk.StringVar(value="smooth")
     closed_chains_var = tk.StringVar(value="")
     close_all_chains_var = tk.BooleanVar(value=False)
@@ -4232,32 +4355,36 @@ def run_gui() -> int:
     ttk.Label(draw_frame, text="Pad").grid(row=0, column=8, sticky="w", padx=(10, 3), pady=4)
     numeric_entry(draw_frame, padding_var, 6).grid(row=0, column=9, sticky="w", pady=4)
 
-    ttk.Checkbutton(draw_frame, text="Flip Y: x,z -> -x,-z", variable=flip_about_y_var).grid(row=1, column=0, columnspan=2, sticky="w", padx=(0, 10), pady=4)
-    ttk.Checkbutton(draw_frame, text="Invert SVG y so +proj_y appears upward", variable=invert_y_var).grid(row=1, column=2, columnspan=3, sticky="w", padx=(10, 0), pady=4)
+    # The palette sits directly under Color by, the other control it colors.
+    label_with_help(draw_frame, "Palette", "Palette", help_texts["palette"]).grid(row=1, column=2, sticky="w", padx=(10, 4), pady=4)
+    ttk.Combobox(draw_frame, textvariable=palette_var, values=palette_choices(), width=12, state="readonly").grid(row=1, column=3, sticky="w", pady=4)
+
+    ttk.Checkbutton(draw_frame, text="Flip Y: x,z -> -x,-z", variable=flip_about_y_var).grid(row=2, column=0, columnspan=2, sticky="w", padx=(0, 10), pady=4)
+    ttk.Checkbutton(draw_frame, text="Invert SVG y so +proj_y appears upward", variable=invert_y_var).grid(row=2, column=2, columnspan=3, sticky="w", padx=(10, 0), pady=4)
     xy_check = ttk.Checkbutton(draw_frame, text="CSV xy only", variable=xy_only_var)
-    xy_check.grid(row=1, column=5, sticky="w", padx=(10, 0), pady=4)
+    xy_check.grid(row=2, column=5, sticky="w", padx=(10, 0), pady=4)
     state_widgets["xy_only"] = xy_check
     state_widgets["xy_only_label"] = xy_check
 
     write_frame = ttk.Frame(draw_frame)
-    write_frame.grid(row=1, column=6, columnspan=4, sticky="w", padx=(10, 0), pady=4)
+    write_frame.grid(row=2, column=6, columnspan=4, sticky="w", padx=(10, 0), pady=4)
     write_pdb_check = ttk.Checkbutton(write_frame, text="Write projection-basis PDB/XYZ", variable=write_pca_pdb_var)
     write_pdb_check.pack(side="left")
     help_button(write_frame, "Projection-basis PDB/XYZ", help_texts["write_pdb"]).pack(side="left", padx=(4, 0))
     state_widgets["write_pca_pdb"] = write_pdb_check
     state_widgets["write_pca_pdb_label"] = write_pdb_check
 
-    label_with_help(draw_frame, "Closed chains", "Closed chains", help_texts["closed_chains"]).grid(row=2, column=0, sticky="w", padx=(0, 6), pady=4)
-    ttk.Entry(draw_frame, textvariable=closed_chains_var, width=22).grid(row=2, column=1, sticky="w", pady=4)
-    ttk.Checkbutton(draw_frame, text="Close all chains", variable=close_all_chains_var).grid(row=2, column=2, columnspan=2, sticky="w", padx=(18, 0), pady=4)
+    label_with_help(draw_frame, "Closed chains", "Closed chains", help_texts["closed_chains"]).grid(row=3, column=0, sticky="w", padx=(0, 6), pady=4)
+    ttk.Entry(draw_frame, textvariable=closed_chains_var, width=22).grid(row=3, column=1, sticky="w", pady=4)
+    ttk.Checkbutton(draw_frame, text="Close all chains", variable=close_all_chains_var).grid(row=3, column=2, columnspan=2, sticky="w", padx=(18, 0), pady=4)
 
     depth_circle_frame = ttk.Frame(draw_frame)
-    depth_circle_frame.grid(row=3, column=0, columnspan=2, sticky="w", pady=4)
+    depth_circle_frame.grid(row=4, column=0, columnspan=2, sticky="w", pady=4)
     ttk.Checkbutton(depth_circle_frame, text="Depth-order circles", variable=depth_order_circles_var).pack(side="left")
     help_button(depth_circle_frame, "Depth-order circles", help_texts["depth_circles"]).pack(side="left", padx=(4, 0))
 
     depth_line_frame = ttk.Frame(draw_frame)
-    depth_line_frame.grid(row=3, column=2, columnspan=2, sticky="w", padx=(18, 0), pady=4)
+    depth_line_frame.grid(row=4, column=2, columnspan=2, sticky="w", padx=(18, 0), pady=4)
     depth_lines_check = ttk.Checkbutton(depth_line_frame, text="Depth-order neighbor lines", variable=depth_order_lines_var)
     depth_lines_check.pack(side="left")
     help_button(depth_line_frame, "Depth-order neighbor lines", help_texts["depth_lines"]).pack(side="left", padx=(4, 0))
@@ -4265,14 +4392,14 @@ def run_gui() -> int:
     state_widgets["depth_order_lines_label"] = depth_lines_check
 
     depth_front_label = label_with_help(draw_frame, "Front side", "Front side", help_texts["depth_front"])
-    depth_front_label.grid(row=3, column=4, sticky="w", padx=(18, 6), pady=4)
+    depth_front_label.grid(row=4, column=4, sticky="w", padx=(18, 6), pady=4)
     state_widgets["depth_front_label"] = depth_front_label
     depth_front_combo = ttk.Combobox(draw_frame, textvariable=depth_front_var, values=["positive", "negative"], width=12, state="readonly")
-    depth_front_combo.grid(row=3, column=5, sticky="w", pady=4)
+    depth_front_combo.grid(row=4, column=5, sticky="w", pady=4)
     state_widgets["depth_front"] = depth_front_combo
 
     underlay_frame = ttk.Frame(draw_frame)
-    underlay_frame.grid(row=4, column=0, columnspan=10, sticky="ew", pady=4)
+    underlay_frame.grid(row=5, column=0, columnspan=10, sticky="ew", pady=4)
     underlay_check = ttk.Checkbutton(underlay_frame, text="Draw wider underlay below depth-ordered neighbor lines", variable=line_underlay_var)
     underlay_check.pack(side="left")
     help_button(underlay_frame, "Line underlay", help_texts["line_underlay"]).pack(side="left", padx=(4, 12))
@@ -4298,7 +4425,7 @@ def run_gui() -> int:
     state_widgets["line_underlay_opacity"] = underlay_opacity_entry
 
     xy_plane_frame = ttk.Frame(draw_frame)
-    xy_plane_frame.grid(row=5, column=0, columnspan=10, sticky="ew", pady=4)
+    xy_plane_frame.grid(row=6, column=0, columnspan=10, sticky="ew", pady=4)
     xy_plane_check = ttk.Checkbutton(xy_plane_frame, text="Draw xy-plane (depth=0)", variable=draw_xy_plane_var)
     xy_plane_check.pack(side="left")
     help_button(xy_plane_frame, "xy-plane layer", help_texts["xy_plane"]).pack(side="left", padx=(4, 12))
@@ -4328,7 +4455,7 @@ def run_gui() -> int:
     state_widgets["xy_plane_opacity"] = xy_opacity_entry
 
     scale_bar_frame = ttk.Frame(draw_frame)
-    scale_bar_frame.grid(row=6, column=0, columnspan=10, sticky="ew", pady=4)
+    scale_bar_frame.grid(row=7, column=0, columnspan=10, sticky="ew", pady=4)
     scale_bar_check = ttk.Checkbutton(scale_bar_frame, text="Draw scale bar", variable=draw_scale_bar_var)
     scale_bar_check.pack(side="left")
     help_button(scale_bar_frame, "Scale bar", help_texts["scale_bar"]).pack(side="left", padx=(4, 12))
@@ -4366,11 +4493,11 @@ def run_gui() -> int:
     ttk.Label(
         draw_frame,
         text=(
-            "Notes: connection mode is controlled inside each atom-type row. Fill and line color are used only when Color by is atom-type. "
+            "Notes: connection mode is controlled inside each atom-type row. Fill and line color are used only when Color by is atom-type; blank ones take the Palette colors. "
             "In Color by chain mode, chain colors override these color fields, while radius, opacity, stroke width, and line settings remain per atom type."
         ),
         wraplength=1080,
-    ).grid(row=7, column=0, columnspan=10, sticky="w", pady=(6, 0))
+    ).grid(row=8, column=0, columnspan=10, sticky="w", pady=(6, 0))
 
     # ---------- DSSR base-pair options ----------
     basepair_frame = ttk.LabelFrame(content, text="DSSR base-pair interaction lines", padding=10)
@@ -4545,6 +4672,7 @@ def run_gui() -> int:
             "scale_bar_background": DEFAULT_SCALE_BAR_BACKGROUND,
             "scale_bar_background_opacity": DEFAULT_SCALE_BAR_BACKGROUND_OPACITY,
             "color_by": color_by_var.get(),
+            "palette": palette_var.get(),
             "xy_only": bool(xy_only_var.get()),
             "write_pca_pdb": bool(write_pca_pdb_var.get()),
             "draw_base_pairs": bool(draw_base_pairs_var.get()),
@@ -4580,6 +4708,7 @@ def run_gui() -> int:
         flip_about_y_var,
         input_format_var,
         color_by_var,
+        palette_var,
         connection_mode_var,
         closed_chains_var,
         close_all_chains_var,

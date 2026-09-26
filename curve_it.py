@@ -33,7 +33,8 @@ Two modes:
             * Choose the helix PDB file and see the estimated helix axis length.
             * Choose the curve file (XYZ/txt or VECT) and see its length, total curvature,
               and writhe (if curvature tools are available).
-            * View the 3D curve using the view_xyzV3.py plotting code (if importable).
+            * View the 3D curve using the view_xyzV3.py plotting code (if importable),
+              with its components in the viewer's own colours or the DiLiuLab palette.
             * Adjust all mapping parameters (scale-mode, scale-anchor, path-type,
               helix_phase, twist, path-start).
             * Run the embedding and write the output PDB.
@@ -141,7 +142,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_10"
+APP_VERSION = "V3_11"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -156,6 +157,20 @@ except Exception:
 
 VECT_MISSING_MESSAGE = (
     "This is a Geomview VECT file, which needs curve_it_lib/vect_io.py. "
+    "Make sure that file is present beside curve_it.py."
+)
+
+
+# Optional import of the shared DiLiuLab figure palette (assets/
+# diliulab_colors.json, read through lab_colors.py).  It only offers extra
+# colours, so a missing lab_colors.py leaves every Palette menu at default.
+try:
+    from curve_it_lib import lab_colors  # noqa: F401
+except Exception:
+    lab_colors = None  # type: ignore[assignment]
+
+LAB_COLORS_MISSING_MESSAGE = (
+    "The DiLiuLab palette needs curve_it_lib/lab_colors.py. "
     "Make sure that file is present beside curve_it.py."
 )
 
@@ -2130,6 +2145,52 @@ def resolve_convert_closure(setting: str,
     return [index in indices for index in range(n)]
 
 
+# The first entry of each Palette menu: View curve's is the viewer's own
+# colours, Convert XYZ's is whatever is typed into its Colours field.
+VIEW_PALETTE_DEFAULT = "default"
+VECT_PALETTE_CUSTOM = "custom"
+
+
+def palette_menu_choices(first_label: str) -> List[str]:
+    """What a Palette menu offers: `first_label`, then DiLiuLab at every tint."""
+    if lab_colors is None:
+        return [first_label]
+    return lab_colors.palette_choices(first_label)
+
+
+def view_curve_palette_colors(choice: Optional[str]) -> Optional[List[str]]:
+    """The component colours View curve hands the viewer for a Palette choice.
+
+    None for default, so view_xyzV3 keeps its own tab10 colours and is called
+    exactly as it was before the palette existed.
+    """
+    if lab_colors is None:
+        if (choice or "").strip().lower() in {"", VIEW_PALETTE_DEFAULT}:
+            return None
+        raise ValueError(LAB_COLORS_MISSING_MESSAGE)
+    if lab_colors.is_default(choice):
+        return None
+    return lab_colors.resolve_palette(choice, [])
+
+
+def vect_palette_colors_text(choice: Optional[str]) -> Optional[str]:
+    """What a Convert XYZ Palette choice writes into Colours, e.g. DiLiuLab-T80.
+
+    None for custom, which leaves Colours to what is typed there.
+    """
+    if lab_colors is None or not choice or choice == VECT_PALETTE_CUSTOM:
+        return None
+    tint = lab_colors.lab_tint_of(choice)
+    return f"{lab_colors.PALETTE_NAME}-{tint}" if tint else None
+
+
+def vect_palette_choice(colors_text: Optional[str]) -> str:
+    """The Convert XYZ Palette choice that matches what Colours holds."""
+    if not HAVE_VECT_IO:
+        return VECT_PALETTE_CUSTOM
+    return vect_io.color_spec_palette(colors_text) or VECT_PALETTE_CUSTOM
+
+
 def run_convert_cli(args: argparse.Namespace) -> None:
     """Convert one curve file to another format (the CLI Convert XYZ)."""
     input_path, output_path = args.convert
@@ -2175,8 +2236,10 @@ def run_convert_cli(args: argparse.Namespace) -> None:
             )
             closed_label = format_curve_component_selection(
                 [i for i, flag in enumerate(flags) if flag]) if any(flags) else "none"
+            palette = vect_io.color_spec_palette(args.convert_color)
+            palette_note = f", colours: {palette} palette" if palette else ""
             print(f"[INFO] Wrote Geomview VECT: {output_path} "
-                  f"({len(components)} component(s), closed: {closed_label})")
+                  f"({len(components)} component(s), closed: {closed_label}{palette_note})")
         elif target == "fake-pdb":
             closed_indices = [i for i, flag in enumerate(flags) if flag]
             count = write_fake_pdb_from_components(
@@ -2305,6 +2368,7 @@ def launch_gui() -> None:
     curve_n_used_var = tk.StringVar(value="N/A")
     interp_out_path_var = tk.StringVar(value="N/A")
     curve_components_var = tk.StringVar(value="N/A")
+    view_palette_var = tk.StringVar(value=VIEW_PALETTE_DEFAULT)
 
     scale_mode_var = tk.StringVar(value="curve_to_helix")
     numeric_length_var = tk.StringVar(value="340.0")  # example default
@@ -2369,6 +2433,13 @@ def launch_gui() -> None:
             "and writhe are reported for closed curves only.\n\n"
             "Use these as geometry checks before running the fit."
         ),
+        "view_palette": (
+            "View Palette",
+            "Chooses the component colours View curve draws with.\n\n"
+            "default is the viewer's own colours, unchanged: matplotlib's ten tab10 colours, repeating after ten.\n\n"
+            "DiLiuLab is the lab's nine figure colours from gr_colors, in the order red, blue, magenta, cyan, orange, purple, green, yellow, mint green, repeating after nine, so component A is red, B blue, C magenta, and a tenth component J starts again at red. T100 is the full colour, and T80, T60, T40 and T20 are the same colours mixed toward white, so T40 and T20 are pale and can be hard to see on the viewer's white background. The palette's neutral black or gray is not used. The colours are read from assets/diliulab_colors.json.\n\n"
+            "The palette colours a curve with more than one component. A single-component curve is drawn with its points coloured by position along it, from start to end, which no palette changes. The plain plot Curve It falls back to when its full viewer cannot be loaded ignores the palette too: it draws the curve as one gray line with every point in a single colour. Only the view changes: nothing Curve It writes depends on this menu. To colour the components of a VECT file, use Palette in Convert XYZ...."
+        ),
         "curve_components": (
             "Curve Components",
             "Blank lines in a coordinate XYZ/txt file split the curve into components A, B, C, and so on. In a Geomview VECT file each polyline is one component, in the order the file lists them.\n\n"
@@ -2393,7 +2464,7 @@ def launch_gui() -> None:
             "x y z ...\n"
             "r g b a ...\n\n"
             "VECT is what Geomview reads and what ridgerunner writes. It is the only format here that records whether each component is a closed loop, in the sign of its vertex count, so a closed component never repeats its first point. Loading a VECT input fills in Closed components from its header.\n\n"
-            "Colours are one per component, separated by commas: red,blue or #ff0000 or 1 0 0 1, 0 0 1 1. Fewer colours than components cycle. Leave it blank for opaque white. Colours are not geometry and are lost through any format that cannot hold them, which is all the others.\n\n"
+            "Colours are one per component, separated by commas: red,blue or #ff0000 or 1 0 0 1, 0 0 1 1. Fewer colours than components cycle. Leave it blank for opaque white. Palette writes a palette's name into Colours, such as DiLiuLab-T80: the lab's nine colours, red, blue, magenta and so on, repeating after nine; T40 and T20 are pale. custom removes a palette name. Colours are not geometry and are lost through any format that cannot hold them, which is all the others.\n\n"
             "Fake PDB output writes one atom per residue for molecular visualization. By default each point becomes atom CA in residue ALA; blank-line-separated coordinate components become chains A, B, C, and so on. Closed chains can be marked with LINK records, and a VECT input fills those in from its own header.\n\n"
             "Coordinate and molecular XYZ output join every component into one block. Only VECT and fake PDB keep them apart.\n\n"
             "The scale factor multiplies every output x/y/z coordinate before writing."
@@ -2457,6 +2528,14 @@ def launch_gui() -> None:
             "CLEARANCE is the closest approach between each pair of components, measured exactly segment to segment on the centerlines, less one rod diameter to give the gap between the finished surfaces. A gap at or below zero means those components fuse into one piece, so the report also names the thickest rod that keeps every component separate.\n\n"
             "Output names carry the rod diameter, so curve.xyz at diameter 2.0 writes curve-D2.0.stl and two rod sizes off one curve do not overwrite each other. A mesh input carries the scale factor instead.\n\n"
             "When the main window already has a curve file loaded, it opens with that file selected. Requires the trimesh package."
+        ),
+        "multicolor_split": (
+            "Multicolor Split",
+            "Open the multicolour 3D-printing splitter.\n\n"
+            "It turns a PDB or mmCIF model into one STL per colour for a multi-material printer, for example one fed by an AMS, one part per chain or chain group. The parts tile the whole molmap surface exactly, with no gaps, no overlaps, and no wrong-colour slivers, because only one side of each colour boundary is built from a field and the other side is its exact complement.\n\n"
+            "The tool runs UCSF ChimeraX headless for molmap and marching cubes, so a local ChimeraX installation is required. Get it from https://www.cgl.ucsf.edu/chimerax/download.html. The tool finds it automatically, and the CHIMERAX environment variable or the tool's own ChimeraX field can point at it when it lives somewhere else. It also needs the Python packages scipy, trimesh, and manifold3d.\n\n"
+            "It writes one STL per part, the whole as one more STL for reference only, a text and a JSON report with the level scan and the validation, and PNG and GLB previews. Import all the part STLs into the slicer at once so they stay registered.\n\n"
+            "When the curved Output PDB exists, it opens with that file selected, otherwise with the loaded input PDB, and its default output folder, <stem>_molmap<resolution>_split, is then created next to that PDB. Every field and checkbox in the tool's own window has its own ? explanation, with an example for every entry field."
         ),
         "path_type": (
             "Path Type",
@@ -2986,14 +3065,32 @@ def launch_gui() -> None:
 
         closed = (path_type_var.get() == "closed")
         try:
+            palette_colors = view_curve_palette_colors(view_palette_var.get())
+        except ValueError as e:
+            messagebox.showerror("Palette", str(e))
+            return
+        try:
             try:
                 # Use the component-aware plotting helper from view_xyzV3.py when available.
                 from curve_it_lib import view_xyzV3 as view_xyz
                 if curve_components_raw is not None and len(curve_components_raw) > 1:
+                    # colors= only when a palette is chosen, so the default
+                    # call is the one every view_xyzV3 accepts; one too old to
+                    # take colours still opens, in its own colours, rather
+                    # than failing over to the plain plot below.
+                    palette_kwargs: Dict[str, Any] = {}
+                    if palette_colors is not None:
+                        import inspect
+                        if "colors" in inspect.signature(view_xyz.plot_curve_components).parameters:
+                            palette_kwargs["colors"] = palette_colors
+                        else:
+                            append_log("[WARN] This view_xyzV3.py takes no colours, so View curve "
+                                       "shows its own instead of the chosen palette.\n")
                     view_xyz.plot_curve_components(
                         curve_components_raw,
                         selected_indices=selected_curve_component_indices,
                         closed=closed,
+                        **palette_kwargs,
                     )
                 else:
                     view_xyz.plot_curve(curve_points, closed=closed)
@@ -3077,6 +3174,7 @@ def launch_gui() -> None:
         vect_close_all_var = tk.BooleanVar(value=False)
         vect_closed_var = tk.StringVar(value="")
         vect_color_var = tk.StringVar(value="")
+        vect_palette_var = tk.StringVar(value=VECT_PALETTE_CUSTOM)
         component_summary_var = tk.StringVar(value="Choose an input file to preview components.")
         status_convert_var = tk.StringVar(value="Ready.")
         last_default_output = {"path": ""}
@@ -3172,6 +3270,7 @@ def launch_gui() -> None:
         closed_chains_widgets: List[Any] = []
         vect_widgets: List[Any] = []
         vect_closed_widgets: List[Any] = []
+        vect_readonly_widgets: List[Any] = []
 
         def update_conversion_state(*_args: Any) -> None:
             mode = output_format_key()
@@ -3189,6 +3288,8 @@ def launch_gui() -> None:
                 set_widget_enabled(widget, vect_on)
             for widget in vect_closed_widgets:
                 set_widget_enabled(widget, vect_on and not bool(vect_close_all_var.get()))
+            for widget in vect_readonly_widgets:
+                set_widget_enabled(widget, vect_on, readonly=True)
             refresh_default_output(force=False)
 
         def browse_input() -> None:
@@ -3288,6 +3389,9 @@ def launch_gui() -> None:
                     closed_label = format_curve_component_selection(
                         [i for i, flag in enumerate(flags) if flag]) if any(flags) else "none"
                     mode_label = f"Geomview VECT; closed components: {closed_label}"
+                    palette = vect_io.color_spec_palette(vect_color_var.get())
+                    if palette:
+                        mode_label += f"; colours: {palette} palette"
                     count = total_points
                 else:
                     closed_indices = closed_chain_indices(len(components))
@@ -3421,11 +3525,38 @@ def launch_gui() -> None:
             vect_frame,
             text="One per component: 'red,blue', '1 0 0 1, 0 0 1 1' or '#ff0000'. Blank is white.")
         vect_color_hint.grid(row=2, column=3, columnspan=3, sticky="w", pady=2)
+        vect_palette_label = ttk.Label(vect_frame, text="Palette:")
+        vect_palette_label.grid(row=3, column=0, sticky="e", padx=(0, 6), pady=2)
+        vect_palette_combo = ttk.Combobox(
+            vect_frame, textvariable=vect_palette_var,
+            values=palette_menu_choices(VECT_PALETTE_CUSTOM), width=16, state="readonly")
+        vect_palette_combo.grid(row=3, column=1, columnspan=2, sticky="w", padx=(0, 12), pady=2)
+        vect_palette_hint = ttk.Label(
+            vect_frame,
+            text="Writes a palette's name into Colours; custom removes that name.")
+        vect_palette_hint.grid(row=3, column=3, columnspan=3, sticky="w", pady=2)
         vect_widgets.extend([
             vect_close_all_check, vect_closed_label, vect_closed_hint,
             vect_color_label, vect_color_entry, vect_color_hint,
+            vect_palette_label, vect_palette_hint,
         ])
         vect_closed_widgets.append(vect_closed_entry)
+        vect_readonly_widgets.append(vect_palette_combo)
+
+        def on_vect_palette_selected(_event: Any = None) -> None:
+            # A palette choice is only a shorthand for typing its name, so the
+            # Colours field stays the one thing a conversion reads.
+            text = vect_palette_colors_text(vect_palette_var.get())
+            if text is not None:
+                vect_color_var.set(text)
+            elif vect_palette_choice(vect_color_var.get()) != VECT_PALETTE_CUSTOM:
+                vect_color_var.set("")
+
+        def sync_vect_palette(*_args: Any) -> None:
+            vect_palette_var.set(vect_palette_choice(vect_color_var.get()))
+
+        vect_palette_combo.bind("<<ComboboxSelected>>", on_vect_palette_selected)
+        vect_color_var.trace_add("write", sync_vect_palette)
 
         status_label = ttk.Label(dialog, textvariable=status_convert_var, wraplength=660, justify="left")
         status_label.grid(row=11, column=0, columnspan=3, sticky="we", padx=12, pady=(8, 4))
@@ -3728,6 +3859,111 @@ def launch_gui() -> None:
         except Exception as e:
             messagebox.showerror("Tool launch error", f"Failed to launch KnotPlot to XYZ:\n{e}")
 
+    def launch_multicolor_split_tool() -> None:
+        script_path = resource_path(os.path.join("curve_it_lib", "multicolor_split.py"))
+        if not os.path.isfile(script_path):
+            messagebox.showerror(
+                "Tool not found",
+                f"Could not find the Multicolor Split tool:\n{script_path}",
+            )
+            return
+        # The same defensive import as KnotPlot to XYZ. BaseException, not
+        # Exception: a module that calls sys.exit() while importing raises
+        # SystemExit, which Tkinter re-raises out of mainloop and would close
+        # Curve It.
+        try:
+            from curve_it_lib import multicolor_split
+        except BaseException as exc:
+            messagebox.showerror(
+                "Tool unavailable",
+                "Multicolor Split could not be loaded:\n"
+                f"{type(exc).__name__}: {exc}\n\n"
+                f"Check the helper module:\n{script_path}",
+            )
+            return
+        # find_spec locates the packages without importing them, so checking
+        # does not load scipy, trimesh and manifold3d into Curve It itself.
+        import importlib.util
+        missing_packages = [
+            name for name in ("scipy", "trimesh", "manifold3d")
+            if importlib.util.find_spec(name) is None
+        ]
+        chimerax_found = True
+        try:
+            multicolor_split.find_chimerax()
+        except multicolor_split.SplitError:
+            chimerax_found = False
+        if not chimerax_found:
+            # A path chosen earlier in the tool's own ChimeraX field counts:
+            # its window uses a remembered path that still works, and drops
+            # one that does not before it searches, the same test as here. A
+            # missing or corrupt prefs file is simply not a remembered path.
+            try:
+                import json
+                remembered = json.loads(multicolor_split.GUI_PREFS.read_text()).get("chimerax")
+                if remembered and multicolor_split._exe_ok(multicolor_split._normalise_exe(remembered)):
+                    chimerax_found = True
+            except Exception:
+                pass
+        if missing_packages or not chimerax_found:
+            # The window is still useful without them (it reads the chains and
+            # builds the command), so this is a reminder, not a refusal.
+            notes = []
+            if missing_packages:
+                notes.append(
+                    "Multicolor Split needs these Python packages, which are not installed: "
+                    f"{', '.join(missing_packages)}.\n\n"
+                    "Install them with:\n"
+                    f"    python3 -m pip install {' '.join(missing_packages)}"
+                )
+            if not chimerax_found:
+                env_path = os.environ.get("CHIMERAX")
+                notes.append(
+                    "UCSF ChimeraX is a separate program and is not bundled with Curve It; "
+                    "the tool runs it headless for molmap and marching cubes.\n\n"
+                    + (f"The CHIMERAX environment variable is set to {env_path}, which is not "
+                       "a ChimeraX executable, so no search is made; correct or unset it.\n\n"
+                       if env_path else "")
+                    + "Download it from https://www.cgl.ucsf.edu/chimerax/download.html, or set "
+                    "the CHIMERAX environment variable to an existing ChimeraX executable. "
+                    "The tool's ChimeraX field can also point it at an install directly."
+                )
+            proceed = messagebox.askyesno(
+                "Multicolor Split requirements",
+                "\n\n".join(notes) + "\n\nOpen Multicolor Split anyway?",
+            )
+            if not proceed:
+                return
+        # Prefer the curved Output PDB once it has been written, otherwise the
+        # loaded input PDB. Absolute, because the tool starts in its folder.
+        pdb = None
+        for candidate in (output_path_var.get(), helix_pdb_path or helix_path_var.get()):
+            candidate = os.path.expanduser((candidate or "").strip())
+            if candidate and os.path.isfile(candidate):
+                pdb = os.path.abspath(candidate)
+                break
+        try:
+            import subprocess
+            if getattr(sys, "frozen", False):
+                prefix = [sys.executable, "--multicolor-split"]
+            else:
+                prefix = [sys.executable, script_path]
+            command = prefix + ([pdb] if pdb else []) + ["--gui"]
+            # The tool's default output folder is relative to its working
+            # directory, and Curve It's own is arbitrary: a Finder-launched app
+            # starts in /, which is not writable. Starting it in the PDB's folder
+            # puts the split next to the PDB; with no PDB, a folder the tool
+            # cannot write to is swapped for the home folder.
+            if pdb:
+                cwd = os.path.dirname(pdb)
+            elif os.access(os.getcwd(), os.W_OK):
+                cwd = None
+            else:
+                cwd = os.path.expanduser("~")
+            subprocess.Popen(command, cwd=cwd)
+        except Exception as e:
+            messagebox.showerror("Tool launch error", f"Failed to launch Multicolor Split:\n{e}")
+
     tk.Button(file_frame, text="View curve", command=view_curve).grid(
         row=2, column=6, sticky="w", padx=4, pady=2
     )
@@ -3740,6 +3976,29 @@ def launch_gui() -> None:
     tk.Label(file_frame, text="Writhe:").grid(row=3, column=4, sticky="e", padx=4, pady=2)
     writhe_entry = ttk.Entry(file_frame, textvariable=writhe_var, width=16, state="readonly")
     writhe_entry.grid(row=3, column=5, sticky="we", padx=4, pady=2)
+
+    # View curve's palette, directly under its button.  The label is drawn
+    # without padding so the pair fits the column Select components... sets.
+    # The menu is as wide as its longest entry in Tk's entry font, counted in
+    # the "0" widths a Combobox width is measured in: 10 with the macOS
+    # system font, and more with a wider one, so no entry is cut off.
+    import tkinter.font as tkfont
+    view_palette_choices = palette_menu_choices(VIEW_PALETTE_DEFAULT)
+    entry_font = tkfont.nametofont("TkTextFont")
+    view_palette_width = max(10, -(-max(entry_font.measure(c) for c in view_palette_choices)
+                                   // max(1, entry_font.measure("0"))))
+    view_palette_cell = tk.Frame(file_frame)
+    view_palette_cell.grid(row=3, column=6, sticky="w", padx=4, pady=2)
+    tk.Label(view_palette_cell, text="Palette:", padx=0, bd=0).pack(side="left")
+    view_palette_combo = ttk.Combobox(
+        view_palette_cell,
+        textvariable=view_palette_var,
+        values=view_palette_choices,
+        width=view_palette_width,
+        state="readonly",
+    )
+    view_palette_combo.pack(side="left", padx=(2, 0))
+    help_button(file_frame, "view_palette").grid(row=3, column=7, sticky="w", padx=(0, 4), pady=2)
 
     tk.Label(file_frame, text="Components:").grid(row=4, column=0, sticky="e", padx=4, pady=2)
     components_entry = ttk.Entry(file_frame, textvariable=curve_components_var, width=48, state="readonly")
@@ -4058,10 +4317,11 @@ def launch_gui() -> None:
         tk.Button(cell, text=label, command=command).pack(side="left")
         help_button(cell, topic_key).pack(side="left", padx=(3, 0))
 
-    # Three rows: the first converts an existing file into a curve file, the
+    # Four rows: the first converts an existing file into a curve file, the
     # second generates one from parameters, the third analyzes a curve or
-    # builds something from it. A fifth column in the first row would make this
-    # frame wider than the rest of the window, so the producers wrap instead.
+    # builds something from it, the fourth turns a structure into printable
+    # parts. A fifth column would make this frame wider than the rest of the
+    # window, so a new tool starts a row instead of widening one.
     add_tool_button(0, 0, "Convert XYZ...", convert_xyz_file_dialog, "xyz_convert")
     add_tool_button(0, 1, "SVG to XYZ...", launch_svg2xyz_tool, "svg2xyz")
     add_tool_button(0, 2, "KnotPlot to XYZ...", launch_kp2xyz_tool, "kp2xyz")
@@ -4071,6 +4331,7 @@ def launch_gui() -> None:
     add_tool_button(2, 1, "Plane It...", launch_plane_it_tool, "plane_it")
     add_tool_button(2, 2, "Curved Connector...", launch_curved_connector_tool, "curved_connector")
     add_tool_button(2, 3, "XYZ to 3D Model...", launch_xyz2model_tool, "xyz2model")
+    add_tool_button(3, 0, "Multicolor Split...", launch_multicolor_split_tool, "multicolor_split")
     # Only the trailing spacer column takes up slack, so the buttons stay
     # grouped at the left instead of spreading across the window width.
     for col in range(4):
@@ -4355,6 +4616,24 @@ def main(argv: Optional[List[str]] = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
 
+    # Multicolor Split runs each split as a child process of its own GUI. In a
+    # frozen one-file build sys.executable is this app, not a Python, so that
+    # child comes back in through this flag, and everything after it belongs to
+    # the tool; "--multicolor-split --gui" likewise opens its window there. It
+    # is handled before the parser is built so none of Curve It's options can
+    # claim the tool's, and sys.exit() hands the tool's own exit code
+    # (0/1/2/3/130) back to the parent, whose GUI reads it.
+    if argv[:1] == ["--multicolor-split"]:
+        # BaseException so that a sys.exit() raised while importing the helper
+        # is reported as a launch failure instead of a bare, silent exit. Only
+        # the import is guarded: the tool's own SystemExit, from --version or a
+        # usage error, must keep its exit code.
+        try:
+            from curve_it_lib import multicolor_split
+        except BaseException as exc:
+            raise SystemExit(f"Failed to launch Multicolor Split: {exc}")
+        sys.exit(multicolor_split.main(argv[1:]))
+
     parser = argparse.ArgumentParser(
         description=("Embed a roughly straight DNA/RNA helix, protein helix, "
                      "or other filament-like PDB structure along a 3D curve "
@@ -4532,6 +4811,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         help=("VECT output only: one colour per component, separated by commas. "
               "Names, #hex, or 3-4 numbers -- 'red,blue', '#ff0000', "
               "'1 0 0 1, 0 0 1 1'. Fewer colours than components cycle. "
+              "Or the name of a whole palette: DiLiuLab gives the components the "
+              "lab's nine figure colours from gr_colors in turn, red, blue, "
+              "magenta, cyan, orange, purple, green, yellow, mint green, "
+              "repeating after nine, and DiLiuLab-T80, -T60, -T40 or -T20 the "
+              "same colours mixed toward white (T40 and T20 are pale). The "
+              "palette is read from assets/diliulab_colors.json. "
               "Default: opaque white."),
     )
     convert_group.add_argument(

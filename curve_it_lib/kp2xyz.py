@@ -57,6 +57,7 @@ Locate button override that.  Get it from https://knotplot.com/download/ .
     python3 kp2xyz.py 4.1 6.3.2 "torus 2 3" -o out
     python3 kp2xyz.py 6.3.2 --nbeads 300 --split -o out
     python3 kp2xyz.py --all -o catalogue
+    python3 kp2xyz.py 6.3.2 --preview --palette DiLiuLab
 
 Requires nothing but the standard library and a KnotPlot installation.  Run
 with no arguments, or with --gui, for the graphical interface.
@@ -75,7 +76,18 @@ import subprocess
 import sys
 import tempfile
 
-__version__ = "1.0"
+# Optional DiLiuLab palette for the preview windows.  Only --palette and the
+# window's palette menu read it; without lab_colors.py the menu offers only
+# the viewer's own colours and nothing else is affected.
+try:
+    from . import lab_colors
+except ImportError:
+    try:
+        import lab_colors  # type: ignore[no-redef]
+    except ImportError:
+        lab_colors = None  # type: ignore[assignment]
+
+__version__ = "1.1"
 
 TOOL_NAME = "KnotPlot to XYZ"
 
@@ -455,12 +467,72 @@ HELP = {
         "that yields an open arc is written as closed=no. Load one in Curve "
         "It as the Curve XYZ/txt input, or feed it straight to xyz2model.py."
         "\n\nUntick the comment header to write bare coordinates only.",
-        "# KnotPlot to XYZ v1.0 -- 3 component(s) from KnotPlot `6.3.2`\n"
+        "# " + TOOL_NAME + " v" + __version__
+        + " -- 3 component(s) from KnotPlot `6.3.2`\n"
         "  # columns: x y z ; blank lines separate components ; ...\n"
         "  # component A: closed=yes points=107\n"
         "  -1.234567 0.891011 0.000000\n"
         "  ..."),
+    "palette": (
+        "Preview palette",
+        "The colours Preview gives the components of a link in the 3D "
+        "viewer. It changes the viewer windows only: an .xyz file carries no "
+        "colour, so nothing written by Extract depends on it.\n\n"
+        "default keeps the viewer's own colours, matplotlib's tab10, exactly "
+        "as before. DiLiuLab is the lab's nine figure colours from gr_colors, "
+        "in the order red, blue, magenta, cyan, orange, purple, green, "
+        "yellow, mint green, so component A is red, B blue and C magenta, "
+        "and a link with more than nine components starts again at red. "
+        "DiLiuLab T80, T60, T40 and T20 are the same colours mixed toward "
+        "white; T40 and T20 are pale and can be hard to see on the viewer's "
+        "white background. The lab's neutral, black or gray, is not used.\n\n"
+        "A knot has one component, and the viewer draws it as a gray line "
+        "with its points shaded along the curve, which is not a colour per "
+        "component, so a knot's preview looks the same whatever is chosen "
+        "here. The red start marker, and the black end marker of an open "
+        "arc, are never recoloured.\n\n"
+        "The colours are read from assets/diliulab_colors.json, the one copy "
+        "the Curve It tools share. A new choice applies to the next Preview; "
+        "windows already open keep their colours.",
+        "6.3.2 with DiLiuLab T100\n"
+        "  component A  red\n"
+        "  component B  blue\n"
+        "  component C  magenta\n"
+        "\n"
+        "from a shell\n"
+        "  python3 kp2xyz.py 6.3.2 --preview --palette DiLiuLab-T80"),
 }
+
+PALETTE_MISSING = ("palette %r needs lab_colors.py from curve_it_lib; only "
+                   "the viewer's default colours are available without it")
+
+
+def check_palette(spec):
+    """"default" or the lab palette's label, "DiLiuLab T80" and so on.
+
+    Raises ValueError for an unknown palette, and for anything but the
+    default when lab_colors.py is missing.
+    """
+    if lab_colors is not None:
+        return lab_colors.check_palette(spec)
+    if spec is None or str(spec).strip().lower() in ("", "default", "none", "auto"):
+        return "default"
+    raise ValueError(PALETTE_MISSING % spec)
+
+
+def palette_argument(value):
+    """argparse type for --palette: a bad palette is a usage error."""
+    try:
+        return check_palette(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+
+
+def palette_choices():
+    """What the window's palette menu offers."""
+    if lab_colors is None:
+        return ["default"]
+    return lab_colors.palette_choices("default")
 
 
 # --------------------------------------------------------------------------
@@ -1413,13 +1485,16 @@ def component_guidance(files):
     return lines
 
 
-def preview(paths, closed=True):
+def preview(paths, closed=True, palette="default"):
     """Open Curve It's own curve viewer on the files just written.
 
     view_xyzV3 ends in a blocking plt.show(), so it is run as a separate
     process: the GUI stays usable and several previews can be open at once.
+    `palette` is handed on as the viewer's --palette, which colours the
+    components of a link; the default adds nothing to the command.
     Returns the paths actually opened.
     """
+    label = check_palette(palette)
     viewer = resource_path(os.path.join("curve_it_lib", "view_xyzV3.py"))
     if not os.path.isfile(viewer):
         raise ValueError("the curve viewer is missing: %s" % viewer)
@@ -1430,6 +1505,10 @@ def preview(paths, closed=True):
         command = [sys.executable, viewer, path]
         if not closed:
             command.append("--open")
+        if label != "default":
+            # "DiLiuLab T80" -> DiLiuLab-T80, the spelling the viewer's
+            # own help uses.
+            command += ["--palette", label.replace(" ", "-")]
         try:
             subprocess.Popen(command)
         except OSError as exc:
@@ -1638,6 +1717,21 @@ def build_parser():
     p.add_argument("--preview", action="store_true",
                    help="open each written curve in Curve It's own 3D viewer "
                         "after extracting (at most %d windows)" % PREVIEW_LIMIT)
+    p.add_argument("--palette", type=palette_argument, default="default",
+                   help="with --preview, the colours of a link's components "
+                        "in the viewer: default (the viewer's own tab10, "
+                        "unchanged) or DiLiuLab, the lab's nine figure "
+                        "colours from gr_colors in the order red, blue, "
+                        "magenta, cyan, orange, purple, green, yellow, mint "
+                        "green, repeating after nine; DiLiuLab-T80, -T60, "
+                        "-T40 or -T20 are lighter tints mixed toward white "
+                        "(T40 and T20 are pale on the white background). "
+                        "The lab's neutral is not used. Read from "
+                        "assets/diliulab_colors.json. A knot's single "
+                        "component keeps the viewer's gray line and "
+                        "position shading, and the written .xyz files carry "
+                        "no colour either way. Example: 6.3.2 --preview "
+                        "--palette DiLiuLab-T80")
     p.add_argument("--precision", type=int, default=DEFAULT_PRECISION,
                    help="decimal places written per coordinate (default 6)")
     p.add_argument("--no-comments", action="store_true",
@@ -1718,6 +1812,8 @@ def run_cli(args):
             print("  ... and %d more" % (len(targets) - 40))
         return 0
 
+    if args.palette != "default" and not args.preview:
+        print("note: --palette colours only the --preview windows, which were not asked for")
     result = extract(targets, args.outdir, install=install, nbeads=args.nbeads,
                      split=args.split, precision=args.precision,
                      timeout=args.timeout, comments=not args.no_comments,
@@ -1743,8 +1839,10 @@ def run_cli(args):
         chosen, note = preview_selection(result["written"])
         if note:
             print(note)
+        if args.palette != "default":
+            print("preview palette: %s" % args.palette)
         try:
-            preview(chosen)
+            preview(chosen, palette=args.palette)
         except ValueError as exc:
             # A failed preview must not fail the extraction that succeeded.
             print("preview unavailable: %s" % exc, file=sys.stderr)
@@ -1768,7 +1866,7 @@ def default_gui_outdir():
     return os.path.join(root, DEFAULT_OUTDIR)
 
 
-def run_gui(initial_outdir=None):
+def run_gui(initial_outdir=None, initial_palette="default"):
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
 
@@ -1799,6 +1897,7 @@ def run_gui(initial_outdir=None):
         "both":      tk.BooleanVar(value=False),
         "comments":  tk.BooleanVar(value=True),
         "outdir":    tk.StringVar(value=initial_outdir or default_gui_outdir()),
+        "palette":   tk.StringVar(value=check_palette(initial_palette)),
     }
 
     # ---- "?" help chips ---------------------------------------------------
@@ -1973,6 +2072,17 @@ def run_gui(initial_outdir=None):
     # right pane ------------------------------------------------------------
     bar = ttk.Frame(right)
     bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+    # The palette only colours Preview's windows, so it sits on its own line
+    # under the buttons: packed first, at the bottom, it leaves the top line
+    # to the buttons, and beside them it would widen the window.
+    palette_row = ttk.Frame(bar)
+    palette_row.pack(side="bottom", fill="x", pady=(6, 0))
+    ttk.Label(palette_row, text="preview palette").pack(side="left")
+    palette_box = ttk.Combobox(palette_row, textvariable=V["palette"],
+                               values=palette_choices(), width=14,
+                               state="readonly")
+    palette_box.pack(side="left", padx=(4, 0))
+    chip(palette_row, "palette").pack(side="left", padx=(6, 0))
     recheck_btn = ttk.Button(bar, text="Re-check")
     recheck_btn.pack(side="left")
     list_btn = ttk.Button(bar, text="List catalogue")
@@ -2367,7 +2477,8 @@ def run_gui(initial_outdir=None):
                 status.configure(text="preview failed -- no coordinates",
                                  foreground="#c00")
                 return
-            opened = preview(result["written"])
+            palette = check_palette(V["palette"].get())
+            opened = preview(result["written"], palette=palette)
         except Exception as exc:            # noqa: BLE001
             messagebox.showerror("Preview failed", str(exc))
             status.configure(text="preview failed", foreground="#c00")
@@ -2377,6 +2488,8 @@ def run_gui(initial_outdir=None):
                  "were NOT" % len(opened),
                  "written to the output folder - use Extract to keep them.",
                  ""]
+        if palette != "default":
+            lines += ["component colours: %s palette" % palette, ""]
         lines += ["  " + os.path.basename(f) for f in opened]
         if trimmed:
             lines += ["", trimmed]
@@ -2552,7 +2665,8 @@ def main(argv=None):
         return run_gui()
     args = parser.parse_args(argv)
     if args.gui:
-        return run_gui(args.outdir if args.outdir != DEFAULT_OUTDIR else None)
+        return run_gui(args.outdir if args.outdir != DEFAULT_OUTDIR else None,
+                       args.palette)
     if not (args.targets or args.all or args.list_names or args.check):
         parser.error("give at least one target, or --all, --list, --check "
                      "(or use --gui)")

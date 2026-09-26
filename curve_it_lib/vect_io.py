@@ -42,7 +42,9 @@ rather than assumed:
 Colours are read and reported but do not participate in geometry.  They
 survive nothing that passes through XYZ, which has nowhere to put them, so
 `write_vect` gives each component one opaque white colour unless a caller
-supplies something else through `parse_color_spec`.
+supplies something else through `parse_color_spec`.  A colour string that is
+as a whole the name of the DiLiuLab figure palette, ``DiLiuLab`` or
+``DiLiuLab-T80``, gives the components that palette's colours in turn.
 """
 
 from __future__ import annotations
@@ -51,7 +53,19 @@ from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-__version__ = "1.0"
+# Optional import of the shared DiLiuLab palette.  Only a colour string naming
+# the palette reaches it, so a missing lab_colors.py costs that one spelling.
+# Any failure, not just a missing file, is caught: the tools that import this
+# module only to read VECT must keep working when lab_colors.py cannot load.
+try:
+    from . import lab_colors
+except Exception:
+    try:
+        import lab_colors  # type: ignore[no-redef]
+    except Exception:
+        lab_colors = None  # type: ignore[assignment]
+
+__version__ = "1.1"
 
 FORMAT_NAME = "VECT"
 
@@ -419,6 +433,68 @@ def _parse_one_color(entry: str) -> Tuple[float, float, float, float]:
     return (values[0], values[1], values[2], values[3])
 
 
+LAB_COLORS_MISSING_MESSAGE = (
+    "the DiLiuLab palette needs lab_colors.py from curve_it_lib; make sure "
+    "that file sits beside vect_io.py")
+
+
+def _names_lab_palette(text: str) -> bool:
+    """True when `text` begins like the palette's name, with or without lab_colors."""
+    return "".join(text.split()).lower().startswith("diliulab")
+
+
+def _color_entries(text: str) -> List[str]:
+    """The comma-separated entries of a colour string, empty ones dropped."""
+    return [chunk for chunk in text.split(",") if chunk.strip()]
+
+
+def _sole_entry(text: str) -> Optional[str]:
+    """The one entry a colour string holds, stripped, or None for 0 or several.
+
+    Only such a string can name the palette, so "DiLiuLab," is read like
+    "red," is, with the empty entry dropped.
+    """
+    entries = _color_entries(text)
+    return entries[0].strip() if len(entries) == 1 else None
+
+
+def color_spec_palette(spec: Optional[str]) -> Optional[str]:
+    """The palette a colour string names as a whole, as "DiLiuLab T80", or None.
+
+    None also covers a string that merely starts like the name, such as an
+    unknown tint; `parse_color_spec` is where that is reported.
+    """
+    if lab_colors is None or spec is None:
+        return None
+    entry = _sole_entry(str(spec))
+    if entry is None:
+        return None
+    try:
+        tint = lab_colors.lab_tint_of(entry)
+    except ValueError:
+        return None
+    return lab_colors.palette_label(tint) if tint else None
+
+
+def _lab_palette_colors(text: str, spec: Optional[str]
+                        ) -> Optional[List[Tuple[float, float, float, float]]]:
+    """The palette's colours as opaque RGBA when the whole string names it."""
+    if lab_colors is None:
+        if _names_lab_palette(text):
+            raise ValueError("%s (in --color %r)" % (LAB_COLORS_MISSING_MESSAGE, spec))
+        return None
+    try:
+        tint = lab_colors.lab_tint_of(text)
+    except ValueError as exc:
+        raise ValueError("%s palette: %s (in --color %r)"
+                         % (lab_colors.PALETTE_NAME, exc, spec))
+    if tint is None:
+        return None
+    # The nine categorical colours only: the palette's neutral is black or
+    # gray, which says nothing about which component is which.
+    return [lab_colors.hex_to_rgb01(code) + (1.0,) for code in lab_colors.lab_colors(tint)]
+
+
 def parse_color_spec(spec: Optional[str], n_components: int) -> List[np.ndarray]:
     """Parse a colour string into one (1,4) RGBA array per component.
 
@@ -426,6 +502,14 @@ def parse_color_spec(spec: Optional[str], n_components: int) -> List[np.ndarray]
     whitespace, so ``"1 0 0 1, 0 0 1 1"`` is red then blue.  Names and hex
     values hold no whitespace, so ``"red,blue"`` works too.  Fewer entries than
     components cycle, which is what makes ``--color red`` colour a whole link.
+
+    A string that is as a whole the DiLiuLab palette's name, ``DiLiuLab`` or
+    ``DiLiuLab-T80`` (T100, T80, T60, T40, T20; the spellings lab_colors
+    accepts), gives the components the lab's nine figure colours in the lab's
+    order, red, blue, magenta, cyan, orange, purple, green, yellow and mint
+    green, opaque and cycling after nine.  Empty entries are dropped first, as
+    for any colour, so ``DiLiuLab-T80,`` names it too.  The name cannot be one
+    entry of a list, because it stands for a whole list itself.
 
     An empty or missing spec returns one opaque white per component.
     """
@@ -435,16 +519,24 @@ def parse_color_spec(spec: Optional[str], n_components: int) -> List[np.ndarray]
     if not text:
         return [np.asarray([DEFAULT_COLOR], dtype=float) for _ in range(n_components)]
 
-    entries = [chunk for chunk in text.split(",") if chunk.strip()]
+    entries = _color_entries(text)
     if not entries:
         raise ValueError("No colours could be read from %r." % spec)
-
-    parsed: List[Tuple[float, float, float, float]] = []
-    for entry in entries:
-        try:
-            parsed.append(_parse_one_color(entry))
-        except ValueError as exc:
-            raise ValueError("%s (in --color %r)" % (exc, spec))
+    parsed: Optional[List[Tuple[float, float, float, float]]] = None
+    if len(entries) == 1:
+        parsed = _lab_palette_colors(entries[0].strip(), spec)
+    if parsed is None:
+        parsed = []
+        for entry in entries:
+            if len(entries) > 1 and _names_lab_palette(entry):
+                raise ValueError(
+                    "%r names the whole DiLiuLab palette, so it must be the entire "
+                    "colour string rather than one entry of a list (in --color %r)"
+                    % (entry.strip(), spec))
+            try:
+                parsed.append(_parse_one_color(entry))
+            except ValueError as exc:
+                raise ValueError("%s (in --color %r)" % (exc, spec))
 
     return [np.asarray([parsed[i % len(parsed)]], dtype=float)
             for i in range(n_components)]
@@ -557,7 +649,8 @@ def write_vect(path: str,
 
     `colors` may be a `--color` string, or one entry per component, each being
     None for no colour, one RGBA, or one RGBA per vertex.  The default is one
-    opaque white per component.
+    opaque white per component.  A string naming the DiLiuLab palette is also
+    named in the colour comment, since the RGBA rows alone do not say so.
     """
     blocks = _normalize_components(components)
     flags = _normalize_closed(closed, len(blocks))
@@ -573,6 +666,7 @@ def write_vect(path: str,
     blocks = trimmed
 
     color_blocks = _normalize_colors(colors, blocks)
+    palette = color_spec_palette(colors) if isinstance(colors, str) else None
 
     coord_fmt = "%%.%df %%.%df %%.%df\n" % (precision, precision, precision)
     color_fmt = "%%.%df %%.%df %%.%df %%.%df\n" % (6, 6, 6, 6)
@@ -606,7 +700,8 @@ def write_vect(path: str,
                 fh.write(coord_fmt % (x, y, z))
 
         if n_colors and comments:
-            fh.write("# colours (red green blue alpha)\n")
+            fh.write("# colours (red green blue alpha)%s\n"
+                     % (", %s palette" % palette if palette else ""))
         for index, block in enumerate(color_blocks):
             if block.shape[0] == 0:
                 continue
