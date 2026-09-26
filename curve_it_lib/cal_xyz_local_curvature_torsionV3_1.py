@@ -26,11 +26,18 @@ Example commands:
   python curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py --example-trefoil --no-plot
 
 Notes:
-  - The curve is treated as closed by default.
+  - The curve is treated as closed by default. A closed curve may repeat its
+    first point as its last; the repeat is dropped when its gap back to the
+    first point is at most 5% of the median step, so a repeat that survives
+    rounding is still recognized rather than becoming a tiny closing segment.
   - No command-line arguments, or --gui, launches a Tkinter GUI.
   - Torsion is reported as a regularized Frenet torsion estimated from
-    signed binormal rotation. The raw third-derivative torsion is also saved
-    for diagnosis. Its integral divided by 2*pi is not generally equal to writhe.
+    signed binormal rotation. Rows of very low curvature are masked, and a
+    binormal reversal between two rows, the Frenet frame flipping through an
+    inflection, counts as a frame flip rather than a half turn of torsion, so
+    a plane curve reports zero torsion. The raw third-derivative torsion is
+    also saved for diagnosis. Its integral divided by 2*pi is not generally
+    equal to writhe.
   - Local writhe density is a distribution of the Gauss writhe double integral
     along the curve. It is local only as an assigned density; each value still
     depends on all other sampled curve positions.
@@ -263,16 +270,30 @@ except ImportError:
         return smoothed_points
 
 
-def strip_duplicate_endpoint(points: np.ndarray, closed: bool, tol: float = 1e-8) -> np.ndarray:
+def strip_duplicate_endpoint(points: np.ndarray, closed: bool, rel_tol: float = 0.05) -> np.ndarray:
     """
-    Remove a duplicated final point for closed curves.
+    Remove a final point that repeats the first point of a closed curve.
 
     Periodic splines append the initial point internally. Removing an input
     duplicate avoids double-counting the same geometric point during smoothing
     and spline construction.
+
+    The repeat is judged against the curve's own step: the final point is
+    dropped when its gap back to the first point is at most rel_tol of the
+    median segment length. A file that repeats its first point after rounding
+    leaves a gap of the rounding's order rather than an exact match, and a
+    periodic spline through such a pair puts a segment orders of magnitude
+    shorter than the rest at u=0, which shows up as a huge spurious curvature
+    spike there. A genuine closing segment is about one ordinary step long,
+    so 5% of a step lies far from both cases.
     """
     points = np.asarray(points, dtype=float)
-    if closed and len(points) > 1 and np.linalg.norm(points[0] - points[-1]) <= tol:
+    if not closed or len(points) < 3:
+        return points
+    steps = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    median_step = float(np.median(steps))
+    threshold = rel_tol * median_step if median_step > 0.0 else 0.0
+    if float(np.linalg.norm(points[0] - points[-1])) <= threshold:
         return points[:-1].copy()
     return points
 
@@ -387,12 +408,16 @@ def chord_length_parameter(points: np.ndarray, closed: bool) -> Tuple[np.ndarray
     u_values[1:] = np.cumsum(segment_lengths) / total_length
     u_values[-1] = 1.0
 
-    # CubicSpline requires strictly increasing x values. Remove zero-length
-    # duplicate interior points if present. For closed curves, keep u=0 and u=1.
+    # CubicSpline requires strictly increasing x values. Drop every point that
+    # repeats its predecessor, but always keep the final point, u=1: when the
+    # last two points coincide it is the earlier one that goes, so an open
+    # curve ending in a repeated point, or a closed curve whose last point
+    # sits on its first, still spans 0 to 1 instead of failing inside scipy.
     keep = np.ones(len(u_values), dtype=bool)
-    if len(u_values) > 2:
-        keep[1:-1] = np.diff(u_values[:-1]) > 1e-14
-    keep[-1] = True
+    keep[1:] = np.diff(u_values) > 1e-14
+    if not keep[-1]:
+        keep[-1] = True
+        keep[np.flatnonzero(keep[:-1])[-1]] = False
     spline_points = spline_points[keep]
     u_values = u_values[keep]
 
@@ -490,7 +515,20 @@ def add_regularized_torsion_from_binormal_rotation(
     min_curvature: Optional[float] = None,
     eps: float = 1e-12,
 ) -> None:
-    '''Replace data["torsion"] with a regularized torsion estimate.'''
+    """
+    Replace data["torsion"] with a regularized torsion estimate.
+
+    Between neighbouring rows the unit binormal is rotated about the local
+    tangent by torsion times arclength, so the signed rotation angle of the
+    binormal divided by the step estimates torsion without the third
+    derivative. Rows whose curvature is below a cutoff, a fraction of the
+    median positive curvature unless min_curvature is given, have no
+    well-defined Frenet frame and are masked. The binormal is compared up to
+    sign: where it reverses between two rows the Frenet frame has flipped
+    through an inflection, which torsion, unchanged when normal and binormal
+    change sign together, does not see. Each row receives the
+    arclength-weighted mean of its two segment estimates.
+    """
     u_values = np.asarray(data["u"], dtype=float)
     n_values = len(u_values)
     if n_values < 2:
@@ -554,6 +592,15 @@ def add_regularized_torsion_from_binormal_rotation(
 
         dot_bb = float(np.clip(np.dot(binormal[i], binormal[j]), -1.0, 1.0))
         signed_sin = float(np.dot(t_mid, np.cross(binormal[i], binormal[j])))
+        if dot_bb < 0.0:
+            # The binormal has reversed between the two rows. Through an
+            # inflection the Frenet normal and binormal both change sign, and
+            # torsion is unchanged by that joint sign change, so the reversal
+            # is a frame flip rather than a half turn of torsion. Compare
+            # against the representative of B_j nearest to B_i, which keeps
+            # the step's rotation within a quarter turn either way.
+            dot_bb = -dot_bb
+            signed_sin = -signed_sin
         angle = math.atan2(signed_sin, dot_bb)
         if not math.isfinite(angle):
             continue
@@ -582,72 +629,54 @@ def add_regularized_torsion_from_binormal_rotation(
     data["_total_torsion_angle_binormal"] = float(np.sum(segment_torsion_angles)) if segment_torsion_angles else float("nan")
 
 
-def evaluate_integrands_at_u(
+def evaluate_curvature_integrand_at_u(
     spline_x: CubicSpline,
     spline_y: CubicSpline,
     spline_z: CubicSpline,
     u: float,
     eps_speed: float = 1e-12,
-    eps_cross: float = 1e-10,
-) -> Tuple[float, float]:
+) -> float:
     """
-    Return curvature*ds/du and torsion*ds/du at one normalized position.
-
-    This is used for adaptive quadrature summaries. Torsion is set to zero at
-    positions where the Frenet frame is numerically ill-defined because the
-    speed or curvature is too small.
+    Return curvature*ds/du at one normalized position, for adaptive quadrature.
     """
     r1 = np.array([spline_x(u, 1), spline_y(u, 1), spline_z(u, 1)], dtype=float)
     r2 = np.array([spline_x(u, 2), spline_y(u, 2), spline_z(u, 2)], dtype=float)
-    r3 = np.array([spline_x(u, 3), spline_y(u, 3), spline_z(u, 3)], dtype=float)
 
     speed = float(np.linalg.norm(r1))
     if speed <= eps_speed or not math.isfinite(speed):
-        return 0.0, 0.0
+        return 0.0
 
-    cross12 = np.cross(r1, r2)
-    cross_norm = float(np.linalg.norm(cross12))
-    curvature_integrand = cross_norm / (speed ** 2)
-
-    if cross_norm <= eps_cross or not math.isfinite(cross_norm):
-        torsion_integrand = 0.0
-    else:
-        torsion = float(np.dot(cross12, r3) / (cross_norm ** 2))
-        torsion_integrand = torsion * speed
-
-    return curvature_integrand, torsion_integrand
+    cross_norm = float(np.linalg.norm(np.cross(r1, r2)))
+    return cross_norm / (speed ** 2)
 
 
-def integrate_curvature_torsion_adaptive(
+def integrate_curvature_adaptive(
     spline_x: CubicSpline,
     spline_y: CubicSpline,
     spline_z: CubicSpline,
-) -> Tuple[float, float]:
+) -> float:
     """
-    Integrate curvature*ds and torsion*ds by adaptive quadrature.
+    Integrate curvature*ds by adaptive quadrature.
 
     Cubic splines have piecewise polynomial derivatives. Splitting at spline
-    knots avoids integrating across third-derivative discontinuities and gives
-    a more stable total torsion than a simple trapezoidal sum over sampled rows.
+    knots avoids integrating across derivative discontinuities and gives a
+    more stable total curvature than a simple trapezoidal sum over sampled
+    rows.
+
+    Only curvature is integrated. The raw third-derivative torsion is not:
+    its integral is close to divergent across a near-inflection, so quad
+    took as long over it as over curvature and warned about convergence, and
+    the value was never reported. Total torsion comes from the
+    binormal-rotation estimate instead.
     """
     knots = np.asarray(spline_x.x, dtype=float)
     total_curvature = 0.0
-    total_torsion_angle = 0.0
 
     for a, b in zip(knots[:-1], knots[1:]):
         if b <= a:
             continue
-
         curv_piece, _curv_err = quad(
-            lambda uu: evaluate_integrands_at_u(spline_x, spline_y, spline_z, uu)[0],
-            float(a),
-            float(b),
-            limit=200,
-            epsabs=1e-8,
-            epsrel=1e-6,
-        )
-        tors_piece, _tors_err = quad(
-            lambda uu: evaluate_integrands_at_u(spline_x, spline_y, spline_z, uu)[1],
+            lambda uu: evaluate_curvature_integrand_at_u(spline_x, spline_y, spline_z, uu),
             float(a),
             float(b),
             limit=200,
@@ -655,9 +684,8 @@ def integrate_curvature_torsion_adaptive(
             epsrel=1e-6,
         )
         total_curvature += float(curv_piece)
-        total_torsion_angle += float(tors_piece)
 
-    return total_curvature, total_torsion_angle
+    return total_curvature
 
 
 def trapezoid_weights(u_values: np.ndarray) -> np.ndarray:
@@ -884,7 +912,8 @@ def format_summary(
         "  Torsion curvature cutoff = {:.10g}".format(summary["torsion_curvature_cutoff"]),
         "  Reliable torsion rows = {:.1f}%".format(100.0 * summary["torsion_reliable_fraction"]),
         "",
-        "Note: total torsion uses signed binormal rotation after masking very low-curvature rows.",
+        "Note: total torsion uses signed binormal rotation after masking very low-curvature rows;",
+        "      a binormal reversal through an inflection counts as a frame flip, not torsion.",
         "Note: torsion_raw is also saved because it is the direct third-derivative formula.",
         "Note: raw torsion can show artificial spikes where local curvature is very small.",
         "Note: local writhe density is assigned locally but depends on the whole curve.",
@@ -1057,8 +1086,8 @@ def run_calculation(
     filename = xyz_file.strip().strip('"').strip("'")
     if not os.path.isfile(filename):
         raise FileNotFoundError("File not found: {}".format(filename))
-    if file_format not in ("auto", "plain", "molecule"):
-        raise ValueError("file_format must be auto, plain, or molecule.")
+    if file_format not in ("auto", "plain", "molecule", "vect"):
+        raise ValueError("file_format must be auto, plain, molecule, or vect.")
     if nsamples < 4:
         raise ValueError("nsamples must be at least 4.")
     if polyorder < 0:
@@ -1095,11 +1124,7 @@ def run_calculation(
     spline_x, spline_y, spline_z = build_splines(points, closed=closed)
     u_values = np.linspace(0.0, 1.0, nsamples)
     data = evaluate_local_geometry(spline_x, spline_y, spline_z, u_values)
-    total_curvature_quad, total_torsion_angle_quad = integrate_curvature_torsion_adaptive(
-        spline_x, spline_y, spline_z
-    )
-    data["_total_curvature_adaptive"] = total_curvature_quad
-    data["_total_torsion_angle_adaptive_raw"] = total_torsion_angle_quad
+    data["_total_curvature_adaptive"] = integrate_curvature_adaptive(spline_x, spline_y, spline_z)
 
     add_regularized_torsion_from_binormal_rotation(
         data,
