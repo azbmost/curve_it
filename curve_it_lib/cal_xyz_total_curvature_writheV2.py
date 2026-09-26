@@ -26,6 +26,13 @@ Output:
   - total curvature divided by pi
   - exact writhe of the closed polyline through the input points
 
+The curve is closed from its last point back to its first, so a closed curve
+is expected not to repeat its first point. A final point that does repeat it
+is dropped, judged against the curve's own step: a gap back to the first point
+of at most 5% of the median segment counts as a repeat, so a repeat that
+survives rounding is still recognized rather than becoming a tiny extra
+segment.
+
 Examples:
   python curve_it_lib/cal_xyz_total_curvature_writheV2.py curve_coords.txt
   python curve_it_lib/cal_xyz_total_curvature_writheV2.py curve.xyz --molecule
@@ -220,16 +227,35 @@ def smooth_closed_points(points: np.ndarray) -> np.ndarray:
     return smoothed_points
 
 
-def strip_duplicate_endpoint(points: np.ndarray, tol: float = 1e-8) -> np.ndarray:
+def strip_duplicate_endpoint(points: np.ndarray, rel_tol: float = 0.05, tol: float = 1e-8) -> np.ndarray:
     """
-    Remove a duplicated final point from a closed curve.
+    Remove a final point that repeats the first point of a closed curve.
 
-    Periodic smoothing/spline code closes the curve internally. If the input
-    already repeats the first point as the final row, keeping both rows can
-    overweight that same geometric location.
+    Periodic smoothing/spline code closes the curve internally, and the
+    polyline writhe closes the polygon from its last vertex back to its
+    first. If the input already repeats the first point as the final row,
+    keeping both rows overweights that location for the spline and hands the
+    polygon a spurious extra vertex.
+
+    The repeat is judged against the curve's own step: the final point is
+    dropped when its gap back to the first point is at most rel_tol of the
+    median segment length, or at most the absolute tol, whichever is larger.
+    A repeat that survives rounding, or that was computed a second time by a
+    different route, misses the first point by a gap of that order rather
+    than matching it exactly. Kept, it becomes a segment orders of magnitude
+    shorter than the rest: the periodic spline through it puts a curvature
+    spike at u=0 that integrates to more than an extra pi on a circle, and in
+    the polygon it is a kink whose out-of-plane part moves the exact writhe
+    by an O(1) amount, since the Gauss integral between two segments jumps
+    when they stop meeting at a vertex. A genuine closing segment is about
+    one ordinary step long, so 5% of a step lies far from both cases.
     """
     pts = np.asarray(points, dtype=float)
-    if len(pts) > 1 and np.linalg.norm(pts[0] - pts[-1]) <= tol:
+    if len(pts) < 3:
+        return pts
+    steps = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    threshold = max(float(tol), float(rel_tol) * float(np.median(steps)))
+    if float(np.linalg.norm(pts[0] - pts[-1])) <= threshold:
         return pts[:-1].copy()
     return pts
 
@@ -384,8 +410,17 @@ def calculate_polyline_writhe(points: np.ndarray) -> float:
     a signed solid angle.  Coincident and adjacent pairs, including the pair
     adjacent across the closing seam, contribute zero and are excluded.  This
     is the appropriate writhe for Curve It's piecewise-linear mapping path.
+
+    The polygon is the one the caller supplies. Only a final vertex that
+    coincides with the first, within the absolute 1e-8, is dropped, since it
+    would make a zero-length segment; a final vertex that merely lies near
+    the first is kept as a vertex of the polygon, kink and all, because Curve
+    It maps that exact polygon and checks this writhe against the frame
+    holonomy of the same vertices. A curve read from a file goes through
+    read_xyz_like, which drops a repeat that survives rounding before the
+    points reach this function.
     """
-    pts = strip_duplicate_endpoint(np.asarray(points, dtype=float))
+    pts = strip_duplicate_endpoint(np.asarray(points, dtype=float), rel_tol=0.0)
     if pts.ndim != 2 or pts.shape[1] != 3:
         raise ValueError("Polyline writhe expects an N x 3 coordinate array.")
     if len(pts) < 4:
