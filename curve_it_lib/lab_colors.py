@@ -22,9 +22,17 @@ option, named on the command line as
     --palette DiLiuLab-T80      or T60, T40, T20 ("DiLiuLab T80", "diliulab80"
                                 and "diliulab:t80" are read the same way)
 
-    python3 lab_colors.py                    # print every tint
-    python3 lab_colors.py --tint T80         # one tint
-    python3 lab_colors.py --write-asset      # regenerate the asset from the formula
+One colour can also be named, in the spelling of the lab's own colour lists:
+the name in CamelCase and its tint, RedT80, MintGreenT60, GrayT40, BlackT100
+(case, spaces, "_" and "-" do not matter; "DiLiuLab red" means RedT100).  The
+tint is required because the bare names are ordinary colour names elsewhere,
+red being #ff0000 in SVG, Tk and vect_io; resolve_lab_color() turns a name
+into its hex code and returns None for anything that is not one.
+
+    python3 lab_colors.py                       # print every tint, with the names
+    python3 lab_colors.py --tint T80            # one tint
+    python3 lab_colors.py --name MintGreenT80   # one colour's hex code
+    python3 lab_colors.py --write-asset         # regenerate the asset from the formula
 
 If the asset is missing, unreadable or not laid out as the formula writes
 it, the formula above is used instead, so the option never disappears;
@@ -47,7 +55,7 @@ import re
 import sys
 from typing import Dict, List, Optional, Sequence, Tuple
 
-__version__ = "1.0"
+__version__ = "1.1"
 
 PALETTE_NAME = "DiLiuLab"
 ASSET_NAME = "diliulab_colors.json"
@@ -290,19 +298,129 @@ PALETTE_HELP = ("colour palette: default (this tool's own colours) or %s, the Di
 
 
 # --------------------------------------------------------------------------
+# colour names
+# --------------------------------------------------------------------------
+# One lab colour by name, spelled the way the lab's own colour lists (the
+# gr_colors .clr swatches) spell it: the name in CamelCase followed by its
+# tint, RedT80, MintGreenT60, GrayT40, BlackT100.  The tint is required
+# because the bare names are ordinary colour names everywhere else -- red is
+# #ff0000 in SVG, in Tk and in vect_io -- so "red" keeps meaning what it
+# always meant; a DiLiuLab prefix may stand in for the tint instead, and then
+# means T100 ("DiLiuLab red" is RedT100).  Case, spaces, "_" and "-" do not
+# matter: "mint green t80" and "Mint_Green-T80" are MintGreenT80.
+_NEUTRAL_WORDS = ("black", "gray", "grey", "neutral")
+_NAME_TINT = re.compile(
+    r"^\s*(?:diliu\s*lab[\s_:@-]*)?([a-z][a-z\s_-]*?)[\s_:@-]*t[\s_-]*(\d{1,3})\s*$", re.IGNORECASE)
+_NAME_PREFIXED = re.compile(r"^\s*diliu\s*lab[\s_:@-]*([a-z][a-z\s_-]*?)\s*$", re.IGNORECASE)
+
+
+def _name_key(name: str) -> str:
+    return re.sub(r"[\s_-]+", "", str(name).lower())
+
+
+def _camel(name: str) -> str:
+    return "".join(word.capitalize() for word in str(name).split())
+
+
+def lab_color_name(name: str, tint=DEFAULT_TINT) -> str:
+    """The lab's spelling of one colour at one tint, "MintGreenT80".  The
+    neutral is BlackT100 at full tint and GrayT80 ... GrayT20 below it, as in
+    the lab's colour lists; black, gray, grey and neutral all name it."""
+    tint = normalize_tint(tint)
+    key = _name_key(name)
+    if key in _NEUTRAL_WORDS:
+        return ("Black" if tint == DEFAULT_TINT else "Gray") + tint
+    for entry in load_palette()["colors"]:
+        if _name_key(entry["name"]) == key:
+            return _camel(entry["name"]) + tint
+    raise ValueError("%r is not a %s colour; the names are %s" % (
+        name, PALETTE_NAME, ", ".join(_camel(e["name"]) for e in load_palette()["colors"])
+        + " and Black/Gray for the neutral"))
+
+
+def lab_color_names(tint=DEFAULT_TINT, neutral: bool = False) -> List[str]:
+    """Every colour's name at one tint, in the lab's order: RedT80, BlueT80, ..."""
+    return [lab_color_name(name, tint) for name, _code in lab_named_colors(tint, neutral)]
+
+
+def resolve_lab_color(text) -> Optional[str]:
+    """The "#rrggbb" a DiLiuLab colour name stands for, or None when `text` is
+    not spelled as one -- a hex code, an ordinary colour name such as red,
+    numbers, or blank -- so a caller can fall through to its own colour
+    parsing.  One of the palette's names with a tint the palette does not
+    hold, such as RedT75, is an error rather than a None."""
+    if text is None:
+        return None
+    match = _NAME_TINT.match(str(text))
+    if match:
+        name, tint = match.group(1), match.group(2)
+    else:
+        match = _NAME_PREFIXED.match(str(text))
+        if not match:
+            return None
+        name, tint = match.group(1), DEFAULT_TINT
+    key = _name_key(name)
+    if key == _name_key(PALETTE_NAME):
+        return None                         # "DiLiuLab-T80" names the palette, not a colour
+    palette = load_palette()
+    if key in _NEUTRAL_WORDS:
+        entry = palette["neutral"]
+    else:
+        entry = next((e for e in palette["colors"] if _name_key(e["name"]) == key), None)
+        if entry is None:
+            if re.match(r"^\s*diliu\s*lab", str(text), re.IGNORECASE):
+                lab_color_name(name)        # raises, listing the palette's names
+            return None                     # "wheat1" is not ours to judge
+    try:
+        tint = normalize_tint(tint)
+    except ValueError:
+        example = next((t for t in available_tints() if t != DEFAULT_TINT), DEFAULT_TINT)
+        raise ValueError("%s colour %r: the tint must be one of %s, e.g. %s" % (
+            PALETTE_NAME, str(text).strip(), ", ".join(available_tints()),
+            lab_color_name(name, example)))
+    return entry[tint].lower()
+
+
+def is_lab_color_name(text) -> bool:
+    try:
+        return resolve_lab_color(text) is not None
+    except ValueError:
+        return True                         # spelled as one, with a bad tint
+
+
+LAB_COLOR_HELP = ("a %s colour may be given by name with its tint, as in the lab's colour "
+                  "lists: RedT100, BlueT80, MintGreenT60, GrayT40 (Red, Blue, Magenta, Cyan, "
+                  "Orange, Purple, Green, Yellow, MintGreen, and Black/Gray for the neutral; "
+                  "tints T100, T80, T60, T40, T20)" % PALETTE_NAME)
+
+
+# --------------------------------------------------------------------------
 # command line
 # --------------------------------------------------------------------------
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="lab_colors.py",
         description="Print the DiLiuLab figure colours, or regenerate their asset.")
-    parser.add_argument("--tint", default=None,
-                        help="one tint only: %s" % ", ".join(TINTS))
-    parser.add_argument("--write-asset", nargs="?", const=asset_path(), metavar="PATH",
-                        help="write the palette computed from gr_colors' formula as JSON "
-                             "(default: the package asset)")
+    # one thing at a time: --name, --tint and --write-asset exclude each other
+    what = parser.add_mutually_exclusive_group()
+    what.add_argument("--tint", default=None,
+                      help="one tint only: %s" % ", ".join(TINTS))
+    what.add_argument("--write-asset", nargs="?", const=asset_path(), metavar="PATH",
+                      help="write the palette computed from gr_colors' formula as JSON "
+                           "(default: the package asset)")
+    what.add_argument("--name", metavar="NAME",
+                      help="print the hex code of one lab colour given by name, e.g. MintGreenT80")
     parser.add_argument("--version", action="version", version=__version__)
     args = parser.parse_args(argv)
+    if args.name is not None:
+        try:
+            code = resolve_lab_color(args.name)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if code is None:
+            parser.error("%r is not a %s colour name; %s" % (args.name, PALETTE_NAME, LAB_COLOR_HELP))
+        print(code)
+        return 0
     if args.write_asset:
         try:
             with open(args.write_asset, "w", encoding="utf-8") as handle:
@@ -320,8 +438,9 @@ def main(argv=None) -> int:
         palette.get("load_error"))
     print("%s palette, from %s" % (PALETTE_NAME, source))
     for tint in tints:
-        print("%-5s " % tint + "  ".join("%s %s" % (code, name)
-                                          for name, code in lab_named_colors(tint, neutral=True)))
+        print("%-5s " % tint + "  ".join(
+            "%s %s" % (code, lab_color_name(name, tint))
+            for name, code in lab_named_colors(tint, neutral=True)))
     return 0
 
 

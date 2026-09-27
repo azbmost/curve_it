@@ -27,11 +27,13 @@ swept, so --diameter is in FINAL output units and --scale does not change it:
     python3 xyz2model.py curves.xyz --info                 # just describe it
     python3 xyz2model.py curves.xyz -d 2.0 -s 0.25
     python3 xyz2model.py curves.xyz -d 1.5 --colors "#e6194b,#3cb44b,#4363d8"
+    python3 xyz2model.py curves.xyz -d 1.5 --colors "RedT80,#3cb44b,MintGreenT60"
     python3 xyz2model.py curves.xyz -d 1.5 --palette DiLiuLab-T80
 
 The component colours are this tool's own unless --palette names the DiLiuLab
 figure colours (read through lab_colors.py from assets/diliulab_colors.json);
---colors, when given, wins over both.
+--colors, when given, wins over both, and any of its entries may be one lab
+colour by name, spelled as the lab's colour lists spell it: RedT80, GrayT40.
 
 Requires numpy, scipy, trimesh (and matplotlib for --preview / colour names).
 Run with no arguments, or with --gui, for the graphical interface.
@@ -68,7 +70,7 @@ except ImportError:
     except ImportError:
         lab_colors = None  # type: ignore[assignment]
 
-__version__ = "1.2"
+__version__ = "1.3"
 
 TOOL_NAME = "XYZ to 3D Model"
 
@@ -134,6 +136,29 @@ def palette_colors(palette="default"):
     if check_palette(palette) == "default":
         return list(DEFAULT_COLORS)
     return lab_colors.resolve_palette(palette, DEFAULT_COLORS)
+
+
+def resolve_colors(value):
+    """A --colors value with each DiLiuLab colour name in it made hex.
+
+    An entry lab_colors reads as one lab colour, RedT80 or "mint green T60",
+    becomes its "#rrggbb"; every other entry is passed on exactly as typed, so
+    hex values reach the GLB and the preview as they always have.  A lab name
+    at a tint the palette lacks, RedT75, is a ValueError.  Without lab_colors,
+    or with one older than the colour names, the value is returned unchanged.
+    """
+    resolve = getattr(lab_colors, "resolve_lab_color", None)
+    if not value or resolve is None:
+        return value
+    return ",".join(resolve(entry) or entry for entry in value.split(","))
+
+
+def colors_arg(value):
+    """argparse type= for --colors, so a bad lab colour is a usage error."""
+    try:
+        return resolve_colors(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
 
 
 # --------------------------------------------------------------------------
@@ -275,8 +300,16 @@ HELP = {
         "once.\n\n"
         "STL has no concept of colour, so the .stl file is unaffected. If you "
         "want colours in a print, use the split STLs and assign a material per "
-        "part in the slicer.",
-        None),
+        "part in the slicer.\n\n"
+        "On the command line --colors sets them, one per component, comma "
+        "separated. Each is a #hex value or one of the DiLiuLab colours by "
+        "name, spelled as the lab's colour lists spell it, the name and its "
+        "tint: RedT80, MintGreenT60, GrayT40 (tints T100, T80, T60, T40, T20). "
+        "The two forms mix, and fewer colours than components repeat.",
+        "--colors \"RedT80,#3cb44b,MintGreenT60\"\n"
+        "  component  1       2        3\n"
+        "  colour     RedT80  #3cb44b  MintGreenT60\n"
+        "  a fourth component starts again at RedT80"),
 
     "palette": (
         "Palette",
@@ -295,7 +328,8 @@ HELP = {
         "any swatch changed by hand; a swatch can still be clicked and changed "
         "afterwards. The colours are read from assets/diliulab_colors.json, "
         "which the other curve_it tools share. On the command line this is "
-        "--palette; --colors, when given, wins over it.",
+        "--palette; --colors, when given, wins over it, and can name single lab "
+        "colours among its hex values, as RedT80 or MintGreenT60.",
         "--palette DiLiuLab      (or DiLiuLab-T80, -T60 ...)\n"
         "  component  1    2     3        4     5       6\n"
         "  colour     red  blue  magenta  cyan  orange  purple\n"
@@ -696,20 +730,39 @@ def export_stl_split(meshes, prefix):
     return paths
 
 
+def _srgb_to_linear(c):
+    """One sRGB channel in 0-1 as the linear value glTF colours are read as."""
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
 def export_glb(meshes, path, colors=None):
+    """One material per component, in the component's colour.
+
+    glTF reads baseColorFactor as a LINEAR colour, so the sRGB colour is
+    converted before it is written; written as it stands it showed paler in
+    every viewer than in the preview PNG.  The exact value is set on the
+    written tree, since trimesh keeps material colours as 8-bit values."""
     import trimesh
     colors = colors or DEFAULT_COLORS
     scene = trimesh.Scene()
+    exact = {}
     for i, m in enumerate(meshes):
         m = m.copy()
+        name = "component_%d" % (i + 1)
+        linear = [_srgb_to_linear(v / 255.0) for v in _rgba(colors[i % len(colors)])[:3]] + [1.0]
+        exact[name] = linear
         m.visual = trimesh.visual.TextureVisuals(
             material=trimesh.visual.material.PBRMaterial(
-                name="component_%d" % (i + 1),
-                baseColorFactor=_rgba(colors[i % len(colors)]),
+                name=name, baseColorFactor=linear,
                 metallicFactor=0.3, roughnessFactor=0.4))
-        scene.add_geometry(m, node_name="component_%d" % (i + 1),
-                           geom_name="component_%d" % (i + 1))
-    scene.export(path, file_type="glb")
+        scene.add_geometry(m, node_name=name, geom_name=name)
+
+    def exact_colors(tree):
+        for material in tree.get("materials", []):
+            if material.get("name") in exact:
+                material.setdefault("pbrMetallicRoughness", {})["baseColorFactor"] = exact[material["name"]]
+
+    scene.export(path, file_type="glb", tree_postprocessor=exact_colors)
     return path
 
 
@@ -1252,8 +1305,13 @@ def build_parser():
     p.add_argument("--no-glb", action="store_true")
     p.add_argument("--split", action="store_true",
                    help="also write one STL per component")
-    p.add_argument("--colors", help="comma separated hex colours for the GLB "
-                                    "and the preview; wins over --palette")
+    p.add_argument("--colors", type=colors_arg,
+                   help="comma separated colours for the GLB and the preview, "
+                        "one per component: #hex values, or DiLiuLab colours by "
+                        "name with their tint, as the lab's colour lists spell "
+                        "them (RedT80, MintGreenT60, GrayT40; tints T100, T80, "
+                        "T60, T40, T20), in any mix, e.g. "
+                        "\"RedT80,#3cb44b,MintGreenT60\"; wins over --palette")
     p.add_argument("--palette", type=palette_arg, default="default",
                    help="component colours for the GLB and the preview: default "
                         "(this tool's own 15) or DiLiuLab, the lab's nine figure "

@@ -44,7 +44,9 @@ survive nothing that passes through XYZ, which has nowhere to put them, so
 `write_vect` gives each component one opaque white colour unless a caller
 supplies something else through `parse_color_spec`.  A colour string that is
 as a whole the name of the DiLiuLab figure palette, ``DiLiuLab`` or
-``DiLiuLab-T80``, gives the components that palette's colours in turn.
+``DiLiuLab-T80``, gives the components that palette's colours in turn, and any
+one entry of a colour string may name a single lab colour in the lab's own
+spelling, ``RedT80`` or ``MintGreenT60``, beside names, hex values and numbers.
 """
 
 from __future__ import annotations
@@ -53,10 +55,11 @@ from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-# Optional import of the shared DiLiuLab palette.  Only a colour string naming
-# the palette reaches it, so a missing lab_colors.py costs that one spelling.
-# Any failure, not just a missing file, is caught: the tools that import this
-# module only to read VECT must keep working when lab_colors.py cannot load.
+# Optional import of the shared DiLiuLab palette.  Only colour strings reach
+# it, for the palette's name and for the lab's colour names, so a missing
+# lab_colors.py costs those spellings and nothing else.  Any failure, not just
+# a missing file, is caught: the tools that import this module only to read
+# VECT must keep working when lab_colors.py cannot load.
 try:
     from . import lab_colors
 except Exception:
@@ -65,7 +68,7 @@ except Exception:
     except Exception:
         lab_colors = None  # type: ignore[assignment]
 
-__version__ = "1.1"
+__version__ = "1.2"
 
 FORMAT_NAME = "VECT"
 
@@ -77,7 +80,8 @@ DEFAULT_PRECISION = 8
 DEFAULT_COLOR: Tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
 
 # Enough names to spell a link's components apart without pulling in a colour
-# library.  Anything outside this can still be given as numbers or as hex.
+# library.  Anything outside this can still be given as numbers, as hex, or as
+# a DiLiuLab colour name such as RedT80, which lab_colors reads.
 NAMED_COLORS = {
     "black": (0.0, 0.0, 0.0),
     "white": (1.0, 1.0, 1.0),
@@ -388,11 +392,45 @@ def read_vect(path: str) -> VectCurves:
 # ---------------------------------------------------------------------------
 # Colours
 # ---------------------------------------------------------------------------
+def _lab_color_code(text: str) -> Optional[str]:
+    """The "#rrggbb" a DiLiuLab colour name such as RedT80 stands for, or None.
+
+    None for anything not spelled as one, which is then read as a name, a hex
+    value or numbers below, and for every entry when lab_colors.py is missing
+    or older than the colour names.  A lab name with a tint the palette does
+    not hold, RedT75, raises ValueError.
+    """
+    resolve = getattr(lab_colors, "resolve_lab_color", None)
+    return resolve(text) if resolve is not None else None
+
+
+def _spelled_as_lab_color(text: str) -> bool:
+    """True for one DiLiuLab colour, "DiLiuLab red" included, even at a bad tint."""
+    try:
+        return _lab_color_code(text) is not None
+    except ValueError:
+        return True
+
+
 def _parse_one_color(entry: str) -> Tuple[float, float, float, float]:
     """Turn one colour entry into RGBA in 0-1."""
     text = entry.strip()
     if not text:
         raise ValueError("empty colour")
+
+    # A lab name is tried first, and nothing the forms below accept can be
+    # one: it always carries its tint or the DiLiuLab prefix, so plain red
+    # keeps its NAMED_COLORS meaning.
+    try:
+        code = _lab_color_code(text)
+    except ValueError as exc:
+        # lab_colors quotes the whole entry for a bad tint, but only the name
+        # for an unknown "DiLiuLab <name>", so the entry is added when missing.
+        detail = str(exc)
+        raise ValueError(detail if repr(text) in detail else "colour %r: %s" % (text, detail))
+    if code is not None:
+        r, g, b = lab_colors.hex_to_rgb01(code)
+        return (r, g, b, 1.0)
 
     lowered = text.lower()
     if lowered in NAMED_COLORS:
@@ -503,13 +541,22 @@ def parse_color_spec(spec: Optional[str], n_components: int) -> List[np.ndarray]
     values hold no whitespace, so ``"red,blue"`` works too.  Fewer entries than
     components cycle, which is what makes ``--color red`` colour a whole link.
 
+    Any entry may also be one DiLiuLab colour by name, spelled the way the
+    lab's colour lists spell it, the name and its tint: ``RedT80``,
+    ``MintGreenT60``, ``GrayT40``, ``BlackT100`` (case, spaces, ``_`` and
+    ``-`` do not matter, and ``DiLiuLab red`` is ``RedT100``).  Such names mix
+    with the other forms, ``"RedT80, #00ff00, 0 0 1 0.5"``, and cycle like
+    them.  The tint is what makes an entry a lab name, so ``red`` is still
+    pure red; a lab name with a tint the palette lacks, ``RedT75``, is an error.
+
     A string that is as a whole the DiLiuLab palette's name, ``DiLiuLab`` or
     ``DiLiuLab-T80`` (T100, T80, T60, T40, T20; the spellings lab_colors
     accepts), gives the components the lab's nine figure colours in the lab's
     order, red, blue, magenta, cyan, orange, purple, green, yellow and mint
     green, opaque and cycling after nine.  Empty entries are dropped first, as
-    for any colour, so ``DiLiuLab-T80,`` names it too.  The name cannot be one
-    entry of a list, because it stands for a whole list itself.
+    for any colour, so ``DiLiuLab-T80,`` names it too.  The palette's name
+    cannot be one entry of a list, because it stands for a whole list itself;
+    one lab colour, ``DiLiuLab red`` included, can.
 
     An empty or missing spec returns one opaque white per component.
     """
@@ -528,7 +575,8 @@ def parse_color_spec(spec: Optional[str], n_components: int) -> List[np.ndarray]
     if parsed is None:
         parsed = []
         for entry in entries:
-            if len(entries) > 1 and _names_lab_palette(entry):
+            if (len(entries) > 1 and _names_lab_palette(entry)
+                    and not _spelled_as_lab_color(entry)):
                 raise ValueError(
                     "%r names the whole DiLiuLab palette, so it must be the entire "
                     "colour string rather than one entry of a list (in --color %r)"

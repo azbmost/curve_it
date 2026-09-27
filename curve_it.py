@@ -142,7 +142,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_11"
+APP_VERSION = "V3_12"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -2464,7 +2464,7 @@ def launch_gui() -> None:
             "x y z ...\n"
             "r g b a ...\n\n"
             "VECT is what Geomview reads and what ridgerunner writes. It is the only format here that records whether each component is a closed loop, in the sign of its vertex count, so a closed component never repeats its first point. Loading a VECT input fills in Closed components from its header.\n\n"
-            "Colours are one per component, separated by commas: red,blue or #ff0000 or 1 0 0 1, 0 0 1 1. Fewer colours than components cycle. Leave it blank for opaque white. Palette writes a palette's name into Colours, such as DiLiuLab-T80: the lab's nine colours, red, blue, magenta and so on, repeating after nine; T40 and T20 are pale. custom removes a palette name. Colours are not geometry and are lost through any format that cannot hold them, which is all the others.\n\n"
+            "Colours are one per component, separated by commas: red,blue or #ff0000 or 1 0 0 1, 0 0 1 1. A colour may also be one of the DiLiuLab colours by name, spelled the way the lab's colour lists spell it, the name followed by its tint, T100, T80, T60, T40 or T20: RedT80,BlueT80, or MintGreenT60 and GrayT40. Names mix freely with the other forms, as in RedT80, #00ff00, 0 0 1. The tint is what makes a name the lab's, so red on its own stays pure red; DiLiuLab red means RedT100. Fewer colours than components cycle. Leave it blank for opaque white. Palette writes a palette's name into Colours, such as DiLiuLab-T80: the lab's nine colours, red, blue, magenta and so on, repeating after nine; T40 and T20 are pale. custom removes a palette name. Colours are not geometry and are lost through any format that cannot hold them, which is all the others.\n\n"
             "Fake PDB output writes one atom per residue for molecular visualization. By default each point becomes atom CA in residue ALA; blank-line-separated coordinate components become chains A, B, C, and so on. Closed chains can be marked with LINK records, and a VECT input fills those in from its own header.\n\n"
             "Coordinate and molecular XYZ output join every component into one block. Only VECT and fake PDB keep them apart.\n\n"
             "The scale factor multiplies every output x/y/z coordinate before writing."
@@ -3521,9 +3521,12 @@ def launch_gui() -> None:
         vect_color_label.grid(row=2, column=0, sticky="e", padx=(0, 6), pady=2)
         vect_color_entry = ttk.Entry(vect_frame, textvariable=vect_color_var, width=20)
         vect_color_entry.grid(row=2, column=1, columnspan=2, sticky="w", padx=(0, 12), pady=2)
+        # Two lines, so that naming the lab colours does not widen the dialog.
         vect_color_hint = ttk.Label(
             vect_frame,
-            text="One per component: 'red,blue', '1 0 0 1, 0 0 1 1' or '#ff0000'. Blank is white.")
+            text=("One per component: 'red,blue', '1 0 0 1, 0 0 1 1' or '#ff0000'. Blank is white.\n"
+                  "DiLiuLab colours by name and tint mix in too: 'RedT80,BlueT80,#00f'."),
+            justify="left")
         vect_color_hint.grid(row=2, column=3, columnspan=3, sticky="w", pady=2)
         vect_palette_label = ttk.Label(vect_frame, text="Palette:")
         vect_palette_label.grid(row=3, column=0, sticky="e", padx=(0, 6), pady=2)
@@ -4310,33 +4313,42 @@ def launch_gui() -> None:
     # --- Other tools frame ---
     tools_frame = tk.LabelFrame(root, text="Other tools", font=section_font)
     tools_frame.grid(row=6, column=0, sticky="nsew", padx=8, pady=6)
+    tool_rows: List[Any] = []
 
     def add_tool_button(row: int, col: int, label: str, command: Any, topic_key: str) -> None:
-        cell = tk.Frame(tools_frame)
-        cell.grid(row=row, column=col, sticky="w", padx=(3, 8), pady=2)
+        while len(tool_rows) <= row:
+            tool_row = tk.Frame(tools_frame)
+            tool_row.grid(row=len(tool_rows), column=0, sticky="w")
+            tool_rows.append(tool_row)
+        cell = tk.Frame(tool_rows[row])
+        cell.grid(row=0, column=col, sticky="w", padx=(3, 5), pady=2)
         tk.Button(cell, text=label, command=command).pack(side="left")
         help_button(cell, topic_key).pack(side="left", padx=(3, 0))
 
-    # Four rows: the first converts an existing file into a curve file, the
-    # second generates one from parameters, the third analyzes a curve or
-    # builds something from it, the fourth turns a structure into printable
-    # parts. A fifth column would make this frame wider than the rest of the
-    # window, so a new tool starts a row instead of widening one.
+    # Two rows, grouped by purpose: the first holds the tools that produce a
+    # curve file, converting one from another format or generating one from
+    # parameters; the second the tools that use a curve or a structure, to
+    # analyze it, project it, build on it or split it into printable parts.
+    # Each row is a frame of its own, set at the left, rather than one row of
+    # a grid both share.  A shared grid gives every column the width of its
+    # widest cell in either row, so these ten would need over 1100 px, more
+    # than the 1070 px the Mapping parameters frame gives the window; a row of
+    # its own is only as wide as its five cells.  The gap after each ? chip is
+    # 5 px rather than 8, which on macOS leaves the wider second row about
+    # 20 px inside the frame instead of 6; a new tool therefore starts a third
+    # row rather than widening one.  The rows are gridded rather than packed
+    # because pack places nothing in a withdrawn window, which is how the
+    # tests build it.
     add_tool_button(0, 0, "Convert XYZ...", convert_xyz_file_dialog, "xyz_convert")
     add_tool_button(0, 1, "SVG to XYZ...", launch_svg2xyz_tool, "svg2xyz")
     add_tool_button(0, 2, "KnotPlot to XYZ...", launch_kp2xyz_tool, "kp2xyz")
-    add_tool_button(1, 0, "Generate helical curve...", launch_generate_helical_curve_tool, "generate_helical_curve")
-    add_tool_button(1, 1, "Generate SC...", launch_generate_sc_tool, "generate_sc")
-    add_tool_button(2, 0, "Local curvature/torsion...", launch_local_curvature_torsion_tool, "local_curvature_torsion")
-    add_tool_button(2, 1, "Plane It...", launch_plane_it_tool, "plane_it")
-    add_tool_button(2, 2, "Curved Connector...", launch_curved_connector_tool, "curved_connector")
-    add_tool_button(2, 3, "XYZ to 3D Model...", launch_xyz2model_tool, "xyz2model")
-    add_tool_button(3, 0, "Multicolor Split...", launch_multicolor_split_tool, "multicolor_split")
-    # Only the trailing spacer column takes up slack, so the buttons stay
-    # grouped at the left instead of spreading across the window width.
-    for col in range(4):
-        tools_frame.grid_columnconfigure(col, weight=0)
-    tools_frame.grid_columnconfigure(4, weight=1)
+    add_tool_button(0, 3, "Generate helical curve...", launch_generate_helical_curve_tool, "generate_helical_curve")
+    add_tool_button(0, 4, "Generate SC...", launch_generate_sc_tool, "generate_sc")
+    add_tool_button(1, 0, "Local curvature/torsion...", launch_local_curvature_torsion_tool, "local_curvature_torsion")
+    add_tool_button(1, 1, "Plane It...", launch_plane_it_tool, "plane_it")
+    add_tool_button(1, 2, "Curved Connector...", launch_curved_connector_tool, "curved_connector")
+    add_tool_button(1, 3, "XYZ to 3D Model...", launch_xyz2model_tool, "xyz2model")
+    add_tool_button(1, 4, "Multicolor Split...", launch_multicolor_split_tool, "multicolor_split")
 
     # --- Run log frame ---
     log_frame = tk.LabelFrame(root, text="Run log", font=section_font)
@@ -4810,7 +4822,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         default=None,
         help=("VECT output only: one colour per component, separated by commas. "
               "Names, #hex, or 3-4 numbers -- 'red,blue', '#ff0000', "
-              "'1 0 0 1, 0 0 1 1'. Fewer colours than components cycle. "
+              "'1 0 0 1, 0 0 1 1'. Each may also be one DiLiuLab colour by name, "
+              "spelled as in the lab's colour lists with its tint, RedT80, "
+              "MintGreenT60 or GrayT40 (T100, T80, T60, T40, T20), and mixed "
+              "with the other forms -- 'RedT80,BlueT80', 'RedT80, #00ff00'; "
+              "without a tint, red stays pure red. "
+              "Fewer colours than components cycle. "
               "Or the name of a whole palette: DiLiuLab gives the components the "
               "lab's nine figure colours from gr_colors in turn, red, blue, "
               "magenta, cyan, orange, purple, green, yellow, mint green, "

@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_11`
+Version: `V3_12`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -189,7 +189,7 @@ python3 curve_it_lib/get_curve_it_phaseV5_1.py input.pdb curve.xyz \
 
 **Convert XYZ...** opens a small conversion window for coordinate XYZ/txt, molecular XYZ, Geomview VECT, and fake-PDB output. An optional scale factor multiplies every output coordinate before writing. Fake PDB output is meant for molecular visualization: each point becomes one atom in one residue, using residue `ALA` and atom `CA` by default. Blank-line-separated coordinate components become chains `A`, `B`, `C`, and so on; selected closed chains can be written with `LINK` records.
 
-This window, and its command-line form below, are the only places the package **writes** VECT; every tool reads it, but the generators keep writing coordinate XYZ. Loading a VECT input fills in **Closed components** from the file's own header, and **Colours** takes one entry per component — `red,blue`, `#ff0000`, or `1 0 0 1, 0 0 1 1` — cycling when there are fewer colours than components and defaulting to opaque white. **Colours** also takes the name of a whole palette, `DiLiuLab` or a tint such as `DiLiuLab-T80`, which gives the components the lab's figure colours in turn, and the **Palette** menu below it writes that name in; see [DiLiuLab Palette](#diliulab-palette). Only VECT and fake PDB keep components apart on the way out; both XYZ forms join them into one block.
+This window, and its command-line form below, are the only places the package **writes** VECT; every tool reads it, but the generators keep writing coordinate XYZ. Loading a VECT input fills in **Closed components** from the file's own header, and **Colours** takes one entry per component — `red,blue`, `#ff0000`, or `1 0 0 1, 0 0 1 1` — cycling when there are fewer colours than components and defaulting to opaque white. **Colours** also takes the name of a whole palette, `DiLiuLab` or a tint such as `DiLiuLab-T80`, which gives the components the lab's figure colours in turn, and the **Palette** menu below it writes that name in. An entry can also be one lab colour by name, as in `RedT80,BlueT80`; see [DiLiuLab Palette](#diliulab-palette). Only VECT and fake PDB keep components apart on the way out; both XYZ forms join them into one block.
 
 ```bash
 # Same window, from the command line. The output extension picks the format.
@@ -372,9 +372,13 @@ python3 plane_it.py input.pdb --atom-type P --draw-base-pairs --base-pair-atom "
 python3 plane_it.py points.txt --atom-type all
 python3 plane_it.py input.pdb --atom-type P --write-projection-basis
 python3 plane_it.py input.pdb --atom-type P --depth-order-circles
+python3 plane_it.py input.pdb --atom-type P --palette DiLiuLab-T80 --chain-colors A=BlueT80,B=RedT80
+python3 plane_it.py input.pdb --atom-types "P,C1'" --style "C1' fill=GrayT40"
 ```
 
 Plain coordinate text files may contain multiple components separated by blank lines; Plane It treats those components as chains `A`, `B`, `C`, and so on.
+
+`--color-by chain`, the default, gives each chain its own colour, and `--color-by atom-type` gives each atom type its own. Every colour starts at the **Palette**'s assignment and can be changed freely. In the window, the swatches beside the **Palette** menu show the colours a run will use, one per chain of the input or one per atom type, with `+N more` opening the rest; click a swatch to change it, and **Reset** returns to the palette. Colours picked for chains belong to the file they were picked for and are cleared when another file is loaded. Each atom-type row's **Fill** and line **Color** start at the palette's colour, or at `chain` in chain mode, and take any colour: typed as a hex code, an SVG name, or a DiLiuLab name such as `RedT80`, or picked from the square beside the field, whose picker offers the DiLiuLab colours at every tint. A colour set in a row wins for that atom type in either mode; in chain mode a chain's own colour comes next, then the palette. On the command line the same colours are `--chain-colors A=RedT80,B=#4c79e6` and `--style "C1' fill=MintGreenT80 line_stroke=#1f77b4"`.
 
 Plane It includes a finite patch of the projection-basis xy-plane in the SVG by default; use `--no-xy-plane` to omit it. In PCA mode, this is the PC1/PC2 plane through the selected-atom centroid, where projected depth is `0`; in current-XY mode, it is the current coordinate xy-plane after any optional pre-projection transform. The SVG group/layer is named `xy-plane`, and its polygon shape is named `xy-plane-shape`. If SVG depth ordering is enabled for circles, neighbor lines, or base-pair lines, the xy-plane patch is sorted with those items at projected depth `0`.
 
@@ -439,7 +443,7 @@ Before opening the window, the Curve It launcher checks for ChimeraX and the thr
 python3 curve_it_lib/multicolor_split.py MODEL.pdb                   # every chain its own colour
 python3 curve_it_lib/multicolor_split.py MODEL.pdb --parts A C       # choose and order the parts
 python3 curve_it_lib/multicolor_split.py MODEL.pdb --parts A,B C     # chains A and B share one colour
-python3 curve_it_lib/multicolor_split.py MODEL.pdb --resolution 3.7  # K is rescaled and checked
+python3 curve_it_lib/multicolor_split.py MODEL.pdb --resolution 3.7  # more detail, few holes; K rescaled and checked
 python3 curve_it_lib/multicolor_split.py MODEL.pdb --lay-flat        # fewer layers, less purge
 python3 curve_it_lib/multicolor_split.py MODEL.pdb --gui             # the window, pre-filled
 ```
@@ -454,6 +458,7 @@ The palette is stored once, in `assets/diliulab_colors.json`, and read through `
 from curve_it_lib import lab_colors                 # plain "import lab_colors" inside curve_it_lib/
 lab_colors.lab_colors("T80")                        # ['#eb7070', '#7094eb', '#eb70db', ...] in lab order
 lab_colors.lab_named_colors("T100", neutral=True)   # [('red', '#e64c4c'), ..., ('black', '#000000')]
+lab_colors.resolve_lab_color("MintGreenT80")        # '#70ebad'; None for anything that is not a lab name
 ```
 
 The values come from gr_colors V3.3's own formula: golden-ratio HSV hues at saturation 0.67 and value 0.90, the lab's indexes 0, 1, 3, 4, 5, 6, 7, 10, and 12, and each tint mixed toward white with gr_colors' rounding. So T100 matches the table in the gr_colors README, and every tint matches gr_colors' shipped `grcT100.clr` to `grcT20.clr` colour lists swatch for swatch. If the asset is missing or cannot be read, the reader falls back to the formula.
@@ -461,9 +466,12 @@ The values come from gr_colors V3.3's own formula: golden-ratio HSV hues at satu
 Curve It does not depend on gr_colors. Nothing in this package imports, runs, or reads the gr_colors script: the colours live in the asset, the fallback formula is `lab_colors.py`'s own code, and the tests check both against values recorded from gr_colors V3.3. A gr_colors checkout is therefore never needed, and a later gr_colors release cannot change these colours; to adopt new lab colours, edit or regenerate the asset.
 
 ```bash
-python3 curve_it_lib/lab_colors.py                # print every tint, neutral included
+python3 curve_it_lib/lab_colors.py                # print every tint, each colour beside its name
+python3 curve_it_lib/lab_colors.py --name MintGreenT80   # one colour's hex code
 python3 curve_it_lib/lab_colors.py --write-asset  # regenerate the asset from the formula
 ```
+
+A single lab colour can also be named wherever a tool takes a colour value, spelled the way the lab's own colour lists spell it: the colour's name followed by its tint, `RedT80`, `MintGreenT60`, `GrayT40`, `BlackT100`. Case, spaces, `_`, and `-` are ignored, so `mint green T80` works too, and `DiLiuLab red` means `RedT100`. The tint is what marks a name as the lab's: `red` on its own keeps its usual meaning, pure red, everywhere it meant that before, so no colour value that worked before changes meaning. A lab name with a tint the palette does not hold, such as `RedT75`, is refused with the tints listed. Names are accepted by **Convert XYZ...** and `--convert-color`, one per component and mixed freely with the other forms (`RedT80,BlueT80` or `RedT80, #00ff00`), by XYZ to 3D Model's `--colors` (`RedT80,#3cb44b,MintGreenT60`), and by every colour Plane It takes: its window's **Fill** and **Color** fields, the `fill`, `stroke`, and `line_stroke` style keys, `--chain-colors`, and the underlay, xy-plane, scale-bar, and base-pair colour options, each resolved to its hex code before the SVG is written. Plane It's `--style` and `--chain-colors` split their values at spaces, so write a name there without them: `MintGreenT80`, `A=RedT100`.
 
 Every tool keeps its own colours as the default, unchanged. `--palette DiLiuLab` picks the T100 colours, and `--palette DiLiuLab-T80`, `-T60`, `-T40`, or `-T20` picks a tint. Case and the separator are ignored, so `"DiLiuLab T80"` and `diliulab80` are read the same way, and `none` or `auto` mean `default`; any other name, or a tint such as `DiLiuLab-T50`, is refused. Each tool's window has a matching palette menu, explained in the window's own help. A tool records the palette where it already records its settings, such as a report line, the JSON, SVG metadata, or a `REPRODUCE` line, but only when it is not `default`. What the palette colours in each tool:
 
@@ -472,7 +480,7 @@ Every tool keeps its own colours as the default, unchanged. `--palette DiLiuLab`
 - **KnotPlot to XYZ**: a link's components in the Preview windows. A knot's single component looks the same either way, and the `.xyz` files carry no colour.
 - **View curve** (`view_xyzV3.py`): the components of a multi-component file. A single-component curve keeps its gray line with points coloured by position, and the red start and black end markers never change. In Curve It, the menu sits under **View curve** and changes only the view.
 - **Convert XYZ...** and `curve_it.py --convert`: the VECT colours. There is no separate option, because the palette's name is itself a colour value, `--convert-color DiLiuLab-T80`. The file's colour comment names the palette.
-- **Plane It**: the chain colours with `--color-by chain`. With `--color-by atom-type`, it gives each atom type its fill and line colour, unless `--style` or the window's atom-type row sets them.
+- **Plane It**: the chain colours with `--color-by chain`, and each atom type's fill and line colour with `--color-by atom-type`. They are the starting colours the window shows, in the swatches beside its menu and in each row's **Fill** and **Color**, and any of them can be changed; `--chain-colors` and `--style` change them on the command line.
 - **Multicolor Split**: the part colours of the preview PNG and GLB, the window's swatches, and each part's colour name in the log, report, and JSON. The STLs carry no colour.
 - **Local curvature/torsion**: the pop-up plot's three traces, curvature red, torsion blue, and local writhe density magenta. The CSV does not change.
 

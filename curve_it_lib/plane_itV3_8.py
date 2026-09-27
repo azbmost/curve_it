@@ -33,6 +33,8 @@ Examples:
   python plane_it.py input.pdb --atom-type P --projection-mode current-xy
   python plane_it.py input.pdb --atom-type P --color-by chain
   python plane_it.py input.pdb --atom-type P --color-by chain --palette DiLiuLab-T80
+  python plane_it.py input.pdb --atom-type P --color-by chain --chain-colors "A=RedT80,B=#4c79e6"
+  python plane_it.py input.pdb --atom-types "P,C1'" --style "C1' fill=MintGreenT80" --xy-plane-fill GrayT20
   python plane_it.py input.pdb --atom-type P --draw-lines --depth-order-lines --line-underlay
   python plane_it.py input.pdb --atom-type P --style "P draw_lines=true extend_3prime=true"
   python plane_it.py input.pdb --atom-type P --flip-about-y --write-projection-basis
@@ -43,6 +45,15 @@ Examples:
 
 GUI behavior:
   If the script is run with no arguments, or with --gui, a Tkinter GUI opens.
+
+Color names:
+  Every color option (fill, stroke and line_stroke in --style, --chain-colors,
+  --xy-plane-fill, --scale-bar-stroke, ...) takes a hex code, an SVG color name,
+  or a DiLiuLab color by name with its tint, as the lab's color lists spell it:
+  RedT80, MintGreenT60, GrayT40. A name is turned into its #rrggbb before
+  anything is written, so no DiLiuLab name reaches the SVG; the bare name red
+  stays SVG's #ff0000. The palette's own name, DiLiuLab or DiLiuLab-T80, names
+  nine colors rather than one and is refused where one color is expected.
 
 PCA convention:
   In PCA mode, the plane is spanned by the first two principal components of
@@ -147,6 +158,7 @@ DEFAULT_COLOR_SATURATION = 0.67
 DEFAULT_COLOR_VALUE = 0.90
 GOLDEN_RATIO_CONJUGATE = 0.618033988749895
 DEFAULT_PALETTE = "default"
+COLOR_STRIP_MAX = 12  # the most swatches the GUI shows beside the Palette, as many as fit, before "+N more"
 XY_PLANE_MARGIN_FRACTION = 0.08
 DEFAULT_SCALE_BAR_LENGTH = 10.0
 DEFAULT_SCALE_BAR_UNIT_LABEL = "\u00c5"
@@ -1031,6 +1043,259 @@ def palette_color_for_index(index: int, palette: str = DEFAULT_PALETTE) -> str:
     return colors[index % len(colors)]
 
 
+class ColorOptionError(ValueError):
+    """A color value Plane It cannot use: a DiLiuLab name with a tint the palette
+    lacks (RedT75), "DiLiuLab <not a lab color>", the palette's own name where
+    one color is expected (DiLiuLab-T80), or a malformed --chain-colors value.
+    main() reports it as a usage error, exit 2, the way argparse reports any
+    other bad option value; the GUI shows it in the run log."""
+
+
+# The single-color options, each resolved once by resolve_color_options.
+COLOR_OPTIONS = (
+    ("line_underlay_stroke", "--line-underlay-stroke"),
+    ("xy_plane_fill", "--xy-plane-fill"),
+    ("xy_plane_stroke", "--xy-plane-stroke"),
+    ("scale_bar_stroke", "--scale-bar-stroke"),
+    ("scale_bar_background", "--scale-bar-background"),
+    ("base_pair_stroke", "--base-pair-stroke"),
+)
+STYLE_COLOR_KEYS = {"fill", "stroke", "line_stroke"}
+BLANK_CHAIN_WORDS = {"blank", "none", "_blank_"}
+LAB_NAME_HINT = "; a DiLiuLab name such as MintGreenT80 also works" if lab_colors is not None else ""
+LAB_NAMES_HELP = (
+    " DiLiuLab names: Red, Blue, Magenta, Cyan, Orange, Purple, Green, Yellow, MintGreen and Black/Gray, "
+    "each with its tint T100, T80, T60, T40 or T20, e.g. RedT80, MintGreenT60, GrayT40; the bare name red "
+    "stays SVG's #ff0000, and the palette's own name, DiLiuLab-T80, is refused, since it names nine colors."
+) if lab_colors is not None else ""
+# The 147 color keywords of SVG 1.1 (the CSS3 names), with the #rrggbb each
+# stands for, for the window's squares and swatches. Tk also knows the X11
+# names (gray50, wheat1, navyblue, VioletRed), which an SVG viewer does not draw,
+# and gives gray, green, maroon and purple other values than SVG does.
+SVG_COLOR_KEYWORDS = {
+    "aliceblue": "#f0f8ff", "antiquewhite": "#faebd7", "aqua": "#00ffff", "aquamarine": "#7fffd4",
+    "azure": "#f0ffff", "beige": "#f5f5dc", "bisque": "#ffe4c4", "black": "#000000", "blanchedalmond": "#ffebcd",
+    "blue": "#0000ff", "blueviolet": "#8a2be2", "brown": "#a52a2a", "burlywood": "#deb887", "cadetblue": "#5f9ea0",
+    "chartreuse": "#7fff00", "chocolate": "#d2691e", "coral": "#ff7f50", "cornflowerblue": "#6495ed",
+    "cornsilk": "#fff8dc", "crimson": "#dc143c", "cyan": "#00ffff", "darkblue": "#00008b", "darkcyan": "#008b8b",
+    "darkgoldenrod": "#b8860b", "darkgray": "#a9a9a9", "darkgreen": "#006400", "darkgrey": "#a9a9a9",
+    "darkkhaki": "#bdb76b", "darkmagenta": "#8b008b", "darkolivegreen": "#556b2f", "darkorange": "#ff8c00",
+    "darkorchid": "#9932cc", "darkred": "#8b0000", "darksalmon": "#e9967a", "darkseagreen": "#8fbc8f",
+    "darkslateblue": "#483d8b", "darkslategray": "#2f4f4f", "darkslategrey": "#2f4f4f", "darkturquoise": "#00ced1",
+    "darkviolet": "#9400d3", "deeppink": "#ff1493", "deepskyblue": "#00bfff", "dimgray": "#696969",
+    "dimgrey": "#696969", "dodgerblue": "#1e90ff", "firebrick": "#b22222", "floralwhite": "#fffaf0",
+    "forestgreen": "#228b22", "fuchsia": "#ff00ff", "gainsboro": "#dcdcdc", "ghostwhite": "#f8f8ff",
+    "gold": "#ffd700", "goldenrod": "#daa520", "gray": "#808080", "green": "#008000", "greenyellow": "#adff2f",
+    "grey": "#808080", "honeydew": "#f0fff0", "hotpink": "#ff69b4", "indianred": "#cd5c5c", "indigo": "#4b0082",
+    "ivory": "#fffff0", "khaki": "#f0e68c", "lavender": "#e6e6fa", "lavenderblush": "#fff0f5",
+    "lawngreen": "#7cfc00", "lemonchiffon": "#fffacd", "lightblue": "#add8e6", "lightcoral": "#f08080",
+    "lightcyan": "#e0ffff", "lightgoldenrodyellow": "#fafad2", "lightgray": "#d3d3d3", "lightgreen": "#90ee90",
+    "lightgrey": "#d3d3d3", "lightpink": "#ffb6c1", "lightsalmon": "#ffa07a", "lightseagreen": "#20b2aa",
+    "lightskyblue": "#87cefa", "lightslategray": "#778899", "lightslategrey": "#778899", "lightsteelblue": "#b0c4de",
+    "lightyellow": "#ffffe0", "lime": "#00ff00", "limegreen": "#32cd32", "linen": "#faf0e6", "magenta": "#ff00ff",
+    "maroon": "#800000", "mediumaquamarine": "#66cdaa", "mediumblue": "#0000cd", "mediumorchid": "#ba55d3",
+    "mediumpurple": "#9370db", "mediumseagreen": "#3cb371", "mediumslateblue": "#7b68ee",
+    "mediumspringgreen": "#00fa9a", "mediumturquoise": "#48d1cc", "mediumvioletred": "#c71585",
+    "midnightblue": "#191970", "mintcream": "#f5fffa", "mistyrose": "#ffe4e1", "moccasin": "#ffe4b5",
+    "navajowhite": "#ffdead", "navy": "#000080", "oldlace": "#fdf5e6", "olive": "#808000", "olivedrab": "#6b8e23",
+    "orange": "#ffa500", "orangered": "#ff4500", "orchid": "#da70d6", "palegoldenrod": "#eee8aa",
+    "palegreen": "#98fb98", "paleturquoise": "#afeeee", "palevioletred": "#db7093", "papayawhip": "#ffefd5",
+    "peachpuff": "#ffdab9", "peru": "#cd853f", "pink": "#ffc0cb", "plum": "#dda0dd", "powderblue": "#b0e0e6",
+    "purple": "#800080", "red": "#ff0000", "rosybrown": "#bc8f8f", "royalblue": "#4169e1", "saddlebrown": "#8b4513",
+    "salmon": "#fa8072", "sandybrown": "#f4a460", "seagreen": "#2e8b57", "seashell": "#fff5ee", "sienna": "#a0522d",
+    "silver": "#c0c0c0", "skyblue": "#87ceeb", "slateblue": "#6a5acd", "slategray": "#708090",
+    "slategrey": "#708090", "snow": "#fffafa", "springgreen": "#00ff7f", "steelblue": "#4682b4", "tan": "#d2b48c",
+    "teal": "#008080", "thistle": "#d8bfd8", "tomato": "#ff6347", "turquoise": "#40e0d0", "violet": "#ee82ee",
+    "wheat": "#f5deb3", "white": "#ffffff", "whitesmoke": "#f5f5f5", "yellow": "#ffff00", "yellowgreen": "#9acd32",
+}
+
+
+def resolve_color_value(value, where: str):
+    """The #rrggbb a DiLiuLab color name such as MintGreenT80 stands for. Any
+    other value, a hex code, an SVG name such as red or anything else, comes
+    back exactly as given, as every value does when lab_colors is missing.
+    `where` names the option in the error for a lab name the palette lacks,
+    and for the palette's own name, DiLiuLab-T80, which names nine colors
+    where one is expected and would reach the SVG as an invalid color."""
+    if lab_colors is None or value is None:
+        return value
+    try:
+        tint = lab_colors.lab_tint_of(value)
+    except ValueError:
+        tint = "T80"                        # the palette's name with a tint it lacks, DiLiuLab-T75
+    if tint is not None:
+        try:
+            example = lab_colors.lab_color_name("red", tint)
+        except ValueError:
+            example = "RedT80"
+        raise ColorOptionError(
+            "{0}: {1} names the whole palette, not one color; give one color, such as {2}".format(
+                where, str(value).strip(), example
+            )
+        )
+    try:
+        code = lab_colors.resolve_lab_color(value)
+    except ValueError as exc:
+        raise ColorOptionError("{0}: {1}".format(where, exc)) from exc
+    return value if code is None else code
+
+
+def svg_color_code(value) -> Optional[str]:
+    """The #rrggbb an SVG viewer draws for a color value, or None for a value it
+    cannot draw as a color, for the window's squares and swatches. Accepted:
+    #rgb, #rgba, #rrggbb and #rrggbbaa (the alpha left out), the 147 SVG color
+    keywords, in any case, and a DiLiuLab name, which the run writes as its hex
+    code. Everything else is None: the X11 names Tk knows and SVG does not
+    (gray50, wheat1, navyblue, VioletRed), rgb(), which a style token cannot
+    carry since a spec splits at its commas and spaces, none, the palette's own
+    name, and a lab name with a tint the palette lacks."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if lab_colors is not None:
+        try:
+            if lab_colors.lab_tint_of(text) is not None:
+                return None                 # DiLiuLab-T80: nine colors, not one
+            code = lab_colors.resolve_lab_color(text)
+        except ValueError:
+            return None
+        if code is not None:
+            return code.lower()
+    match = re.fullmatch(r"#([0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})", text)
+    if match:
+        digits = match.group(1)
+        if len(digits) <= 4:
+            digits = "".join(digit * 2 for digit in digits)
+        return "#" + digits[:6].lower()
+    return SVG_COLOR_KEYWORDS.get(text.lower())
+
+
+def style_color_token(text: str, where: str) -> str:
+    """A window field's color as a --style token carries it. The value is checked
+    here, under the field's own name (where, e.g. "P Fill"), so that a bad one
+    is reported the same way with or without spaces; one with spaces, commas or
+    semicolons, at which a style spec splits, such as "Mint Green T80", goes as
+    its hex code, and every other value goes as typed."""
+    code = resolve_color_value(text, where)
+    if re.search(r"[\s,;]", text):
+        return str(code)
+    return text
+
+
+def resolve_color_options(args: argparse.Namespace) -> None:
+    """Replace a DiLiuLab name in any single-color option by its #rrggbb, once,
+    before anything is read or written, so no DiLiuLab name reaches the SVG."""
+    for attr, option in COLOR_OPTIONS:
+        if hasattr(args, attr):
+            setattr(args, attr, resolve_color_value(getattr(args, attr), option))
+
+
+def parse_chain_colors(text: object) -> Dict[str, Tuple[str, str]]:
+    """{chain ID: (color, color as given)} from a --chain-colors value such as
+    "A=RedT80,B=#4c79e6": CHAIN=COLOR pairs separated by commas, semicolons or
+    whitespace, with blank (or none) naming the blank chain as --closed-chains
+    does. Names are resolved to #rrggbb here; a pair that is not CHAIN=COLOR is
+    a ColorOptionError. A chain listed twice takes its last color."""
+    specs: Dict[str, Tuple[str, str]] = {}
+    text = str(text or "").strip()
+    if not text:
+        return specs
+    for part in re.split(r"[,;\s]+", re.sub(r"\s*=\s*", "=", text)):
+        if not part:
+            continue
+        chain, sep, color = part.partition("=")
+        if not sep or not chain or not color or "=" in color:
+            raise ColorOptionError(
+                "--chain-colors takes CHAIN=COLOR pairs separated by commas, e.g. A=RedT80,B=#4c79e6 "
+                "(blank=... for a blank chain ID); {0!r} is not one".format(part)
+            )
+        if chain.lower() in BLANK_CHAIN_WORDS:
+            chain = ""
+        specs[chain] = (resolve_color_value(color, "--chain-colors {0}".format(part)), color)
+    return specs
+
+
+def chain_color_overrides(args: argparse.Namespace) -> Dict[str, str]:
+    """The resolved --chain-colors of a run, {chain ID: #rrggbb or color}."""
+    specs = getattr(args, "chain_color_specs", None) or {}
+    return {chain: color for chain, (color, _given) in specs.items()}
+
+
+def format_chain_colors(colors: Dict[str, str]) -> str:
+    """A=#eb7070,B=#4c79e6: the --chain-colors spelling, blank for the blank chain."""
+    return ",".join("{0}={1}".format(chain_label(chain), color) for chain, color in colors.items())
+
+
+def chain_color_order(selected_atoms: Sequence[SelectedAtom]) -> List[str]:
+    """Chain IDs in the order the SVG gives them palette colors, the order they
+    first appear among the selected atoms, found exactly as write_projection_svg
+    groups them (the projected positions play no part in the order)."""
+    count = len(selected_atoms)
+    grouped = group_selected_atoms(selected_atoms, np.zeros((count, 2)), np.zeros(count))
+    return [chain for chain, _type_groups in sorted_chain_items(grouped)]
+
+
+def assign_chain_colors(chains: Sequence[str], palette: str, overrides: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Each chain's color in chain mode: its --chain-colors color, or else the
+    palette's color for its place in `chains`, so a chain given its own color
+    does not shift the colors of the others."""
+    colors = {chain: palette_color_for_index(index, palette) for index, chain in enumerate(chains)}
+    for chain, color in (overrides or {}).items():
+        if chain in colors:
+            colors[chain] = color
+    return colors
+
+
+def explicit_chain_mode_colors(
+    args: argparse.Namespace,
+    atom_types: Sequence[str],
+    selected_atoms: Sequence[SelectedAtom],
+    styles: Dict[str, AtomStyle],
+) -> List[Tuple[str, str]]:
+    """[(atom type, "fill" or "line_stroke"), ...]: the colors set explicitly in a
+    style that replace chain colors in this chain-mode run. A line_stroke counts
+    only for an atom type that draws lines."""
+    if getattr(args, "color_by", "chain") != "chain":
+        return []
+    explicit = getattr(args, "explicit_style_keys", None) or {}
+    counts = atom_type_counts(selected_atoms)
+    found: List[Tuple[str, str]] = []
+    for atom_type in atom_types:
+        keys = explicit.get(atom_type.upper(), set())
+        if not counts.get(atom_type):
+            continue
+        if "fill" in keys:
+            found.append((atom_type, "fill"))
+        if "line_stroke" in keys and styles[atom_type.upper()].draw_lines:
+            found.append((atom_type, "line_stroke"))
+    return found
+
+
+def chain_color_report(args: argparse.Namespace, selected_atoms: Sequence[SelectedAtom]) -> dict:
+    """What --chain-colors did in this run: the colors given, the chains they
+    colored ("used"), the chains in the selection whose color nothing drawn
+    took ("unused": every circle and line there has a fill or line_stroke set
+    explicitly), the chains missing from the selection, and whether the option
+    was ignored because color_by is atom-type. Which chains some drawn element
+    took its chain color for is what write_projection_svg records as
+    args.chain_color_takers; before an SVG is written every listed chain in
+    the selection counts as used."""
+    specs = getattr(args, "chain_color_specs", None) or {}
+    chain_mode = getattr(args, "color_by", "chain") == "chain"
+    present = chain_color_order(selected_atoms) if specs else []
+    takers = getattr(args, "chain_color_takers", None)
+    listed = [chain for chain in present if chain_mode and chain in specs]
+    used = [chain for chain in listed if takers is None or chain in takers]
+    return {
+        "given": specs,
+        "used": used,
+        "unused": [chain for chain in listed if chain not in used],
+        "missing": [chain for chain in specs if chain_mode and chain not in present],
+        "present": present,
+        "ignored": bool(specs) and not chain_mode,
+    }
+
+
 def parse_bool_text(value: str) -> bool:
     text = value.strip().lower()
     if text in {"1", "true", "t", "yes", "y", "on"}:
@@ -1082,7 +1347,12 @@ def parse_style_specs(
     default_connection_mode: str,
     default_extend_3prime: bool = False,
     palette: str = DEFAULT_PALETTE,
+    explicit_keys: Optional[Dict[str, set]] = None,
 ) -> Dict[str, AtomStyle]:
+    """Per-atom-type styles from the defaults and the --style specs. A DiLiuLab
+    name in fill, stroke or line_stroke becomes its #rrggbb here. When given,
+    explicit_keys collects {ATOM TYPE: {key, ...}} for every key a spec set, so
+    that chain mode can tell an explicit fill= from the palette's default."""
     styles: Dict[str, AtomStyle] = {}
     for index, atom_type in enumerate(atom_types):
         # The palette sets only the starting fill/line_stroke; fill= and
@@ -1157,8 +1427,12 @@ def parse_style_specs(
                 setattr(style, key, parse_bool_text(value))
             elif key == "connection_mode":
                 setattr(style, key, normalize_connection_mode(value))
+            elif key in STYLE_COLOR_KEYS:
+                setattr(style, key, resolve_color_value(value, "--style {0} {1}".format(atom_type_part.strip(), token)))
             else:
                 setattr(style, key, value)
+            if explicit_keys is not None:
+                explicit_keys.setdefault(atom_type_key, set()).add(key)
     return styles
 
 
@@ -1285,6 +1559,27 @@ def write_projection_json(
     if palette != DEFAULT_PALETTE:
         metadata["palette"] = palette
         metadata["palette_colors"] = palette_colors(palette)
+    # --chain-colors, and colors set explicitly in a style, are recorded only
+    # when they are given, for the same reason.
+    chain_report = chain_color_report(args, selected_atoms)
+    if chain_report["given"]:
+        metadata["chain_colors"] = {chain_label(chain): color for chain, (color, _given) in chain_report["given"].items()}
+    # The chain-mode note keeps its exact words unless a style sets a fill or
+    # line_stroke that wins over the chain colors, which those words deny.
+    explicit_colors = explicit_chain_mode_colors(args, atom_types, selected_atoms, styles)
+    if explicit_colors:
+        chain_mode_note = (
+            "When color_by is chain, chain colors override the per-atom-type fill and line_stroke not set explicitly in a style, "
+            "but radius, opacity, stroke_width, line_width, and line_opacity remain per atom type; a fill or line_stroke set "
+            "explicitly ({0}) replaces the chain colors for that atom type's circles or lines.".format(
+                ", ".join("{0} {1}".format(atom_type, key) for atom_type, key in explicit_colors)
+            )
+        )
+    else:
+        chain_mode_note = (
+            "When color_by is chain, chain colors override per-atom-type fill and line_stroke, but radius, opacity, "
+            "stroke_width, line_width, and line_opacity remain per atom type."
+        )
     metadata.update({
         "default_connection_mode": getattr(args, "connection_mode", "smooth"),
         "closed_chains": getattr(args, "closed_chains", ""),
@@ -1330,7 +1625,7 @@ def write_projection_json(
             "Closed chains add one additional neighbor segment from the last selected atom in that chain/model/type group back to the first.",
             "Base-pair interaction lines, if enabled, are read from DSSR and connect the selected projected anchor atom of the paired residues.",
             "When SVG depth ordering is enabled, circles, neighbor segments, and/or base-pair lines are written back-to-front using the selected projection depth coordinate.",
-            "When color_by is chain, chain colors override per-atom-type fill and line_stroke, but radius, opacity, stroke_width, line_width, and line_opacity remain per atom type.",
+            chain_mode_note,
         ],
     })
     if palette != DEFAULT_PALETTE:
@@ -1338,6 +1633,32 @@ def write_projection_json(
             "The palette gives chain colors in the order chains first appear and the default per-atom-type fill and line_stroke in atom-type order, "
             "taking palette_colors in order and repeating after the last one; fill and line_stroke set in a style still win."
         )
+    if chain_report["used"]:
+        used = chain_report["used"]
+        metadata["notes"].append(
+            "In this run, chain_colors gives chain{0} {1} {2} own color{0}, and the other chains keep the palette's chain colors. "
+            "Precedence when color_by is chain: an atom type's explicit fill or line_stroke, then chain_colors, then the "
+            "palette's chain color.".format(
+                "s" if len(used) > 1 else "", ", ".join(chain_label(chain) for chain in used), "their" if len(used) > 1 else "its"
+            )
+        )
+    if chain_report["unused"]:
+        unused = chain_report["unused"]
+        metadata["notes"].append(
+            "chain_colors for chain{0} {1} {2} not used: every circle and line drawn in {3} takes a fill or line_stroke set "
+            "explicitly in its atom type's style.".format(
+                "s" if len(unused) > 1 else "", ", ".join(chain_label(chain) for chain in unused),
+                "were" if len(unused) > 1 else "was", "those chains" if len(unused) > 1 else "that chain",
+            )
+        )
+    if chain_report["missing"]:
+        metadata["notes"].append(
+            "chain_colors names chains that are not in the selection and were not used: {0}.".format(
+                ", ".join(chain_label(chain) for chain in chain_report["missing"])
+            )
+        )
+    if chain_report["ignored"]:
+        metadata["notes"].append("chain_colors is not used because color_by is atom-type.")
     with output_json.open("w", encoding="utf-8") as handle:
         json.dump(metadata, handle, indent=2)
         handle.write("\n")
@@ -2200,18 +2521,36 @@ def write_projection_svg(
     line_underlay = bool(getattr(args, "line_underlay", False)) and depth_order_lines
     palette = palette_from_args(args)
 
-    chain_colors = {
-        chain: palette_color_for_index(index, palette)
-        for index, (chain, _type_groups) in enumerate(sorted_chain_items(grouped))
-    }
+    # Chain mode: explicit atom-type fill/line_stroke, then --chain-colors, then
+    # the palette color for the chain's place in first-appearance order.
+    chain_order = [chain for chain, _type_groups in sorted_chain_items(grouped)]
+    chain_overrides = chain_color_overrides(args) if color_by == "chain" else {}
+    chain_colors = assign_chain_colors(chain_order, palette, chain_overrides)
+    explicit_keys = getattr(args, "explicit_style_keys", None) or {}
+    # The chains whose chain color a drawn circle or line takes, gathered as
+    # the elements are written: a --chain-colors color counts as used only
+    # there, not in a chain whose every element has an explicit color.
+    chain_color_takers: set = set()
+
+    def takes_chain_color(atom_type: str, key: str) -> bool:
+        return color_by == "chain" and key not in explicit_keys.get(atom_type.upper(), set())
 
     def point_fill_for(selected: SelectedAtom) -> str:
         style = styles[selected.atom_type.upper()]
-        return chain_colors[selected.atom.chain] if color_by == "chain" else style.fill
+        if not takes_chain_color(selected.atom_type, "fill"):
+            return style.fill
+        chain_color_takers.add(selected.atom.chain)
+        return chain_colors[selected.atom.chain]
+
+    def line_color_for(chain: str, atom_type: str) -> str:
+        style = styles[atom_type.upper()]
+        if not takes_chain_color(atom_type, "line_stroke"):
+            return style.line_stroke
+        chain_color_takers.add(chain)
+        return chain_colors[chain]
 
     def line_stroke_for(selected: SelectedAtom) -> str:
-        style = styles[selected.atom_type.upper()]
-        return chain_colors[selected.atom.chain] if color_by == "chain" else style.line_stroke
+        return line_color_for(selected.atom.chain, selected.atom_type)
 
     def depth_sort_value(depth: float) -> float:
         return depth if depth_front == "positive" else -depth
@@ -2848,7 +3187,7 @@ def write_projection_svg(
                                     'stroke="{stroke}" stroke-width="{width}" opacity="{opacity}" '
                                     'data-connection-mode="smooth" data-chain-closed="{closed}" data-terminal-o3-extension-included="{terminal_o3}" data-model="{model}" data-chain="{chain}" data-atom-type="{atom_type}">'.format(
                                         path=svg_escape(path_attr),
-                                        stroke=svg_escape(chain_colors[chain] if color_by == "chain" else style.line_stroke),
+                                        stroke=svg_escape(line_color_for(chain, atom_type)),
                                         width=svg_float(style.line_width),
                                         opacity=svg_float(style.line_opacity),
                                         closed=str(closed).lower(),
@@ -2875,7 +3214,7 @@ def write_projection_svg(
                                     'stroke="{stroke}" stroke-width="{width}" opacity="{opacity}" '
                                     'data-connection-mode="straight" data-chain-closed="{closed}" data-model="{model}" data-chain="{chain}" data-atom-type="{atom_type}">'.format(
                                         points=svg_escape(points_attr),
-                                        stroke=svg_escape(chain_colors[chain] if color_by == "chain" else style.line_stroke),
+                                        stroke=svg_escape(line_color_for(chain, atom_type)),
                                         width=svg_float(style.line_width),
                                         opacity=svg_float(style.line_opacity),
                                         closed=str(closed).lower(),
@@ -3026,12 +3365,48 @@ def write_projection_svg(
             "length_svg_units": scale_bar_length * scale,
         },
     }
+    # The elements are written first, into body: which chains took a
+    # --chain-colors color is known only once they are, and the projection
+    # group ahead of them records it.
+    body: List[str] = []
+    any_depth_order = depth_order_circles or depth_order_lines or depth_order_base_pairs
+    if not any_depth_order:
+        append_xy_plane_layer(body, "    ")
+        append_grouped_elements(body, include_lines=True, include_points=False, layer_id="chain_grouped_lines", layer_label="grouped neighbor lines")
+        append_base_pair_layer(body, layer_id="base_pairs", ordered=False)
+        append_grouped_elements(body, include_lines=False, include_points=True, layer_id="chain_grouped_points", layer_label="grouped points")
+    else:
+        if not depth_order_lines:
+            append_grouped_elements(body, include_lines=True, include_points=False, layer_id="chain_grouped_lines", layer_label="grouped neighbor lines")
+        append_depth_ordered_elements(
+            body,
+            include_lines=depth_order_lines,
+            include_points=depth_order_circles,
+            include_base_pairs=depth_order_base_pairs,
+        )
+        if base_pair_drawables and not depth_order_base_pairs:
+            append_base_pair_layer(body, layer_id="base_pairs", ordered=False)
+        if not depth_order_circles:
+            append_grouped_elements(body, include_lines=False, include_points=True, layer_id="chain_grouped_points", layer_label="grouped points")
+    append_scale_bar_layer(body, "    ")
+    # Kept for the JSON and the run log, written after this SVG: the chains
+    # whose chain color some drawn circle or line took.
+    args.chain_color_takers = [chain for chain in chain_order if chain in chain_color_takers]
+
     # A non-default palette is recorded here and as data-palette on the
     # projection group; default SVGs carry neither.
     palette_attr = ""
     if palette != DEFAULT_PALETTE:
         metadata["palette"] = palette
         palette_attr = ' data-palette="{0}"'.format(svg_escape(palette))
+    # Likewise the --chain-colors this SVG used, as data-chain-colors beside
+    # it: a listed chain's color counts only where a circle or line took it.
+    used_chain_colors = {
+        chain: chain_overrides[chain] for chain in chain_order if chain in chain_overrides and chain in chain_color_takers
+    }
+    if used_chain_colors:
+        metadata["chain_colors"] = {chain_label(chain): color for chain, color in used_chain_colors.items()}
+        palette_attr += ' data-chain-colors="{0}"'.format(svg_escape(format_chain_colors(used_chain_colors)))
 
     lines: List[str] = []
     lines.append('<?xml version="1.0" encoding="UTF-8"?>')
@@ -3066,28 +3441,7 @@ def write_projection_svg(
             palette_attr,
         )
     )
-
-    any_depth_order = depth_order_circles or depth_order_lines or depth_order_base_pairs
-    if not any_depth_order:
-        append_xy_plane_layer(lines, "    ")
-        append_grouped_elements(lines, include_lines=True, include_points=False, layer_id="chain_grouped_lines", layer_label="grouped neighbor lines")
-        append_base_pair_layer(lines, layer_id="base_pairs", ordered=False)
-        append_grouped_elements(lines, include_lines=False, include_points=True, layer_id="chain_grouped_points", layer_label="grouped points")
-    else:
-        if not depth_order_lines:
-            append_grouped_elements(lines, include_lines=True, include_points=False, layer_id="chain_grouped_lines", layer_label="grouped neighbor lines")
-        append_depth_ordered_elements(
-            lines,
-            include_lines=depth_order_lines,
-            include_points=depth_order_circles,
-            include_base_pairs=depth_order_base_pairs,
-        )
-        if base_pair_drawables and not depth_order_base_pairs:
-            append_base_pair_layer(lines, layer_id="base_pairs", ordered=False)
-        if not depth_order_circles:
-            append_grouped_elements(lines, include_lines=False, include_points=True, layer_id="chain_grouped_points", layer_label="grouped points")
-
-    append_scale_bar_layer(lines, "    ")
+    lines.extend(body)
     lines.append("  </g>")
     lines.append("</svg>")
     with output_svg.open("w", encoding="utf-8") as handle:
@@ -3288,6 +3642,34 @@ def format_summary(
     if palette != DEFAULT_PALETTE:
         used_for = "chain colors" if args.color_by == "chain" else "atom-type fill and line colors not set explicitly"
         out.append("Palette: {0} ({1})".format(palette, used_for))
+    chain_report = chain_color_report(args, selected_atoms)
+    if chain_report["given"]:
+        pairs = ", ".join(
+            "{0}={1}".format(chain_label(chain), color) if given.strip().lower() == color.lower()
+            else "{0}={1} ({2})".format(chain_label(chain), given, color)
+            for chain, (color, given) in chain_report["given"].items()
+        )
+        if chain_report["ignored"]:
+            out.append("Note: --chain-colors {0} is ignored with --color-by atom-type".format(pairs))
+        else:
+            out.append("Chain colors: {0}".format(pairs))
+        if chain_report["missing"]:
+            out.append("Warning: chain colors for {0} were not used; the selection has chains {1}".format(
+                ", ".join(chain_label(chain) for chain in chain_report["missing"]),
+                ", ".join(chain_label(chain) for chain in chain_report["present"]),
+            ))
+        if chain_report["unused"]:
+            unused = chain_report["unused"]
+            out.append("Warning: chain colors for {0} were not used; every circle and line drawn in {1} takes a fill or "
+                       "line color set explicitly for its atom type".format(
+                           ", ".join(chain_label(chain) for chain in unused),
+                           "those chains" if len(unused) > 1 else "that chain",
+                       ))
+    explicit_colors = explicit_chain_mode_colors(args, atom_types, selected_atoms, styles)
+    if explicit_colors:
+        out.append("Atom-type colors set explicitly win over the chain colors: {0}".format(
+            ", ".join("{0} {1}".format(atom_type, key) for atom_type, key in explicit_colors)
+        ))
     out.append("Default connection mode: {0}".format(normalize_connection_mode(getattr(args, "connection_mode", "smooth"))))
     line_enabled = ["{0}({1})".format(atom_type, styles[atom_type.upper()].connection_mode) for atom_type in atom_types if styles[atom_type.upper()].draw_lines]
     out.append("Neighbor connections enabled for atom types: {0}".format(", ".join(line_enabled) if line_enabled else "none"))
@@ -3356,6 +3738,10 @@ def run_processing(args: argparse.Namespace) -> str:
 
     validate_svg_args(args)
     args.palette = palette_from_args(args)
+    # Color names are resolved here, once, before anything is read or written;
+    # the style colors follow in parse_style_specs, still before any output.
+    resolve_color_options(args)
+    args.chain_color_specs = parse_chain_colors(getattr(args, "chain_colors", ""))
 
     output_csv = Path(args.csv_output) if args.csv_output else None
 
@@ -3391,6 +3777,7 @@ def run_processing(args: argparse.Namespace) -> str:
     hull_area = convex_hull_area_2d(projection.projected_xy)
 
     style_specs = getattr(args, "style", None) or []
+    explicit_style_keys: Dict[str, set] = {}
     styles = parse_style_specs(
         style_specs,
         atom_types,
@@ -3401,7 +3788,11 @@ def run_processing(args: argparse.Namespace) -> str:
         getattr(args, "connection_mode", "smooth"),
         bool(getattr(args, "extend_3prime", False)),
         args.palette,
+        explicit_keys=explicit_style_keys,
     )
+    # Kept beside the styles, which record the same values as before: in chain
+    # mode an explicit fill= or line_stroke= wins over the chain colors.
+    args.explicit_style_keys = explicit_style_keys
 
     filename_tags = default_name_tags_from_args(args, styles)
     default_svg, default_json, default_basis = default_output_paths(pdb_file, atom_types, resolved_input_format, filename_tags)
@@ -3493,27 +3884,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--depth-front", choices=["positive", "negative"], default="positive", help="Which depth side is front for SVG depth ordering. Default: positive")
     parser.add_argument("--line-underlay", dest="line_underlay", action="store_true", default=True, help="When --depth-order-lines is used, draw a wider line under each neighbor segment, usually white, to make depth separation clearer. Default: on")
     parser.add_argument("--no-line-underlay", dest="line_underlay", action="store_false", help="Disable the wider depth-ordered neighbor-line underlay")
-    parser.add_argument("--line-underlay-stroke", default="#ffffff", help="Stroke color for the depth-order neighbor-line underlay. Default: white")
+    parser.add_argument("--line-underlay-stroke", default="#ffffff", help="Stroke color for the depth-order neighbor-line underlay" + LAB_NAME_HINT + ". Default: white")
     parser.add_argument("--line-underlay-extra-width", type=float, default=8.0, help="Additional width added to each underlay line relative to the visible neighbor line. Default: 8.0")
     parser.add_argument("--line-underlay-opacity", type=float, default=1.0, help="Opacity of the neighbor-line underlay. Default: 1")
     parser.add_argument("--draw-xy-plane", dest="draw_xy_plane", action="store_true", default=True, help="Draw the projection-basis xy plane (projection depth=0) as an SVG layer/group named xy-plane. In PCA mode this is the PC1/PC2 plane through the selected-atom centroid. Default: on")
     parser.add_argument("--no-xy-plane", dest="draw_xy_plane", action="store_false", help="Do not draw the projection-basis xy-plane layer")
-    parser.add_argument("--xy-plane-fill", default="#7dd3fc", help="Fill color for --draw-xy-plane. Default: #7dd3fc")
-    parser.add_argument("--xy-plane-stroke", default="#0284c7", help="Stroke color for --draw-xy-plane. Default: #0284c7")
+    parser.add_argument("--xy-plane-fill", default="#7dd3fc", help="Fill color for --draw-xy-plane" + LAB_NAME_HINT + ". Default: #7dd3fc")
+    parser.add_argument("--xy-plane-stroke", default="#0284c7", help="Stroke color for --draw-xy-plane" + LAB_NAME_HINT + ". Default: #0284c7")
     parser.add_argument("--xy-plane-stroke-width", type=float, default=1.5, help="Stroke width for --draw-xy-plane. Default: 1.5")
     parser.add_argument("--xy-plane-opacity", type=float, default=0.18, help="Opacity for --draw-xy-plane. Default: 0.18")
     parser.add_argument("--no-scale-bar", action="store_true", help="Do not draw the default SVG scale bar")
     parser.add_argument("--scale-bar-length", type=float, default=DEFAULT_SCALE_BAR_LENGTH, help="Scale-bar length in projected coordinate units. Default: 10")
     parser.add_argument("--scale-bar-unit-label", default=DEFAULT_SCALE_BAR_UNIT_LABEL, help="Unit label for the scale bar. Default: Angstrom symbol")
-    parser.add_argument("--scale-bar-stroke", default=DEFAULT_SCALE_BAR_STROKE, help="Scale-bar and label color. Default: #111827")
+    parser.add_argument("--scale-bar-stroke", default=DEFAULT_SCALE_BAR_STROKE, help="Scale-bar and label color" + LAB_NAME_HINT + ". Default: #111827")
     parser.add_argument("--scale-bar-stroke-width", type=float, default=DEFAULT_SCALE_BAR_STROKE_WIDTH, help="Scale-bar stroke width. Default: 2.5")
     parser.add_argument("--scale-bar-text-size", type=float, default=DEFAULT_SCALE_BAR_TEXT_SIZE, help="Scale-bar text size. Default: 14")
     parser.add_argument("--scale-bar-margin", type=float, default=DEFAULT_SCALE_BAR_MARGIN, help="Scale-bar margin from the lower-left SVG edge. Default: 32")
-    parser.add_argument("--scale-bar-background", default=DEFAULT_SCALE_BAR_BACKGROUND, help="Scale-bar background fill. Default: white")
+    parser.add_argument("--scale-bar-background", default=DEFAULT_SCALE_BAR_BACKGROUND, help="Scale-bar background fill" + LAB_NAME_HINT + ". Default: white")
     parser.add_argument("--scale-bar-background-opacity", type=float, default=DEFAULT_SCALE_BAR_BACKGROUND_OPACITY, help="Scale-bar background opacity. Default: 0.78")
     parser.add_argument("--pdb-order-circles", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--pdb-order-lines", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--color-by", choices=["atom-type", "chain"], default="chain", help="Default SVG color mode. Default: chain")
+    parser.add_argument(
+        "--color-by", choices=["atom-type", "chain"], default="chain",
+        help=(
+            "Default SVG color mode. chain gives each chain one color: its --chain-colors color, or else the --palette "
+            "color for its place in the order the chains first appear; atom-type gives each atom type its own fill and line "
+            "color. In either mode fill= and line_stroke= in --style win for their atom type. Default: chain"
+        ),
+    )
     parser.add_argument(
         "--palette", type=argparse_palette, default=DEFAULT_PALETTE,
         help=(
@@ -3522,9 +3920,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "DiLiuLab uses the lab's nine gr_colors figure colors in the order red, blue, magenta, cyan, orange, purple, "
             "green, yellow, mint green, repeating after nine: the first chain in the input, or the first atom type, is red, "
             "the second blue. DiLiuLab-T80, -T60, -T40 or -T20 are lighter tints mixed toward white; T40 and T20 are pale "
-            "and can be hard to see on white. In atom-type mode fill= and line_stroke= in --style still win. The palette's neutral is not "
-            "used: circle strokes, base-pair lines, the xy-plane, the underlay and the scale bar keep their own colors. "
-            "The colors are read from assets/diliulab_colors.json. Example: --palette DiLiuLab-T80. Default: default"
+            "and can be hard to see on white. fill= and line_stroke= in --style still win in either mode, and --chain-colors "
+            "sets single chains. The palette's neutral is not used: circle strokes, base-pair lines, the xy-plane, "
+            "the underlay and the scale bar keep their own colors"
+            + (", though each takes a DiLiuLab name such as GrayT40" if lab_colors is not None else "")
+            + ". The colors are read from assets/diliulab_colors.json. Example: --palette DiLiuLab-T80. Default: default"
+        ),
+    )
+    parser.add_argument(
+        "--chain-colors", default="", metavar="CHAIN=COLOR,...",
+        help=(
+            "Colors for single chains under --color-by chain, as CHAIN=COLOR pairs separated by commas, semicolons or spaces, "
+            "e.g. --chain-colors \"A=RedT80,B=#4c79e6\"; write blank for a blank chain ID, as in --closed-chains. A listed chain "
+            "takes its color for circles and neighbor lines; the other chains keep their --palette colors, in the order chains "
+            "first appear. fill= and line_stroke= in --style still win for their atom type. A listed chain that is not in the "
+            "selection is named in a warning in the run log, and so is one whose color nothing takes because every circle and "
+            "line in it has an explicit fill= or line_stroke=; under --color-by atom-type the option is ignored, with a note in "
+            "the log. The colors used are recorded in the SVG (data-chain-colors on the projection group), and all of them in "
+            "the JSON and the log." + LAB_NAMES_HELP
         ),
     )
     parser.add_argument("--line-width", type=float, default=1.0, help="Default neighbor line width. Default: 1")
@@ -3534,12 +3947,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Per-atom-type style. Repeat as needed. Format examples: "
             "'P radius=3 opacity=0.9 draw_lines=true connection_mode=smooth line_width=1.5 line_opacity=0.7'; "
-            "'C1\' fill=#377eb8 radius=2 draw_lines=false connection_mode=straight'."
+            "'C1\' fill=#377eb8 radius=2 draw_lines=false connection_mode=straight'. "
+            "fill, stroke and line_stroke take a hex code, an SVG color name"
+            + (" or a DiLiuLab name written without spaces, such as MintGreenT80" if lab_colors is not None else "")
+            + ". A fill= or line_stroke= given here wins in either --color-by mode: under --color-by chain it replaces the "
+            "chain color for that atom type's circles or lines, e.g. --color-by chain --style \"C1' fill=#000000\"."
+            + LAB_NAMES_HELP
         ),
     )
     parser.add_argument("--draw-base-pairs", action="store_true", help="Draw base-pair interaction lines parsed from the default x3dna-dssr output")
     parser.add_argument("--base-pair-atom", default=DEFAULT_BASE_PAIR_ATOM, help="Atom used as each residue's base-pair line anchor. Default: C3'. Recommended: C3' for B-DNA, C4' for A-RNA")
-    parser.add_argument("--base-pair-stroke", default="#444444", help="Base-pair line color. Default: #444444")
+    parser.add_argument("--base-pair-stroke", default="#444444", help="Base-pair line color" + LAB_NAME_HINT + ". Default: #444444")
     parser.add_argument("--base-pair-width", type=float, default=3.0, help="Base-pair line width. Default: 3.0")
     parser.add_argument("--base-pair-opacity", type=float, default=0.75, help="Base-pair line opacity. Default: 0.75")
     parser.add_argument("--write-pca-pdb", "--write-projection-basis", dest="write_pca_pdb", action="store_true", help="Write a projection-basis PDB/XYZ file. PDB input writes PDB; XYZ/coordinate input writes XYZ")
@@ -3602,6 +4020,7 @@ def namespace_from_gui_values(values: dict) -> argparse.Namespace:
         pdb_order_lines=False,
         color_by=values.get("color_by", "chain"),
         palette=values.get("palette", DEFAULT_PALETTE),
+        chain_colors=values.get("chain_colors", ""),
         line_width=float(values["line_width"]),
         line_opacity=float(values["line_opacity"]),
         style=values.get("style_specs", []),
@@ -3615,11 +4034,47 @@ def namespace_from_gui_values(values: dict) -> argparse.Namespace:
     )
 
 
+def strip_fit_count(widths: Sequence[int], total: int, room: int, more_width) -> int:
+    """How many swatches the strip beside the window's Palette shows: the most
+    of the first ones, `widths` pixels each with its pad (at most
+    COLOR_STRIP_MAX of them), that fit in `room` pixels together with a
+    "+N more" label, more_width(N) pixels, for the other N = total - count
+    items, or with no label when none is left over. None when not even the
+    first fits beside its "+N more"."""
+    best = used = 0
+    for count, width in enumerate(list(widths)[:COLOR_STRIP_MAX], start=1):
+        used += width
+        if used > room:
+            break
+        rest = total - count
+        if used + (more_width(rest) if rest > 0 else 0) <= room:
+            best = count
+    return best
+
+
+def fit_text(text: str, room: int, measure) -> str:
+    """`text` if measure(text) fits in `room` pixels, or else as much of its
+    start as fits followed by an ellipsis."""
+    if measure(text) <= room:
+        return text
+    for end in range(len(text) - 1, 0, -1):
+        shorter = text[:end].rstrip() + "\u2026"
+        if measure(shorter) <= room:
+            return shorter
+    return "\u2026"
+
+
+def popup_row_length(count: int) -> int:
+    """Swatches per row in the window "+N more" opens: COLOR_STRIP_MAX, or more
+    for a file with very many chains, so that the rows stay about as many as
+    the swatches in each."""
+    return max(COLOR_STRIP_MAX, math.ceil(math.sqrt(max(count, 0))))
+
 
 def run_gui() -> int:
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox, ttk
+        from tkinter import colorchooser, filedialog, messagebox, ttk
     except Exception as exc:
         print("ERROR: Tkinter GUI is not available in this Python environment: {0}".format(exc), file=sys.stderr)
         return 1
@@ -3645,7 +4100,8 @@ def run_gui() -> int:
 
     root.columnconfigure(0, weight=1)
     root.rowconfigure(0, weight=1)
-    root.rowconfigure(1, weight=0)
+    root.rowconfigure(1, weight=0)          # the page's horizontal scrollbar, shown when needed
+    root.rowconfigure(2, weight=0)          # Run, Quit and the tip
 
     help_bg = "#d8eefc"
     help_active = "#c5e3f5"
@@ -3702,6 +4158,13 @@ def run_gui() -> int:
         for child in children:
             set_label_state(child, enabled)
 
+    # Without lab_colors no color can be given by name, and the help offers none.
+    lab_names_note = (
+        " or a DiLiuLab name with its tint, as the lab's color lists spell it: RedT100, BlueT80, MintGreenT60, GrayT40 "
+        "(Red, Blue, Magenta, Cyan, Orange, Purple, Green, Yellow, MintGreen, and Black/Gray for the neutral; tints T100, T80, "
+        "T60, T40, T20). The bare name red is SVG's pure red; RedT100 is the lab's red"
+    ) if lab_colors is not None else ""
+    named = lab_colors is not None
     help_texts = {
         "select_by": (
             "How atom types are matched. name uses the PDB atom-name field, which is usually best for P, C1', O3', "
@@ -3717,18 +4180,54 @@ def run_gui() -> int:
             "using input Z as depth. If enabled, the Y-axis flip is applied before either mode as x -> -x and z -> -z."
         ),
         "color_by": (
-            "chain assigns colors by chain using golden-ratio HSV colors, or the Palette's colors. atom-type uses each row's Fill and Line color values; a blank one takes the Palette's color (golden-ratio HSV under default)."
+            "chain gives each chain its own color: the Palette's colors in the order the chains first appear "
+            "(golden-ratio HSV colors under default), or a color you pick for a chain by clicking its swatch beside the Palette. "
+            "atom-type gives each atom-type row its own color, from its Fill and line Color fields, which start at the Palette's color for that row.\n\n"
+            "In either mode a Fill or line Color you set in an atom-type row wins for that atom type. A field left at its default "
+            "shows chain in chain mode and the row's palette color in atom-type mode, and follows the Palette."
         ),
         "palette": (
-            "Colors for the chains when Color by is chain, and for the atom-type rows whose Fill or line Color is blank when Color by is atom-type.\n\n"
+            "Colors for the chains when Color by is chain, and the default Fill and line Color of each atom-type row when Color by is atom-type. "
+            "The swatches to the right show the colors a run will use.\n\n"
             "default keeps Plane It's own golden-ratio HSV colors, unchanged.\n\n"
             "DiLiuLab uses the lab's nine figure colors from gr_colors in the order red, blue, magenta, cyan, orange, purple, green, yellow, mint green, "
             "repeating after nine: the first chain in the input, or Atom type 1, is red, the second is blue, and so on.\n\n"
             "T80, T60, T40 and T20 are lighter tints mixed toward white; T40 and T20 are pale and can be hard to see on a white background.\n\n"
-            "When Color by is atom-type, a color typed into a row's Fill or line Color field still wins. The palette's neutral is not used: circle strokes, base-pair lines, "
-            "the xy-plane, the underlay and the scale bar keep their own colors.\n\n"
+            "A Fill or line Color set in an atom-type row wins in either mode, and a chain color picked on a swatch wins over the Palette in chain mode; "
+            "fields left at their default follow the Palette. The palette's neutral is not used" + (" unless you name it" if named else "")
+            + ": circle strokes, base-pair lines, the xy-plane, the underlay and the scale bar keep their own colors"
+            + (", though each of those fields takes a DiLiuLab name such as GrayT40" if named else "") + ".\n\n"
             "The colors are read from assets/diliulab_colors.json. A palette other than default is written to the SVG (data-palette on the projection group), "
             "the JSON and the run log. Command line: --palette DiLiuLab-T80."
+        ),
+        "color_strip": (
+            "The swatches beside the Palette show the colors a run will use.\n\n"
+            "Color by chain: one swatch per chain of the input file and atom types above, labelled with the chain ID, in the order the SVG gives out "
+            "the colors, the order the chains first appear. Click one to give that chain its own color. "
+            "It is sent to the run as a chain color, recorded in the SVG (data-chain-colors), the JSON and the run log; "
+            "on the command line: --chain-colors A={1},B=#4c79e6. An atom type whose Fill or line Color you set keeps that color. "
+            "Chain colors belong to the input file they were picked for, and loading another file clears them; a chain the atom types "
+            "or the filters leave out keeps its color, unsent, until it is listed again.\n\n"
+            "Color by atom-type: one swatch per atom-type row, showing its Fill. Click one to set that row's Fill, and its line Color as well "
+            "unless you set that one yourself.\n\n"
+            "A swatch whose color you set has a thicker border. Up to {0} swatches are shown, as many as fit beside the Palette, then +N more. "
+            "Click +N more for a small window holding a swatch for every chain, or every atom-type row, each clicked just as the ones here; "
+            "Escape or Close closes it. Reset clears the chain colors "
+            "you picked (chain mode), or returns every row's Fill and line Color to the Palette's colors (atom-type mode). Before an input "
+            "file is loaded there are no chains to list, and the strip says so."
+        ).format(COLOR_STRIP_MAX, "RedT80" if named else "#eb7070"),
+        "color_fields": (
+            "Fill colors an atom type's circles and line Color its neighbor lines. line Color is available only while Draw lines is on, "
+            "since without lines it colors nothing.\n\n"
+            "Default: each field starts at the Palette's assignment. With Color by chain it shows chain, meaning this atom type takes the chain colors. "
+            "With Color by atom-type it shows the row's palette color, by its DiLiuLab name (such as RedT80) under a DiLiuLab palette and as a hex code "
+            "under default. A field at its default follows the Palette and Color by, and nothing is sent to the run for it.\n\n"
+            "To set a color, type a hex code (#1f77b4), an SVG color name (black)" + lab_names_note + ". Or click the small square beside the field "
+            "to pick one; the square shows the color the field gives, stripes for the chain colors and ? for a value an SVG viewer cannot "
+            "draw as a color, such as gray50 or wheat1, names that Tk knows but SVG does not. "
+            "A color you set is kept when the Palette or Color by changes. Clear the field, or type auto or chain, to return it to its default.\n\n"
+            "Precedence with Color by chain: a Fill or line Color set here, then a chain color picked on the swatches beside the Palette, then the "
+            "Palette's chain color. Command line: --style \"C1' fill=" + ("MintGreenT80" if named else "#70ebad") + " line_stroke=#1f77b4\"."
         ),
         "connection_mode": (
             "Per-atom-type connection mode. straight draws ordinary straight neighbor connections. smooth draws a cubic-Bezier curve "
@@ -3770,21 +4269,44 @@ def run_gui() -> int:
     }
 
     # A single scrollable settings page. This avoids hidden tabs while still fitting small screens.
+    # It scrolls sideways as well when the window is narrower than the page,
+    # rather than cutting off the page's right edge; the horizontal bar shows
+    # only then.
     main_canvas = tk.Canvas(root, highlightthickness=0)
     main_scroll = ttk.Scrollbar(root, orient="vertical", command=main_canvas.yview)
-    main_canvas.configure(yscrollcommand=main_scroll.set)
+    main_hscroll = ttk.Scrollbar(root, orient="horizontal", command=main_canvas.xview)
+
+    def _set_xscroll(first, last) -> None:
+        main_hscroll.set(first, last)
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            main_hscroll.grid_remove()
+        else:
+            main_hscroll.grid()
+
+    main_canvas.configure(yscrollcommand=main_scroll.set, xscrollcommand=_set_xscroll)
     main_canvas.grid(row=0, column=0, sticky="nsew")
     main_scroll.grid(row=0, column=1, sticky="ns")
+    main_hscroll.grid(row=1, column=0, sticky="ew")
+    main_hscroll.grid_remove()
 
     content = ttk.Frame(main_canvas, padding=(12, 10, 12, 8))
     content_window = main_canvas.create_window((0, 0), window=content, anchor="nw")
     content.columnconfigure(0, weight=1)
 
+    def _fit_content_width(canvas_width: int) -> None:
+        # The page fills the canvas, and keeps the width it asks for when the
+        # canvas is narrower, scrolling sideways then instead of losing its
+        # right edge.
+        width = max(int(canvas_width), content.winfo_reqwidth())
+        if round(float(main_canvas.itemcget(content_window, "width") or 0)) != width:
+            main_canvas.itemconfigure(content_window, width=width)
+
     def _content_configure(_event=None) -> None:
+        _fit_content_width(main_canvas.winfo_width())
         main_canvas.configure(scrollregion=main_canvas.bbox("all"))
 
     def _canvas_configure(event) -> None:
-        main_canvas.itemconfigure(content_window, width=event.width)
+        _fit_content_width(event.width)
 
     content.bind("<Configure>", _content_configure)
     main_canvas.bind("<Configure>", _canvas_configure)
@@ -3798,8 +4320,26 @@ def run_gui() -> int:
         except Exception:
             pass
 
-    main_canvas.bind("<Enter>", lambda _event: root.bind_all("<MouseWheel>", _on_main_mousewheel))
-    main_canvas.bind("<Leave>", lambda _event: root.unbind_all("<MouseWheel>"))
+    def _on_main_shift_mousewheel(event) -> None:
+        # Shift with the wheel, and a trackpad's sideways swipe, scroll sideways.
+        try:
+            if sys.platform == "darwin":
+                main_canvas.xview_scroll(int(-1 * event.delta), "units")
+            else:
+                main_canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+        except Exception:
+            pass
+
+    def _bind_main_wheel(_event=None) -> None:
+        root.bind_all("<MouseWheel>", _on_main_mousewheel)
+        root.bind_all("<Shift-MouseWheel>", _on_main_shift_mousewheel)
+
+    def _unbind_main_wheel(_event=None) -> None:
+        root.unbind_all("<MouseWheel>")
+        root.unbind_all("<Shift-MouseWheel>")
+
+    main_canvas.bind("<Enter>", _bind_main_wheel)
+    main_canvas.bind("<Leave>", _unbind_main_wheel)
 
     title = ttk.Label(content, text=f"{TOOL_NAME} {TOOL_VERSION}", font=("TkDefaultFont", 14, "bold"))
     title.grid(row=0, column=0, sticky="w", pady=(0, 4))
@@ -3868,6 +4408,23 @@ def run_gui() -> int:
     updating_state = False
     rebuild_after_id = None
     last_default_paths = {"output": "", "json": "", "basis": "", "csv": ""}
+    # Colors. A row's Fill and line Color hold an "auto" value, the Palette's
+    # assignment ("chain" in chain mode), until the user types or picks one;
+    # auto values are shown but never sent, so a window left at its defaults
+    # runs exactly as before. color_guard marks the program's own writes of
+    # those values, which do not count as edits. chain_overrides holds the
+    # colors picked on the chain swatches, sent to the run as --chain-colors,
+    # for the input file whose path strip_state["input_key"] holds.
+    # color_picker holds the open picker and the atom-type row or chain it
+    # sets; strip_popup the window "+N more" opens, a swatch for every item.
+    color_guard = {"on": False}
+    chain_overrides: Dict[str, str] = {}
+    strip_state: Dict[str, object] = {
+        "after": None, "read_key": None, "atoms": None, "read_error": False, "select_key": None, "chains": [],
+        "items": [], "items_mode": None, "input_key": "",
+    }
+    color_picker: Dict[str, object] = {"win": None, "row": None, "chain": None}
+    strip_popup: Dict[str, object] = {"win": None, "grid": None, "status": None}
 
     def current_atom_types() -> List[str]:
         values: List[str] = []
@@ -4102,6 +4659,7 @@ def run_gui() -> int:
     spin = ttk.Spinbox(atom_control, from_=1, to=20, textvariable=n_types_var, width=5)
     spin.pack(side="left", padx=(6, 12))
     ttk.Label(atom_control, text="Rows update automatically. Up to 20 atom types.").pack(side="left")
+    label_with_help(atom_control, "Fill and line Color", "Fill and line Color", help_texts["color_fields"]).pack(side="left", padx=(18, 0))
 
     type_rows_frame = ttk.Frame(atom_frame)
     type_rows_frame.grid(row=1, column=0, sticky="ew")
@@ -4126,12 +4684,19 @@ def run_gui() -> int:
             "line_opacity": tk.StringVar(value="1.0" if is_first_default_p else "0.65"),
             "line_stroke": tk.StringVar(value=""),
             "extend_3prime": tk.BooleanVar(value=is_first_default_p),
+            # Fill and line Color start at their auto value; line_stroke_linked
+            # marks a line Color set along with the Fill from the swatch strip.
+            "fill_auto": True,
+            "line_stroke_auto": True,
+            "line_stroke_linked": False,
             "widgets": {},
         }
 
     def bind_row_traces(row_info: dict) -> None:
-        for key in ["atom_type", "fill", "radius", "opacity", "stroke", "stroke_width", "draw_lines", "connection_mode", "line_width", "line_opacity", "line_stroke", "extend_3prime"]:
+        for key in ["atom_type", "radius", "opacity", "stroke", "stroke_width", "draw_lines", "connection_mode", "line_width", "line_opacity", "extend_3prime"]:
             trace_state(row_info[key])
+        for key in ["fill", "line_stroke"]:
+            row_info[key].trace_add("write", lambda *_args, key=key: color_field_written(row_info, key))
         try:
             row_info["atom_type"].trace_add("write", lambda *_args: update_default_paths())
         except Exception:
@@ -4147,6 +4712,594 @@ def run_gui() -> int:
             row_info["widgets"][widget_key + "_label"] = label_widget
         return entry
 
+    def color_entry(parent, label: str, row_info: dict, key: str, row_num: int, col_num: int):
+        """label_entry for a Fill or line Color field, with a small square beside
+        it that shows the color the field gives and opens the picker."""
+        label_widget = ttk.Label(parent, text=label)
+        label_widget.grid(row=row_num, column=col_num, sticky="w", padx=(0, 4), pady=3)
+        holder = ttk.Frame(parent)
+        holder.grid(row=row_num, column=col_num + 1, sticky="w", padx=(0, 14), pady=3)
+        # Wide enough for the longest lab name, MintGreenT100.
+        entry = ttk.Entry(holder, textvariable=row_info[key], width=12)
+        entry.pack(side="left")
+        # A Canvas rather than a Button, whose background macOS ignores.
+        square = tk.Canvas(holder, width=16, height=16, highlightthickness=1, highlightbackground="#9ca3af", borderwidth=0)
+        square.pack(side="left", padx=(3, 0))
+        square.bind("<Button-1>", lambda _event: open_field_picker(row_info, key, square))
+        # A cleared field returns to its default when the user leaves it, not while typing.
+        entry.bind("<FocusOut>", lambda _event: leave_color_field(row_info, key), add="+")
+        row_info["widgets"][key] = entry
+        row_info["widgets"][key + "_label"] = label_widget
+        row_info["widgets"][key + "_square"] = square
+        return entry
+
+    # ---------- Colors: field defaults, squares, the swatch strip and the picker ----------
+    auto_color_words = {"", "auto", "chain"}
+
+    def gui_palette() -> str:
+        try:
+            return normalize_palette_name(palette_var.get())
+        except ValueError:
+            return DEFAULT_PALETTE
+
+    def palette_color_text(index: int) -> str:
+        """A row's palette color as its field shows it: the lab name, e.g. RedT80,
+        under a DiLiuLab palette, the hex code under default."""
+        palette = gui_palette()
+        if palette != DEFAULT_PALETTE:
+            names = lab_colors.lab_color_names(palette.split()[-1])
+            return names[index % len(names)]
+        return palette_color_for_index(index, palette)
+
+    def row_palette_indexes() -> List[int]:
+        """Each row's place in the run's atom-type order, which picks its palette
+        color: a repeated type shares the first one's place, since the run keeps
+        it once, and a blank row shows the place a new type would take."""
+        seen: Dict[str, int] = {}
+        indexes: List[int] = []
+        for row_info in atom_type_rows:
+            key = row_info["atom_type"].get().strip().upper()
+            if key and key not in seen:
+                seen[key] = len(seen)
+            indexes.append(seen[key] if key else len(seen))
+        return indexes
+
+    def auto_color_text(index: int) -> str:
+        return "chain" if color_by_var.get() == "chain" else palette_color_text(index)
+
+    def color_is_auto(row_info: dict, key: str) -> bool:
+        return bool(row_info[key + "_auto"]) or row_info[key].get().strip().lower() in auto_color_words
+
+    def write_color_field(row_info: dict, key: str, text: str) -> None:
+        """Set a field without it counting as the user's edit."""
+        color_guard["on"] = True
+        try:
+            row_info[key].set(text)
+        finally:
+            color_guard["on"] = False
+
+    def set_field_auto(row_info: dict, key: str) -> None:
+        """Return a field to the Palette's assignment."""
+        row_info[key + "_auto"] = True
+        if key == "line_stroke":
+            row_info["line_stroke_linked"] = False
+        write_color_field(row_info, key, auto_color_text(row_palette_indexes()[atom_type_rows.index(row_info)]))
+
+    def set_field_color(row_info: dict, key: str, text: str) -> None:
+        """A color the user picked: kept until they change it or ask for the default."""
+        row_info[key + "_auto"] = False
+        if key == "line_stroke":
+            row_info["line_stroke_linked"] = False
+        write_color_field(row_info, key, text)
+
+    def color_field_written(row_info: dict, key: str) -> None:
+        # Typing into a field makes it the user's; clearing it, or typing auto
+        # or chain, returns it to its default. The program's own writes refresh
+        # through their callers.
+        if color_guard["on"]:
+            return
+        row_info[key + "_auto"] = row_info[key].get().strip().lower() in auto_color_words
+        if key == "line_stroke":
+            row_info["line_stroke_linked"] = False
+        # After this trace returns: a field rewritten from inside its own trace
+        # would keep showing the old text, since Tk then skips the entry's update.
+        root.after_idle(update_gui_state)
+
+    def row_alive(row_info: dict) -> bool:
+        """Whether a row is still one of the window's rows: a picker or swatch
+        left from a row the atom-type count removed must not set it."""
+        return any(row is row_info for row in atom_type_rows)
+
+    def leave_color_field(row_info: dict, key: str) -> None:
+        if not row_alive(row_info):
+            return                          # a row just removed
+        try:
+            if row_info[key + "_auto"]:
+                set_field_auto(row_info, key)
+            update_gui_state()
+        except tk.TclError:
+            pass                            # the window is closing
+
+    def override_codes() -> Dict[str, str]:
+        codes = {chain: svg_color_code(text) for chain, text in chain_overrides.items()}
+        return {chain: code for chain, code in codes.items() if code}
+
+    def strip_chain_colors() -> List[str]:
+        """The chain colors in order, for the stripes of a field that follows the chains."""
+        chains = list(strip_state["chains"] or [])
+        palette = gui_palette()
+        if not chains:
+            return [palette_color_for_index(index, palette) for index in range(2)]
+        colors = assign_chain_colors(chains, palette, override_codes())
+        return [colors[chain] for chain in chains]
+
+    def field_color(row_info: dict, key: str, index: int) -> Tuple[str, object]:
+        """What a field gives, as its square shows it: ("color", "#rrggbb"),
+        ("chain", [chain colors]), ("unknown", None) for a value the SVG cannot
+        draw as a color, or ("off", None) for a line Color without lines."""
+        if key == "line_stroke" and not bool(row_info["draw_lines"].get()):
+            return "off", None
+        if color_is_auto(row_info, key):
+            if color_by_var.get() == "chain":
+                return "chain", strip_chain_colors()
+            return "color", palette_color_for_index(index, gui_palette())
+        code = svg_color_code(row_info[key].get())
+        return ("color", code) if code else ("unknown", None)
+
+    def paint_color_square(square, look: str, value) -> None:
+        square.delete("all")
+        if look == "color":
+            square.create_rectangle(-2, -2, 20, 20, fill=value, outline="")
+        elif look == "chain":
+            colors = list(value) or ["#d1d5db"]
+            for stripe in range(4):         # thin stripes of the chain colors, repeating
+                left = 1 + 4 * stripe           # the square's inside runs from 1 to 17, inside its 1-pixel ring
+                square.create_rectangle(-2 if stripe == 0 else left, -2, 20 if stripe == 3 else left + 4, 20,
+                                        fill=colors[stripe % len(colors)], outline="")
+        elif look == "unknown":
+            square.create_rectangle(-2, -2, 20, 20, fill="#e5e7eb", outline="")
+            square.create_text(9, 9, text="?", fill="#6b7280", font=("TkDefaultFont", 11, "bold"))
+        else:
+            square.create_rectangle(-2, -2, 20, 20, fill="#f3f4f6", outline="")
+        square.configure(cursor="" if look == "off" else "hand2")
+
+    def draw_field_square(row_info: dict, key: str, index: int) -> None:
+        square = row_info.get("widgets", {}).get(key + "_square")
+        if square is None:
+            return
+        try:
+            look, value = field_color(row_info, key, index)
+            paint_color_square(square, look, value)
+        except tk.TclError:
+            pass                            # a square of a row being rebuilt
+
+    def refresh_color_fields() -> None:
+        """Show every auto field's current default and redraw the squares. A
+        field being typed in keeps its text until the user leaves it."""
+        try:
+            focused = root.focus_get()
+        except (KeyError, tk.TclError):
+            focused = None
+        for row_info, index in zip(atom_type_rows, row_palette_indexes()):
+            for key in ("fill", "line_stroke"):
+                entry = row_info.get("widgets", {}).get(key)
+                typing = entry is not None and entry is focused
+                if row_info[key + "_auto"] and not typing:
+                    text = auto_color_text(index)
+                    if row_info[key].get() != text:
+                        write_color_field(row_info, key, text)
+                draw_field_square(row_info, key, index)
+
+    def strip_chain_order() -> Tuple[List[str], str]:
+        """(chains in the order the SVG gives them colors, "") for the current
+        input and selection, or ([], a short hint). The atoms are read with the
+        run's own reader and filters, cached by path, mtime and those fields,
+        and the selection is cached by the atom types as well."""
+        path = pdb_var.get().strip()
+        try:
+            stat = Path(path).stat() if path and Path(path).is_file() else None
+        except OSError:
+            stat = None
+        if stat is None:
+            return [], "load an input to list its chains"
+        reader = argparse.Namespace(
+            input_format=input_format_var.get(),
+            records=records_var.get(),
+            model=model_var.get().strip() or "first",
+            chain=chain_var.get().strip() or None,
+            resname=resname_var.get().strip() or None,
+            altloc=altloc_var.get(),
+        )
+        read_key = (path, stat.st_mtime_ns, stat.st_size, reader.input_format, reader.records,
+                    reader.model, reader.chain, reader.resname, reader.altloc)
+        if strip_state["read_key"] != read_key:
+            strip_state.update(read_key=read_key, atoms=None, read_error=False, select_key=None, chains=[])
+            try:
+                strip_state["atoms"], _resolved_format = parse_structure_atoms(Path(path), reader)
+            except Exception:
+                strip_state["read_error"] = True
+        if strip_state["read_error"]:
+            return [], "cannot read the input to list its chains"
+        typed = ",".join(row_info["atom_type"].get().strip() for row_info in atom_type_rows if row_info["atom_type"].get().strip())
+        atom_types = collect_atom_types(argparse.Namespace(atom_type=None, atom_types=typed))
+        select_key = (read_key, tuple(atom_types), select_by_var.get())
+        if strip_state["select_key"] != select_key:
+            try:
+                chains = chain_color_order(select_atoms(strip_state["atoms"], atom_types, select_by_var.get()))
+            except Exception:
+                chains = []
+            strip_state.update(select_key=select_key, chains=chains)
+        if not strip_state["chains"]:
+            # The atom types, the chain, model, residue or record filters, or
+            # a file without the records asked for: any of them can leave none.
+            return [], "no atoms selected; check the atom types and filters"
+        return list(strip_state["chains"]), ""
+
+    def input_path_key() -> str:
+        path = pdb_var.get().strip()
+        if not path:
+            return ""
+        try:
+            return str(Path(path).expanduser().resolve())
+        except (OSError, RuntimeError, ValueError):
+            return path
+
+    def input_file_changed(*_args) -> None:
+        # Chain colors belong to the file they were picked for: chain A of the
+        # next file is another chain. So another file clears them, and closes a
+        # chain's picker, or the list of chains, still open on the old one.
+        key = input_path_key()
+        if key == strip_state["input_key"]:
+            return
+        strip_state["input_key"] = key
+        chain_overrides.clear()
+        if color_picker["chain"] is not None:
+            close_color_picker()
+        if strip_popup["win"] is not None and strip_state["items_mode"] == "chain":
+            close_strip_popup()
+
+    def chain_colors_to_send() -> str:
+        """--chain-colors for the run, in chain mode only: the colors picked on
+        the chain swatches for the chains the strip lists for this input and
+        selection. One the atom types or filters now leave out is kept, unsent."""
+        if color_by_var.get() != "chain" or not chain_overrides:
+            return ""
+        chains, _hint = strip_chain_order()
+        return format_chain_colors({chain: color for chain, color in chain_overrides.items() if chain in chains})
+
+    def readable_text_color(code: str) -> str:
+        red, green, blue = (int(code[i:i + 2], 16) / 255.0 for i in (1, 3, 5))
+        return "#ffffff" if 0.299 * red + 0.587 * green + 0.114 * blue < 0.55 else "#000000"
+
+    def strip_items() -> Tuple[List[Tuple[str, Optional[str], bool, object]], str]:
+        """(items, hint) for the strip and its "+N more" window: one (label,
+        color, set by the user, on click) per chain in chain mode, in the order
+        the SVG colors them, or per atom-type row, showing its Fill; or no
+        items and a short hint saying why."""
+        items: List[Tuple[str, Optional[str], bool, object]] = []
+        hint = ""
+        if color_by_var.get() == "chain":
+            chains, hint = strip_chain_order()
+            colors = assign_chain_colors(chains, gui_palette(), override_codes())
+            for chain in chains:
+                items.append((chain_label(chain), colors[chain], chain in chain_overrides,
+                              lambda anchor, chain=chain: open_chain_picker(chain, anchor)))
+        else:
+            for row_info, index in zip(atom_type_rows, row_palette_indexes()):
+                atom_type = row_info["atom_type"].get().strip()
+                if not atom_type:
+                    continue
+                look, value = field_color(row_info, "fill", index)
+                items.append((atom_type, value if look == "color" else None, not color_is_auto(row_info, "fill"),
+                              lambda anchor, row_info=row_info: open_row_picker(row_info, anchor)))
+            if not items:
+                hint = "type an atom type to see its color"
+        return items, hint
+
+    def color_swatch(parent, label: str, color: Optional[str], user_set: bool, on_click):
+        """One swatch: the chain ID or atom type, cut to five characters, on its
+        color, with a thicker border when the user set the color. A click
+        opens its picker, anchored at the swatch."""
+        text = label if len(label) <= 5 else label[:4] + "\u2026"
+        swatch = tk.Label(
+            parent, text=text, width=max(3, len(text)), font=("TkDefaultFont", 11),
+            bg=color or "#e5e7eb", fg=readable_text_color(color) if color else "#6b7280",
+            relief="solid", borderwidth=2 if user_set else 1, cursor="hand2",
+        )
+        swatch.bind("<Button-1>", lambda _event: on_click(swatch))
+        return swatch
+
+    def strip_room() -> int:
+        """The pixels the strip's swatches, "+N more" and hint may take: from the
+        strip's grid cell to the right edge the drawing frame's other rows give
+        it, less Reset, ? and the pads. Kept within that, the strip never
+        widens the frame or the page, and Reset and ? always show."""
+        def measure() -> int:
+            inset = draw_frame.grid_bbox(0, 0)[0]
+            right = draw_frame.winfo_reqwidth() - inset     # the frame's padding and border are alike on both sides
+            fixed = strip_reset.winfo_reqwidth() + 4 + strip_help.winfo_reqwidth() + 4
+            return right - draw_frame.grid_bbox(4, 1)[0] - 10 - fixed
+
+        room = measure()
+        if room <= 0:
+            draw_frame.update_idletasks()   # not laid out yet
+            room = measure()
+        return room
+
+    def redraw_color_strip() -> None:
+        """Rebuild the swatches beside the Palette: the chains in chain mode, in
+        the order the SVG colors them, or the atom-type rows' Fill. As many as
+        fit show, at most COLOR_STRIP_MAX, and "+N more" opens the rest."""
+        for child in strip_box.winfo_children():
+            child.destroy()
+        chain_mode = color_by_var.get() == "chain"
+        items, hint = strip_items()
+        strip_state.update(items=items, items_mode=color_by_var.get())
+        room = strip_room()
+        more_widths: Dict[int, int] = {}
+
+        def more_width(count: int) -> int:
+            if count not in more_widths:
+                probe = ttk.Label(strip_box, text="+{0} more".format(count))
+                more_widths[count] = probe.winfo_reqwidth() + 2
+                probe.destroy()
+            return more_widths[count]
+
+        candidates = [color_swatch(strip_box, *item) for item in items[:COLOR_STRIP_MAX]]
+        shown = strip_fit_count([swatch.winfo_reqwidth() + 2 for swatch in candidates], len(items), room, more_width)
+        for swatch in candidates[:shown]:
+            swatch.pack(side="left", padx=(0, 2))
+        for swatch in candidates[shown:]:
+            swatch.destroy()
+        if len(items) > shown:
+            more = ttk.Label(strip_box, text="+{0} more".format(len(items) - shown), foreground="#1d4ed8", cursor="hand2")
+            more.pack(side="left", padx=(2, 0))
+            more.bind("<Button-1>", lambda _event: open_strip_popup(more))
+        if hint:
+            hint_label = ttk.Label(strip_box, text=hint, foreground="#666666")
+
+            def hint_width(text: str) -> int:
+                hint_label.configure(text=text)
+                return hint_label.winfo_reqwidth()
+
+            hint_label.configure(text=fit_text(hint, room, hint_width))
+            hint_label.pack(side="left")
+        if chain_mode:
+            resettable = any(user_set for _label, _color, user_set, _on_click in items)
+        else:
+            resettable = any(not (row_info["fill_auto"] and row_info["line_stroke_auto"]) for row_info in atom_type_rows)
+        strip_reset.configure(fg="#111111" if resettable else "#9ca3af", cursor="hand2" if resettable else "")
+        if strip_popup["win"] is not None:
+            try:
+                if items:
+                    fill_strip_popup()
+                else:
+                    close_strip_popup()
+            except tk.TclError:
+                close_strip_popup()         # gone some other way
+
+    def schedule_color_strip(delay: int = 300) -> None:
+        after_id = strip_state["after"]
+        if after_id is not None:
+            try:
+                root.after_cancel(after_id)
+            except Exception:
+                pass
+        strip_state["after"] = root.after(delay, run_color_strip)
+
+    def run_color_strip() -> None:
+        """The strip, and the squares' chain stripes, once the input or selection settles."""
+        strip_state["after"] = None
+        try:
+            redraw_color_strip()
+            for row_info, index in zip(atom_type_rows, row_palette_indexes()):
+                for key in ("fill", "line_stroke"):
+                    draw_field_square(row_info, key, index)
+        except tk.TclError:
+            pass                            # the window is closing
+
+    def place_popup(top, anchor) -> None:
+        """Below the square or swatch, kept on the screen like the help popups
+        of the other tools. Tk measures only the main display, so an anchor on
+        another display keeps the plain placement rather than being pulled back."""
+        try:
+            top.update_idletasks()
+            screen_w, screen_h = top.winfo_screenwidth(), top.winfo_screenheight()
+            anchor_x, anchor_y = anchor.winfo_rootx(), anchor.winfo_rooty()
+            x, y = anchor_x, anchor_y + anchor.winfo_height() + 4
+            if 0 <= anchor_x < screen_w and 0 <= anchor_y < screen_h:
+                width, height = top.winfo_reqwidth(), top.winfo_reqheight()
+                x = max(min(x, screen_w - width - 8), 0)
+                if y + height > screen_h - 100:     # title bar and Dock: open above instead
+                    y = max(anchor_y - height - 34, 0)
+            top.geometry("+{0}+{1}".format(x, y))
+        except tk.TclError:
+            pass
+
+    def close_color_picker() -> None:
+        win = color_picker["win"]
+        color_picker.update(win=None, row=None, chain=None)
+        if win is not None:
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+    def open_color_picker(anchor, title: str, current: str, on_choose, row_info: Optional[dict] = None,
+                          chain: Optional[str] = None) -> None:
+        """A small window of the DiLiuLab colors, one row per tint and one column
+        per color with the neutral last. A swatch hands its name, MintGreenT80,
+        to on_choose; Other color... hands the hex code from the system color
+        chooser; Palette default hands None; Escape and Close cancel. row_info
+        or chain names what it sets, so that the rules below can close it."""
+        close_color_picker()
+        top = tk.Toplevel(root)
+        top.withdraw()                      # placed first, then shown: no flash at 0,0
+        color_picker.update(win=top, row=row_info, chain=chain)
+        top.title(title)
+        top.transient(root)
+        body = ttk.Frame(top, padding=10)
+        body.pack(fill="both", expand=True)
+        idle_text = "Current: {0}".format(current.strip() or "Palette default")
+        status = ttk.Label(body, text=idle_text)
+
+        def choose(value: Optional[str]) -> None:
+            close_color_picker()
+            on_choose(value)
+
+        if lab_colors is not None:
+            grid = ttk.Frame(body)
+            grid.pack(anchor="w")
+            for row_number, tint in enumerate(lab_colors.available_tints()):
+                ttk.Label(grid, text=tint).grid(row=row_number, column=0, sticky="w", padx=(0, 6))
+                named = zip(lab_colors.lab_color_names(tint, neutral=True), lab_colors.lab_colors(tint, neutral=True))
+                for column, (name, code) in enumerate(named, start=1):
+                    swatch = tk.Label(grid, bg=code, width=2, relief="solid", borderwidth=1, cursor="hand2")
+                    swatch.grid(row=row_number, column=column, padx=1, pady=1)
+                    swatch.bind("<Enter>", lambda _event, name=name, code=code: status.configure(text="{0}  {1}".format(name, code)))
+                    swatch.bind("<Leave>", lambda _event: status.configure(text=idle_text))
+                    swatch.bind("<Button-1>", lambda _event, name=name: choose(name))
+        status.pack(anchor="w", pady=(6, 6))
+
+        def other_color() -> None:
+            try:
+                _rgb, code = colorchooser.askcolor(color=svg_color_code(current), title=title, parent=top)
+            except tk.TclError:
+                code = None
+            if code:
+                choose(str(code).lower())
+
+        buttons = ttk.Frame(body)
+        buttons.pack(anchor="w")
+        ttk.Button(buttons, text="Other color...", command=other_color).pack(side="left")
+        ttk.Button(buttons, text="Palette default", command=lambda: choose(None)).pack(side="left", padx=(6, 0))
+        ttk.Button(buttons, text="Close", command=close_color_picker).pack(side="left", padx=(6, 0))
+        top.bind("<Escape>", lambda _event: close_color_picker())
+        top.protocol("WM_DELETE_WINDOW", close_color_picker)
+        place_popup(top, anchor)
+        if root.winfo_viewable():           # a hidden window keeps its popup hidden too
+            top.deiconify()
+        top.focus_set()
+
+    def open_field_picker(row_info: dict, key: str, anchor) -> None:
+        if key == "line_stroke" and not bool(row_info["draw_lines"].get()):
+            return                          # no lines: nothing for the color to color
+        atom_type = row_info["atom_type"].get().strip() or "Atom type {0}".format(atom_type_rows.index(row_info) + 1)
+
+        def chosen(value: Optional[str]) -> None:
+            if not row_alive(row_info):
+                return                      # the row went while the picker was open
+            if value is None:
+                set_field_auto(row_info, key)
+            else:
+                set_field_color(row_info, key, value)
+            update_gui_state()
+            run_color_strip()
+
+        open_color_picker(anchor, "{0}: {1}".format("Fill" if key == "fill" else "Line color", atom_type), row_info[key].get(), chosen,
+                          row_info=row_info)
+
+    def open_row_picker(row_info: dict, anchor) -> None:
+        """A strip swatch in atom-type mode: the row's Fill, and its line Color
+        too while that still follows its default, or follows the Fill set here."""
+        if not row_alive(row_info):
+            return                          # a swatch left from a row just removed
+
+        def chosen(value: Optional[str]) -> None:
+            if not row_alive(row_info):
+                return                      # the row went while the picker was open
+            follows = row_info["line_stroke_auto"] or row_info["line_stroke_linked"]
+            if value is None:
+                set_field_auto(row_info, "fill")
+                if row_info["line_stroke_linked"]:
+                    set_field_auto(row_info, "line_stroke")
+            else:
+                set_field_color(row_info, "fill", value)
+                if follows:
+                    set_field_color(row_info, "line_stroke", value)
+                    row_info["line_stroke_linked"] = True
+            update_gui_state()
+            run_color_strip()
+
+        open_color_picker(anchor, "Fill: {0}".format(row_info["atom_type"].get().strip()), row_info["fill"].get(), chosen,
+                          row_info=row_info)
+
+    def open_chain_picker(chain: str, anchor) -> None:
+        def chosen(value: Optional[str]) -> None:
+            if value is None:
+                chain_overrides.pop(chain, None)
+            else:
+                chain_overrides[chain] = value
+            run_color_strip()
+
+        open_color_picker(anchor, "Chain {0}".format(chain_label(chain)), chain_overrides.get(chain, ""), chosen, chain=chain)
+
+    def close_strip_popup() -> None:
+        win = strip_popup["win"]
+        strip_popup.update(win=None, grid=None, status=None)
+        if win is not None:
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+    def fill_strip_popup() -> None:
+        """The "+N more" window's swatches: every item of the strip, wrapping
+        into rows, each clicked just as the strip's. Redrawn with the strip."""
+        top, grid, status = strip_popup["win"], strip_popup["grid"], strip_popup["status"]
+        chain_mode = strip_state["items_mode"] == "chain"
+        top.title("Chain colors" if chain_mode else "Atom-type colors")
+        idle_text = "Click a swatch to set that {0}.".format("chain's color" if chain_mode else "row's Fill")
+        status.configure(text=idle_text)
+        for child in grid.winfo_children():
+            child.destroy()
+        items = strip_state["items"]
+        per_row = popup_row_length(len(items))
+        for index, (label, color, user_set, on_click) in enumerate(items):
+            swatch = color_swatch(grid, label, color, user_set, on_click)
+            swatch.grid(row=index // per_row, column=index % per_row, padx=1, pady=1, sticky="w")
+            about = "{0} {1}  {2}".format("Chain" if chain_mode else "Atom type", label, color or "?")
+            swatch.bind("<Enter>", lambda _event, about=about: status.configure(text=about))
+            swatch.bind("<Leave>", lambda _event: status.configure(text=idle_text))
+
+    def open_strip_popup(anchor) -> None:
+        """What "+N more" opens: a small window with a swatch for every chain,
+        or every atom-type row, kept on the screen like the picker. Escape and
+        Close close it, as do opening it again, removing the atom-type rows it
+        shows and loading another file while it shows chains."""
+        close_color_picker()
+        close_strip_popup()
+        if not strip_state["items"]:
+            return
+        top = tk.Toplevel(root)
+        top.withdraw()                      # placed first, then shown: no flash at 0,0
+        top.transient(root)
+        body = ttk.Frame(top, padding=10)
+        body.pack(fill="both", expand=True)
+        grid = ttk.Frame(body)
+        grid.pack(anchor="w")
+        status = ttk.Label(body)
+        status.pack(anchor="w", pady=(6, 6))
+        ttk.Button(body, text="Close", command=close_strip_popup).pack(anchor="w")
+        top.bind("<Escape>", lambda _event: close_strip_popup())
+        top.protocol("WM_DELETE_WINDOW", close_strip_popup)
+        strip_popup.update(win=top, grid=grid, status=status)
+        fill_strip_popup()
+        place_popup(top, anchor)
+        if root.winfo_viewable():           # a hidden window keeps its popup hidden too
+            top.deiconify()
+        top.focus_set()
+
+    def reset_colors() -> None:
+        if color_by_var.get() == "chain":
+            chain_overrides.clear()
+        else:
+            for row_info in atom_type_rows:
+                set_field_auto(row_info, "fill")
+                set_field_auto(row_info, "line_stroke")
+        update_gui_state()
+        run_color_strip()
+
     def update_gui_state() -> None:
         nonlocal updating_state
         if updating_state:
@@ -4156,7 +5309,6 @@ def run_gui() -> int:
             input_is_pdb = gui_resolved_input_format() == "pdb"
             projection_is_pca = projection_mode_var.get() == "pca"
             any_lines = any(bool(row_info["draw_lines"].get()) for row_info in atom_type_rows)
-            color_by_atom_type = color_by_var.get() == "atom-type"
             csv_enabled = bool(csv_output_var.get().strip())
             base_pairs_requested = bool(draw_base_pairs_var.get())
             base_pairs_available = input_is_pdb
@@ -4218,14 +5370,18 @@ def run_gui() -> int:
                     set_widget_state(widgets.get(key), enabled, readonly=readonly)
                     set_label_state(widgets.get(key + "_label"), enabled)
 
-                row_set("fill", color_by_atom_type)
+                # Fill is open in either Color by mode, since a color set there
+                # wins in both; line Color needs lines to color.
+                row_set("fill", True)
                 set_label_state(widgets.get("circle_title"), True)
                 set_label_state(widgets.get("connection_title"), line_on)
                 row_set("connection_mode", line_on, readonly=True)
                 row_set("line_width", line_on)
                 row_set("line_opacity", line_on)
-                row_set("line_stroke", line_on and color_by_atom_type)
+                row_set("line_stroke", line_on)
                 row_set("extend_3prime", line_on)
+            refresh_color_fields()
+            schedule_color_strip()
             update_default_paths(force=False)
         finally:
             updating_state = False
@@ -4243,6 +5399,16 @@ def run_gui() -> int:
                 n_types_var.set(n)
         except Exception:
             pass
+        # A picker open on a row about to go would set a row that no longer
+        # exists, and so would the "+N more" window's swatches in atom-type
+        # mode: they go with the row. A rebuild that keeps the rows, as when
+        # the spinbox loses the focus to a picker just opened, keeps both.
+        dropped = atom_type_rows[n:]
+        if dropped:
+            if any(color_picker["row"] is row for row in dropped):
+                close_color_picker()
+            if strip_popup["win"] is not None and strip_state["items_mode"] == "atom-type":
+                close_strip_popup()
         while len(atom_type_rows) < n:
             info = make_row_defaults(len(atom_type_rows))
             bind_row_traces(info)
@@ -4277,7 +5443,7 @@ def run_gui() -> int:
             row_info["widgets"]["circle_title"] = circle_title
             label_entry(box, "Radius", row_info["radius"], 7, 1, 1, "radius", row_info)
             label_entry(box, "Opacity", row_info["opacity"], 7, 1, 3, "opacity", row_info)
-            label_entry(box, "Fill", row_info["fill"], 10, 1, 5, "fill", row_info)
+            color_entry(box, "Fill", row_info, "fill", 1, 5)
             label_entry(box, "Stroke", row_info["stroke"], 10, 1, 7, "stroke", row_info)
             label_entry(box, "Stroke width", row_info["stroke_width"], 7, 1, 9, "stroke_width", row_info)
 
@@ -4295,7 +5461,7 @@ def run_gui() -> int:
             row_info["widgets"]["connection_mode_label"] = mode_label
             label_entry(box, "Width", row_info["line_width"], 7, 2, 5, "line_width", row_info)
             label_entry(box, "Opacity", row_info["line_opacity"], 7, 2, 7, "line_opacity", row_info)
-            label_entry(box, "Color", row_info["line_stroke"], 10, 2, 9, "line_stroke", row_info)
+            color_entry(box, "Color", row_info, "line_stroke", 2, 9)
 
             extend_check = ttk.Checkbutton(box, text="3' to O3'", variable=row_info["extend_3prime"])
             extend_check.grid(row=3, column=1, columnspan=2, sticky="w", padx=(0, 14), pady=3)
@@ -4358,6 +5524,16 @@ def run_gui() -> int:
     # The palette sits directly under Color by, the other control it colors.
     label_with_help(draw_frame, "Palette", "Palette", help_texts["palette"]).grid(row=1, column=2, sticky="w", padx=(10, 4), pady=4)
     ttk.Combobox(draw_frame, textvariable=palette_var, values=palette_choices(), width=12, state="readonly").grid(row=1, column=3, sticky="w", pady=4)
+    # To its right, the colors the chains or the atom-type rows will get.
+    color_strip = ttk.Frame(draw_frame)
+    color_strip.grid(row=1, column=4, columnspan=6, sticky="w", padx=(10, 0), pady=4)
+    strip_box = ttk.Frame(color_strip)
+    strip_box.pack(side="left")
+    strip_reset = tk.Label(color_strip, text="Reset", relief="raised", borderwidth=1, padx=4)
+    strip_reset.pack(side="left", padx=(4, 0))
+    strip_reset.bind("<Button-1>", lambda _event: reset_colors())
+    strip_help = help_button(color_strip, "Color swatches", help_texts["color_strip"])
+    strip_help.pack(side="left", padx=(4, 0))
 
     ttk.Checkbutton(draw_frame, text="Flip Y: x,z -> -x,-z", variable=flip_about_y_var).grid(row=2, column=0, columnspan=2, sticky="w", padx=(0, 10), pady=4)
     ttk.Checkbutton(draw_frame, text="Invert SVG y so +proj_y appears upward", variable=invert_y_var).grid(row=2, column=2, columnspan=3, sticky="w", padx=(10, 0), pady=4)
@@ -4493,8 +5669,9 @@ def run_gui() -> int:
     ttk.Label(
         draw_frame,
         text=(
-            "Notes: connection mode is controlled inside each atom-type row. Fill and line color are used only when Color by is atom-type; blank ones take the Palette colors. "
-            "In Color by chain mode, chain colors override these color fields, while radius, opacity, stroke width, and line settings remain per atom type."
+            "Notes: connection mode is controlled inside each atom-type row. Fill and line Color start at the Palette's assignment, chain in Color by chain mode "
+            "and the row's palette color in atom-type mode; a color typed or picked there wins in either mode, and clearing it follows the Palette again. "
+            "Radius, opacity, stroke width, and line settings are per atom type."
         ),
         wraplength=1080,
     ).grid(row=8, column=0, columnspan=10, sticky="w", pady=(6, 0))
@@ -4576,6 +5753,13 @@ def run_gui() -> int:
     log_scroll.grid(row=1, column=1, sticky="ns")
     output_text.configure(yscrollcommand=log_scroll.set)
 
+    def gui_style_color(row_info: dict, key: str, where: str) -> str:
+        """The fill= or line_stroke= value a row sends: nothing for a field at its
+        default; a bad value is reported by the row and field, "P Fill: ..."."""
+        if color_is_auto(row_info, key):
+            return ""
+        return style_color_token(row_info[key].get().strip(), where)
+
     def collect_gui_styles() -> Tuple[str, List[str], float, float, float]:
         atom_types: List[str] = []
         specs: List[str] = []
@@ -4587,14 +5771,14 @@ def run_gui() -> int:
             if not atom_type:
                 continue
             atom_types.append(atom_type)
-            fill = row_info["fill"].get().strip()
+            fill = gui_style_color(row_info, "fill", "{0} Fill".format(atom_type))
             radius = row_info["radius"].get().strip() or "3"
             opacity = row_info["opacity"].get().strip() or "1"
-            stroke = row_info["stroke"].get().strip() or "#222222"
+            stroke = style_color_token(row_info["stroke"].get().strip() or "#222222", "{0} Stroke".format(atom_type))
             stroke_width = row_info["stroke_width"].get().strip() or "0.6"
             line_width = row_info["line_width"].get().strip() or "1"
             line_opacity = row_info["line_opacity"].get().strip() or "0.65"
-            line_stroke = row_info["line_stroke"].get().strip()
+            line_stroke = gui_style_color(row_info, "line_stroke", "{0} line Color".format(atom_type))
             connection_mode = row_info["connection_mode"].get().strip() or "smooth"
             draw_lines = "true" if bool(row_info["draw_lines"].get()) else "false"
             extend_3prime = "true" if bool(row_info["extend_3prime"].get()) else "false"
@@ -4673,6 +5857,9 @@ def run_gui() -> int:
             "scale_bar_background_opacity": DEFAULT_SCALE_BAR_BACKGROUND_OPACITY,
             "color_by": color_by_var.get(),
             "palette": palette_var.get(),
+            # Only in chain mode, where the chain swatches show them, and only
+            # for the chains they show.
+            "chain_colors": chain_colors_to_send(),
             "xy_only": bool(xy_only_var.get()),
             "write_pca_pdb": bool(write_pca_pdb_var.get()),
             "draw_base_pairs": bool(draw_base_pairs_var.get()),
@@ -4728,16 +5915,34 @@ def run_gui() -> int:
     projection_mode_var.trace_add("write", handle_projection_mode_change)
 
     pdb_var.trace_add("write", lambda *_args: update_default_paths(force=True, update_closed_chains=True))
+    pdb_var.trace_add("write", input_file_changed)
     input_format_var.trace_add("write", lambda *_args: update_default_paths(force=True, update_closed_chains=True))
+    # The fields that decide which chains the run colors refresh the swatch
+    # strip, debounced, since the input is read again when they change.
+    for var in [pdb_var, input_format_var, records_var, model_var, chain_var, resname_var, altloc_var, select_by_var]:
+        var.trace_add("write", lambda *_args: schedule_color_strip())
 
     rebuild_type_rows()
     update_gui_state()
 
     footer = ttk.Frame(root, padding=(12, 6, 12, 10))
-    footer.grid(row=1, column=0, columnspan=2, sticky="ew")
+    footer.grid(row=2, column=0, columnspan=2, sticky="ew")
     ttk.Button(footer, text="Run", command=run_from_gui).pack(side="left")
     ttk.Button(footer, text="Quit", command=root.destroy).pack(side="left", padx=(8, 0))
     ttk.Label(footer, text="Tip: use command-line mode for batch processing, or run with no arguments for this GUI.").pack(side="left", padx=(18, 0))
+
+    # Open as wide as the page asks, 1240 px or not, and never wider than the
+    # screen: at 1240 px the drawing frame asked for 18 px more, and on a
+    # narrower screen the page, still as wide as it asks, scrolls sideways.
+    try:
+        root.update_idletasks()
+        needed = content.winfo_reqwidth() + main_scroll.winfo_reqwidth()
+        root.geometry("{0}x900".format(min(needed, root.winfo_screenwidth() - 40)))
+    except Exception:
+        pass
+    # The swatches beside the Palette, now that the drawing frame is laid out
+    # and its width, which they must stay within, is known.
+    run_color_strip()
 
     root.mainloop()
     return 0
@@ -4755,6 +5960,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         summary = run_processing(args)
         print(summary)
         return 0
+    except ColorOptionError as exc:
+        parser.error(str(exc))  # a usage error, exit 2, like any other bad option value
     except Exception as exc:
         print("ERROR: {0}".format(exc), file=sys.stderr)
         return 1

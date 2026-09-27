@@ -149,7 +149,7 @@ import tempfile
 import time
 from pathlib import Path
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 TOOL_NAME = "Multicolor Split"
 
 try:
@@ -1450,13 +1450,39 @@ def render_preview(meshes, labels, colors, path, title):
     plt.close(fig)
 
 
+def srgb_to_linear(c):
+    """One sRGB channel in 0-1 as the linear value glTF colours are read as."""
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
 def export_glb(meshes, labels, colors, path):
+    """One matte material per part, in the PNG preview's colours.
+
+    glTF reads a material's baseColorFactor, like vertex colours, as LINEAR
+    values, and a primitive with no material gets the specification's default,
+    which is fully metallic.  Writing the sRGB colours as vertex colours on
+    bare primitives therefore showed the parts as tinted metal, paler than the
+    PNG.  Each part now carries a non-metallic material whose colour is the
+    sRGB colour converted to linear, set exactly on the written tree (trimesh
+    keeps material colours as 8-bit values), and vertex normals, so viewers
+    shade the surface smoothly as the PNG does."""
+    import trimesh                          # already loaded by _import_mesh_libs
     scene = trimesh.Scene()
+    exact = {}
     for (V, F), lab, c in zip(meshes, labels, colors):
         tm = trimesh.Trimesh(vertices=np.asarray(V, dtype=np.float64), faces=F, process=False)
-        tm.visual.face_colors = np.array([int(255 * x) for x in c] + [255], dtype=np.uint8)
+        linear = [srgb_to_linear(float(x)) for x in c[:3]] + [1.0]
+        exact[lab] = linear
+        tm.visual = trimesh.visual.TextureVisuals(material=trimesh.visual.material.PBRMaterial(
+            name=lab, baseColorFactor=linear, metallicFactor=0.0, roughnessFactor=0.8))
         scene.add_geometry(tm, node_name=lab, geom_name=lab)
-    scene.export(str(path))
+
+    def exact_colors(tree):
+        for material in tree.get("materials", []):
+            if material.get("name") in exact:
+                material.setdefault("pbrMetallicRoughness", {})["baseColorFactor"] = exact[material["name"]]
+
+    scene.export(str(path), file_type="glb", include_normals=True, tree_postprocessor=exact_colors)
 
 
 def pct(x):
@@ -2368,6 +2394,10 @@ HELP = {
         "The molmap resolution: how much the atoms are blurred before the "
         "surface is drawn. Default 4 Å. A smaller value follows the atoms more "
         "closely; a larger one gives a smoother blob.\n\n"
+        "4 Å is the default and the safest choice. 3.7 Å is worth trying when "
+        "you want more detail: it follows the atoms more closely and usually "
+        "still gives a surface without many holes, while a much smaller value "
+        "opens more holes and tunnels through the surface.\n\n"
         "4 Å with a grid of 0.5 Å is the documented, validated operating "
         "point, where K = 16 is used directly. At any other resolution, with K "
         "blank, K is rescaled to K0 = 16 × (resolution/4) × (0.5/grid) and "
@@ -2760,7 +2790,7 @@ GUI_PREFS = Path.home() / ".multicolor_split_gui.json"   # remembers the Chimera
 
 # The numeric fields: key, label, default, hint
 GUI_NUMBERS = [
-    ("resolution", "Resolution (Å)", f"{DOC_RESOLUTION:g}", "molmap resolution (default 4.0)"),
+    ("resolution", "Resolution (Å)", f"{DOC_RESOLUTION:g}", "default 4.0; try 3.7 for more detail, few holes"),
     ("grid", "Grid spacing (Å)", f"{DOC_GRID:g}", "0.5 resolves the colour interface"),
     ("dust", "Dust size (Å)", f"{DEFAULT_DUST:g}", "specks below this go; a part's main body never does"),
     ("k", "K penalty slope", "", "blank = 16 at 4 Å / 0.5; otherwise rescaled + checked"),
