@@ -120,9 +120,12 @@ METHOD  (the two-colour BR strand-split procedure, generalised to N parts)
        for a chain with a break.
 
 5. Validation (report + JSON): parts sum vs whole (+0.0000 % expected), pieces,
-   cavities, manifoldness, pinch edges after vertex welding (a handful is
-   normal where the complement's reclaimed shell closes to zero thickness;
-   slicers repair them), real pairwise overlap, void, the exported files
+   cavities, manifoldness, pinch edges after vertex welding (where the
+   complement's reclaimed shell closes to zero thickness, the boolean result
+   keeps one vertex copy per sheet at a single point; the copies are moved a
+   sub-micron step apart before writing, so the files have none and slicers
+   that weld equal coordinates find no non-manifold edge -- --keep-pinch-edges
+   writes them as v1.4.1 did), real pairwise overlap, void, the exported files
    re-read from disk, thin-neck and separate-piece warnings, and the
    colour-boundary offset.
 
@@ -149,7 +152,7 @@ import tempfile
 import time
 from pathlib import Path
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 TOOL_NAME = "Multicolor Split"
 
 try:
@@ -962,6 +965,61 @@ def weld(V, F):
     G = G[keep]
     used, remap = np.unique(G, return_inverse=True)
     return uniq[used], remap.reshape(-1, 3).astype(np.int64), n_deg
+
+
+def unpinch(V, F):
+    """Pull apart the vertex copies a boolean result keeps at one point.
+
+    manifold3d represents two sheets of a surface that touch along a line --
+    where the complement closes to zero thickness -- with a separate vertex
+    for each sheet at the same position, so its mesh is a true 2-manifold.  An
+    STL has no vertex identities, only coordinates: a slicer that welds equal
+    coordinates, as Bambu Studio and PrusaSlicer do, fuses the copies, each
+    such line then has edges shared by four triangles, and the slicer reports
+    them as non-manifold edges.  Each copy is moved toward the centroid of its
+    own triangles and into its own solid, by a step far below any printer's
+    resolution -- 1/1000 of the median edge, and at least 32 float32 steps at
+    the mesh's size, so the copies stay apart once written as float32 -- which
+    keeps the file a 2-manifold after welding.
+
+    Returns (V, n_moved, step, n_left): n_left copies still share a position
+    (0 unless two copies' own triangles point the same way)."""
+    V = np.asarray(V, dtype=np.float64)
+    F = np.asarray(F, dtype=np.int64)
+    if len(V) == 0 or len(F) == 0:
+        return V, 0, 0.0, 0
+
+    def shared(P):
+        _, inv, counts = np.unique(P.astype(np.float32), axis=0, return_inverse=True,
+                                   return_counts=True)
+        return np.nonzero(counts[inv.reshape(-1)] > 1)[0]
+
+    idx = shared(V)
+    if not len(idx):
+        return V, 0, 0.0, 0
+    tri = V[F]
+    ring = np.zeros_like(V)
+    np.add.at(ring, F.reshape(-1), np.repeat(tri.mean(axis=1), 3, axis=0))
+    normal = np.zeros_like(V)
+    np.add.at(normal, F.reshape(-1), np.repeat(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]),
+                                               3, axis=0))
+    count = np.bincount(F.reshape(-1), minlength=len(V)).astype(np.float64)
+
+    def unit(X):
+        n = np.linalg.norm(X, axis=1, keepdims=True)
+        return np.divide(X, n, out=np.zeros_like(X), where=n > 0)
+
+    toward = unit(ring[idx] / np.maximum(count[idx], 1.0)[:, None] - V[idx])
+    inward = unit(-normal[idx])                 # manifold3d winds its triangles outward
+    direction = unit(toward + inward)
+    ok = np.linalg.norm(direction, axis=1) > 0
+    edges = np.linalg.norm(tri[:, [1, 2, 0]] - tri, axis=2)
+    step = max(1e-3 * float(np.median(edges)),
+               32.0 * float(np.spacing(np.float32(np.abs(V).max()))))
+    out = V.copy()
+    out[idx[ok]] += direction[ok] * step
+    left = shared(out)
+    return out, int(ok.sum()), step, int(len(np.intersect1d(left, idx)))
 
 
 def read_stl(path):
@@ -1890,9 +1948,17 @@ def _pipeline(a, c):
     pvol = [P.volume() for P in parts_m]
     empty = [v < sliver for v in pvol]
     part_arrays = [arrays(P) for P in parts_m]
-    ex_meshes, ex_deg, written = [], [], []
+    ex_meshes, ex_deg, written, separated = [], [], [], []
     for (V, F), nm, is_empty in zip(part_arrays, names, empty):
-        Vx, Fx, nd = weld(apply(A, V), F)
+        Vt = apply(A, V)
+        if not getattr(a, "keep_pinch_edges", False):
+            # vertex copies at one point stay apart in the file, so a slicer
+            # that welds equal coordinates finds no non-manifold edge
+            Vt, moved, step, _left = unpinch(Vt, F)
+            separated.append((moved, step))
+        else:
+            separated.append((0, 0.0))
+        Vx, Fx, nd = weld(Vt, F)
         ex_meshes.append((Vx, Fx))
         ex_deg.append(nd)
         if not is_empty:
@@ -1982,11 +2048,15 @@ def _pipeline(a, c):
               P.status() == mf.Error.NoError and (fi["bodies"] == exp or not strict),
               detail + ("; " + "; ".join(frag) if frag else ""))
         check(f"P{i} file: no open edges", rr["open_edges"] == 0, f"{rr['open_edges']} open edges")
+        moved, step = separated[i - 1]
         check(f"P{i} file: pinch edges",
               rr["pinch_edges"] <= max(PINCH_WARN, PINCH_WARN_REL * rr["faces"]),
               f"{rr['pinch_edges']} after welding" +
-              (" -- slicers repair these; some tools refuse such a file (trimesh), others "
-               "silently re-pair the edges (manifold3d)" if rr["pinch_edges"] else ""), soft=True)
+              (f" ({moved} vertex copies at pinch points moved {step:.2g} apart before "
+               f"writing)" if moved else "") +
+              (" -- slicers such as Bambu Studio report these as non-manifold edges; "
+               "leave out --keep-pinch-edges to separate them" if rr["pinch_edges"] else ""),
+              soft=True)
     check("whole file clean", reread_whole["clean"] and
           (n_whole is None or reread_whole["outer"] == n_whole),
           f"{reread_whole['outer']} piece(s)" + (f", {reread_whole['cavities']} cavity(ies)"
@@ -2033,7 +2103,7 @@ def _pipeline(a, c):
              f"--chimerax={exe}"]
     if a.scale != 1.0:
         repro.append(f"--scale={a.scale:.12g}")
-    for flag in ("lay_flat", "allow_multi_shell", "keep_solvent", "no_hydrogens"):
+    for flag in ("lay_flat", "allow_multi_shell", "keep_solvent", "no_hydrogens", "keep_pinch_edges"):
         if getattr(a, flag):
             repro.append("--" + flag.replace("_", "-"))
     if palette != "default":                    # a default run's report stays as it was
@@ -2177,6 +2247,8 @@ def _pipeline(a, c):
                checks=checks, verdict=verdict, scan=records, kscan=k_records,
                files=[str(out / nm) for nm in written] + [str(out / whole_name)],
                zero_area_dropped=dict(whole=ref_deg + wd, parts=ex_deg),
+               pinch_vertices_separated=[m for m, _step in separated],
+               keep_pinch_edges=bool(getattr(a, "keep_pinch_edges", False)),
                reread=reread, reread_whole=reread_whole, reproduce=repro, notes=notes,
                chimerax=exe, chimerax_version=cx_version, grid_info=man["grid"],
                export_steps=man.get("export_steps"), additivity=man["additivity_max_abs"],
@@ -3554,6 +3626,10 @@ def build_parser():
     g.add_argument("--keep-scan", action="store_true",
                    help="keep every candidate STL in <tag>_work/ (or <tag>_work_failed/)")
     g.add_argument("--no-preview", action="store_true", help="skip the preview PNG / GLB")
+    g.add_argument("--keep-pinch-edges", action="store_true",
+                   help="write the vertex copies at pinch points as one point, as v1.4.1 did, so "
+                        "an earlier set is rebuilt byte for byte; slicers that weld equal "
+                        "coordinates, Bambu Studio among them, then report non-manifold edges")
     g.add_argument("--palette", type=palette_arg, default="default",
                    help="part colours of the preview PNG / GLB, named in the log and report "
                         "(the STLs carry no colour): default (this tool's own: blue, orange, "
