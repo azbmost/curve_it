@@ -2839,6 +2839,41 @@ def _pipeline(a, c):
 # ============================================================ GUI help text
 # key -> (title, prose, example or None).  Every light-blue ? in the GUI opens
 # one of these; a chip for a key that is missing here fails when it is built.
+# The Convention ?'s table: what a selection selects, then how ChimeraX and
+# how Chimera write it.  Each pair selects the same atoms; a test runs every
+# one in both programs on the switchback666 duplex.
+CONVENTION_EXAMPLES = (
+    ("chain A", "/A", ":.A"),
+    ("residues 12-20 of chain A", "/A:12-20", ":12-20.A"),
+    ("atom P of residue 12 of A", "/A:12@P", ":12.A@P"),
+    ("the P atoms of A and of C", "/A@P | /C@P", ":.A@P | :.C@P"),
+    ("residues 12-20 of A and C", "/A,C:12-20", ":12-20.A | :12-20.C"),
+    ("every DG residue", ":DG", ":DG"),
+    ("all DNA and RNA", "nucleic", "nucleic acid"),
+    ("all protein", "protein", "protein"),
+    ("ligands", "ligand", "ligand"),
+)
+# ... and the rows too long for a table row: (meaning, ChimeraX's ways, Chimera's)
+CONVENTION_BLOCKS = (
+    ("chain A's DNA backbone, its sugar and phosphate atoms", ("/A & backbone",),
+     ":.A" + CHIMERA_DNA_BACKBONE),
+    ("chain A's bases, all but the backbone", ("/A & ~backbone", "/A & sideonly"),
+     ":.A & ~" + CHIMERA_DNA_BACKBONE),
+)
+
+
+def _convention_table():
+    """CONVENTION_EXAMPLES and CONVENTION_BLOCKS as the Convention ?'s
+    example, the code marked for example_segments()."""
+    rows = [f"{'What it selects':<28}{'ChimeraX':<14}Chimera"]
+    rows += [f"{what:<28}`{cx}`{' ' * max(1, 14 - len(cx))}`{ch}`"
+             for what, cx, ch in CONVENTION_EXAMPLES]
+    for what, cxs, ch in CONVENTION_BLOCKS:
+        rows += ["", what + ":", " ChimeraX " + "   or   ".join(f"`{cx}`" for cx in cxs),
+                 f" Chimera  `{ch}`"]
+    return "\n".join(rows)
+
+
 HELP = {
     "structure": (
         "Structure file",
@@ -2919,10 +2954,10 @@ HELP = {
         "Command line: --parts A C (quote a |, e.g. --parts 'A+B|C', or the "
         "shell reads it as a pipe), or --chains A,C as a shorthand for one "
         "chain per part.",
-        "A C        two colours: chain A, then chain C\n"
-        "A,B C      chains A and B share one colour\n"
-        "A+B | C    the same, written another way\n"
-        "C A        C peeled first: the boundary sits in C",
+        "`A C`        two colours: chain A, then chain C\n"
+        "`A,B C`      chains A and B share one colour\n"
+        "`A+B | C`    the same, written another way\n"
+        "`C A`        C peeled first: the boundary sits in C",
     ),
     "parts_by": (
         "Parts by: chains or atom selections",
@@ -2939,24 +2974,29 @@ HELP = {
         "Command line: --parts A C for chains; --part once per part for atom "
         "selections, e.g. --part 'bbA=/A & backbone' --part rest. The two "
         "cannot be combined.",
-        "chains            A C\n"
-        "                  P1 = chain A, P2 = chain C\n"
-        "atom selections   bbA = /A & backbone\n"
-        "                  bbC = /C & backbone\n"
-        "                  rest\n"
-        "                  P1, P2 = each strand's backbone,\n"
-        "                  P3 = the bases of both",
+        "Parts by chains, typed in Parts:\n"
+        "  `A C`\n"
+        "  P1 = chain A, P2 = chain C\n"
+        "\n"
+        "Parts by atom selections, typed in Selections:\n"
+        "  `bbA = /A & backbone`\n"
+        "  `bbC = /C & backbone`\n"
+        "  `rest`\n"
+        "  P1 = chain A's backbone, P2 = chain C's backbone,\n"
+        "  P3 = every other atom: the bases of both strands",
     ),
     "part": (
         "Selections (one part per line)",
-        "One part per line, in colour order: the first line is P1, peeled "
-        "first. Each line is an atom selection in the chosen Convention, "
-        "optionally named: NAME = selection. The name (a letter, then "
-        "letters, digits, _ + or -) goes into the file name, "
-        "<tag>_p1_NAME.stl; an unnamed line is named from its words, so "
-        "/A & backbone gives A_backbone and /A & ~backbone gives "
-        "A_not_backbone. The word rest on a line of its own (it may be named "
-        "too: bases = rest) takes every atom no other line takes; give it at "
+        "One part per line, in colour order: the first line is P1, which is "
+        "peeled first. A line is either an atom selection, written in the "
+        "chosen Convention, or the word rest.\n\n"
+        "A selection may have a name in front, as in \"bbA = /A & backbone\": "
+        "the name goes into the file name, <tag>_p1_bbA.stl, and must start "
+        "with a letter and use only letters, digits and _ + -. Without a "
+        "name, the file name is made from the selection's words, so "
+        "\"/A & backbone\" is named A_backbone.\n\n"
+        "rest is this tool's word, not a selection: it takes every atom no "
+        "other line takes, and may be named too (\"bases = rest\"). Give it at "
         "most once, anywhere in the order. At least two lines are needed, and "
         "a line may not contain ;.\n\n"
         "Selections are made in the structure's first model, after waters "
@@ -2966,18 +3006,13 @@ HELP = {
         "earlier part (see Shared atoms). Atoms no line selects, when there "
         "is no rest line, are left out of the print; the log and the report "
         "say how many, with examples.\n\n"
-        "ChimeraX's convention: /A is chain A, :12-20 residues, @P an atom "
-        "name, & and, | or, ~ not, and keywords such as backbone, sideonly, "
-        "sidechain, nucleic, protein and ligand. backbone is the "
-        "sugar-phosphate backbone of DNA and RNA (P, OP1, OP2, O5', C5', C4', "
-        "O4', C3', O3', C2', C1', O2' in RNA, and their hydrogens) and a "
-        "protein's main chain (N, CA, C, O, OXT and theirs). sidechain also "
-        "holds the sugar ring atoms C1', C2', C3', C4' and O4', which "
-        "backbone has too; the bases alone are sideonly, or ~backbone.\n\n"
-        "Chimera's convention: :.A is chain A, :12-20.A residues 12 to 20 of "
-        "chain A, @P an atom name, a comma makes a list (@P,OP1,OP2), and "
-        "& | ~ work as in ChimeraX. Chimera has no backbone keyword: list the "
-        "atom names, or click Backbone per chain.\n\n"
+        "How to write a selection in each convention: the Convention ? sets "
+        "them side by side. In short, chain A is \"/A\" in ChimeraX and "
+        "\":.A\" in Chimera. ChimeraX's keywords, such as \"backbone\", have "
+        "no Chimera equivalent; there Backbone per chain writes the atom "
+        "names for you. In ChimeraX, \"sidechain\" includes the sugar ring "
+        "atoms C1', C2', C3', C4' and O4' that \"backbone\" also has; for "
+        "the bases alone write \"sideonly\" or \"~backbone\".\n\n"
         "The log and the report give each part's atom count, and say what the "
         "Shared atoms rule did to it.\n\n"
         "Command line: one --part per line, in order, e.g. --part "
@@ -2985,52 +3020,53 @@ HELP = {
         "each, as the shell reads & | ~ ( ), and use double quotes for a "
         "Chimera line with primes (C1'). The report's REPRODUCE line writes "
         "them as NAME=selection.",
-        "ChimeraX convention (two strands, 18 nt each):\n"
-        "  bbA = /A & backbone        P1 bbA    198 atoms\n"
-        "  bbC = /C & backbone        P2 bbC    198 atoms\n"
-        "  rest                       P3 rest   342 atoms\n"
-        "Chimera convention, the same atoms and STLs:\n"
-        "  bbA = :.A@P,OP1,OP2,O5',C5',C4',O4',C3',O3',C2',C1'\n"
-        "  bbC = :.C@P,OP1,OP2,O5',C5',C4',O4',C3',O3',C2',C1'\n"
-        "  rest",
+        "Typed in Selections, ChimeraX convention:\n"
+        "  `bbA = /A & backbone`\n"
+        "  `bbC = /C & backbone`\n"
+        "  `rest`\n"
+        "The parts, on a duplex of 18-nt strands A and C:\n"
+        "  P1 bbA   chain A's backbone              198 atoms\n"
+        "  P2 bbC   chain C's backbone              198 atoms\n"
+        "  P3 rest  everything else (the bases)     342 atoms\n"
+        "\n"
+        "The same parts typed in Chimera's convention (for a model\n"
+        "without hydrogens):\n"
+        f"  `bbA = :.A{CHIMERA_DNA_BACKBONE}`\n"
+        f"  `bbC = :.C{CHIMERA_DNA_BACKBONE}`\n"
+        "  `rest`\n"
+        "\n"
+        "In a line, `bbA` is the part's name, `=` joins it to the\n"
+        "selection, and `/A & backbone` is the selection;\n"
+        "`rest` is this tool's word, not a selection.",
     ),
     "selection_syntax": (
         "Convention (selection syntax)",
-        "The atom-specification rules the Selections are written in, and so "
-        "which program reads them. ChimeraX (the default): ChimeraX reads "
-        "them, the same ChimeraX that builds the maps. Chimera: UCSF Chimera "
-        "1.x reads them, run without a window for a few seconds before the "
-        "maps are made, so it must be installed (see the Chimera field, shown "
-        "for this convention).\n\n"
-        "Chimera evaluates each line with its own rules and names the atoms "
-        "it selects by chain, residue number, insertion code and atom name; "
-        "ChimeraX then takes exactly those atoms, so the same atoms written "
-        "in either convention give byte-identical STLs. Atoms Chimera names "
-        "that ChimeraX does not have (the two can read a file's chain or "
-        "residue names differently) are left out with a note, and a part left "
-        "with none stops the run. Where a file has two atoms with the same "
-        "chain, residue and name, a part whose Chimera selection names them "
-        "takes both, also noted.\n\n"
+        "The rules the Selections are written in, and so which program reads "
+        "them. ChimeraX (the default): ChimeraX reads them, the same ChimeraX "
+        "that builds the maps. Chimera: UCSF Chimera 1.x reads them, run "
+        "without a window for a few seconds before the maps are made, so it "
+        "must be installed (see the Chimera field, shown for this "
+        "convention).\n\n"
+        "Both conventions name atoms with @ (\"@P\"), list with a comma "
+        "(\"@P,OP1\"), and combine selections with & (and), | (or) and ~ "
+        "(not). They differ in how chains and residues are written and in "
+        "their keywords; the table below sets them side by side, and every "
+        "row was checked in both programs on a duplex of two 18-nt strands, "
+        "A and C, selecting the same atoms in each. In Chimera a comma lists "
+        "within one level only: \":12-20.A,C\" does not add chain C, so the "
+        "table writes \":12-20.A | :12-20.C\".\n\n"
+        "Chimera names the atoms it selects by chain, residue number, "
+        "insertion code and atom name; ChimeraX then takes exactly those "
+        "atoms, so the same atoms written in either convention give "
+        "byte-identical STLs. Atoms Chimera names that ChimeraX does not have "
+        "(the two can read a file's chain or residue names differently) are "
+        "left out with a note, and a part left with none stops the run. Where "
+        "a file has two atoms with the same chain, residue and name, a part "
+        "whose Chimera selection names them takes both, also noted.\n\n"
         "The names before =, rest and the Shared atoms rule belong to this "
-        "tool, not to Chimera or ChimeraX, and work the same in both "
-        "conventions. A comma list in Chimera applies to its own level only: "
-        ":12-20.A,C does not add chain C; write :12-20.A | :12-20.C.\n\n"
+        "tool and work the same in both conventions.\n\n"
         "Command line: --selection-syntax chimera (default chimerax).",
-        "ChimeraX         Chimera            atoms (18 nt strands)\n"
-        "/A               :.A                342, chain A\n"
-        "/A:12-20         :12-20.A           171, residues 12-20\n"
-        "/A:12@P          :12.A@P            1\n"
-        "/A@P | /C@P      :.A@P | :.C@P      36\n"
-        "/A,C:12-20       :12-20.A | :12-20.C\n"
-        "                                    369, 12-20 of both chains\n"
-        ":DG              :DG                396, every DG residue\n"
-        "nucleic          nucleic acid       738, all DNA and RNA\n"
-        "protein          protein            0 in this DNA model\n"
-        "ligand           ligand             0 in this DNA model\n"
-        "/A & backbone    :.A@P,OP1,OP2,O5',C5',C4',O4',C3',O3',C2',C1'\n"
-        "                                    198, a DNA backbone\n"
-        "/A & ~backbone   :.A & ~@P,OP1,... (the same list)\n"
-        "                                    144, its bases",
+        _convention_table(),
     ),
     "overlap": (
         "Shared atoms",
@@ -3041,22 +3077,29 @@ HELP = {
         "the run stops before any map is made and lists the shared atoms, so "
         "each atom may be in at most one selection.\n\n"
         "With the default, order does the work: put the specific part first "
-        "and a broad one after it. bbA = /A & backbone, then A = /A, gives "
-        "chain A's backbone to P1 and the rest of chain A to P2, without "
-        "writing ~backbone. rest never shares: it takes only the atoms no "
-        "line takes. A part whose every atom an earlier part keeps stops the "
-        "run.\n\n"
-        "A frequent surprise in ChimeraX's convention: sidechain includes the "
-        "sugar ring atoms C1', C2', C3', C4' and O4', which backbone includes "
-        "too, so /A & backbone and /A & sidechain share five atoms per "
-        "nucleotide; the bases alone are sideonly.\n\n"
+        "and a broad one after it. \"bbA = /A & backbone\" followed by "
+        "\"A = /A\" gives chain A's backbone to P1 and the rest of chain A to "
+        "P2, without writing \"~backbone\". rest never shares: it takes only "
+        "the atoms no line takes. A part whose every atom an earlier part "
+        "keeps stops the run.\n\n"
+        "A frequent surprise in ChimeraX's convention: \"sidechain\" includes "
+        "the sugar ring atoms C1', C2', C3', C4' and O4', which \"backbone\" "
+        "includes too, so \"/A & backbone\" and \"/A & sidechain\" share five "
+        "atoms per nucleotide; the bases alone are \"sideonly\".\n\n"
         "Command line: --overlap error (default first).",
-        "bbA = /A & backbone    P1   198 atoms\n"
-        "scA = /A & sidechain   P2   144 (234 selected, 90 kept by P1)\n"
-        "rest                   P3   396 atoms\n"
-        "note  P1 (bbA) and P2 (scA) both select 90 atom(s), e.g.\n"
-        "      A:8@C4', A:8@O4', A:8@C3': the earlier part, P1,\n"
-        "      keeps them",
+        "Typed in Selections:\n"
+        "  `bbA = /A & backbone`\n"
+        "  `scA = /A & sidechain`\n"
+        "  `rest`\n"
+        "What each part gets, on a duplex of 18-nt strands A and C:\n"
+        "  P1 bbA   chain A's backbone                  198 atoms\n"
+        "  P2 scA   chain A's sidechain (bases and sugar\n"
+        "           rings), less the 90 sugar atoms P1\n"
+        "           keeps                               144 atoms\n"
+        "  P3 rest  everything else: chain C            396 atoms\n"
+        "The note in the log and the report:\n"
+        "  P1 (bbA) and P2 (scA) both select 90 atom(s), e.g.\n"
+        "  A:8@C4', A:8@O4', A:8@C3': the earlier part, P1, keeps them",
     ),
     "fill_backbone": (
         "Backbone per chain",
@@ -3069,8 +3112,8 @@ HELP = {
         "It takes the chains Detect chains found (running it when needed), "
         "and skips a chain with a blank ID or with no nucleotide or "
         "amino-acid residue, which then falls to rest.\n\n"
-        "In ChimeraX's convention a line is /A & backbone. Chimera's has no "
-        "backbone keyword, so the line lists the atom names ChimeraX's "
+        "In ChimeraX's convention a line is \"/A & backbone\". Chimera's has "
+        "no backbone keyword, so the line lists the atom names ChimeraX's "
         "backbone covers, with hydrogens and other programs' names: for DNA "
         "and RNA P, OP1, OP2, OP3, O1P, O2P, O3P, HP, O5', C5', C4', O4', "
         "C3', O3', C2', O2', C1', H1', H2', H2'', H3', H4', H5', H5'', HO2', "
@@ -3082,14 +3125,15 @@ HELP = {
         "an unusual name can differ.\n\n"
         "Command line: write the --part values; Show command prints the ones "
         "in this window.",
-        "chains A and C of a DNA duplex, ChimeraX convention:\n"
-        "  bbA = /A & backbone\n"
-        "  bbC = /C & backbone\n"
-        "  rest\n"
-        "Chimera convention (the lists cut short here):\n"
-        "  bbA = :.A@P,OP1,OP2,OP3,O1P,O2P,O3P,HP,O5',C5',...\n"
-        "  bbC = :.C@P,OP1,OP2,OP3,O1P,O2P,O3P,HP,O5',C5',...\n"
-        "  rest",
+        "For a DNA duplex with chains A and C, the button writes,\n"
+        "in ChimeraX's convention:\n"
+        "  `bbA = /A & backbone`\n"
+        "  `bbC = /C & backbone`\n"
+        "  `rest`\n"
+        "and in Chimera's convention (a long line wraps here):\n"
+        f"  `bbA = :.A@{','.join(NA_BACKBONE_NAMES)}`\n"
+        f"  `bbC = :.C@{','.join(NA_BACKBONE_NAMES)}`\n"
+        "  `rest`",
     ),
     "palette": (
         "Palette (part colours)",
@@ -3614,6 +3658,16 @@ HELP = {
 }
 
 
+def example_segments(text):
+    """A HELP example as (piece, is_code) runs.  `...` marks what is typed,
+    a selection, a Parts entry, which the popup shows apart from the words
+    saying what it does."""
+    pieces = text.split("`")
+    if len(pieces) % 2 == 0:
+        raise ValueError(f"unbalanced ` in a help example: {text[:40]!r}")
+    return [(piece, bool(i % 2)) for i, piece in enumerate(pieces) if piece]
+
+
 # ======================================================================= GUI
 GUI_PREFS = Path.home() / ".multicolor_split_gui.json"   # remembers the ChimeraX and Chimera paths
 # Parts by atom selections: the menus' labels for the options' values
@@ -3695,19 +3749,28 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
                         anchor="w")
         text.pack(fill="x")
         if example:
-            tk.Label(frm, text="Example", font=("Helvetica", 11, "bold"),
-                     bg="#f4f9ff", fg="#0b4d80", anchor="w").pack(fill="x",
-                                                                  pady=(12, 3))
+            segments = example_segments(example)
+            plain = "".join(piece for piece, _ in segments)
+            head = tk.Frame(frm, bg="#f4f9ff")
+            head.pack(fill="x", pady=(12, 3))
+            tk.Label(head, text="Example", font=("Helvetica", 11, "bold"),
+                     bg="#f4f9ff", fg="#0b4d80").pack(side="left")
+            if any(code for _, code in segments):
+                tk.Label(head, text="    bold on white: what you type;  the rest says what it does",
+                         font=("Helvetica", 11), bg="#f4f9ff", fg="#555").pack(side="left")
             # Height counted in DISPLAY rows, not in newlines: a line
             # longer than the box wraps, and a height counted in newlines
             # then clips the tail of the block off the bottom.
             width = 62
             rows = sum(max(1, -(-len(line) // width))
-                       for line in example.split("\n"))
+                       for line in plain.split("\n"))
             box = tk.Text(frm, font=("Menlo", 11), height=rows,
                           width=width, bg="#e8f1fa", relief="flat",
                           padx=8, pady=6, highlightthickness=0)
-            box.insert("1.0", example)
+            box.tag_configure("code", font=("Menlo", 11, "bold"), background="#ffffff",
+                              foreground="#0b3d66")
+            for piece, code in segments:
+                box.insert(tk.END, piece, ("code",) if code else ())
             box.configure(state="disabled")
             box.pack(fill="x")
         tk.Button(frm, text="Close", command=top.destroy).pack(pady=(12, 0))
