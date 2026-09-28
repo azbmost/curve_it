@@ -12,13 +12,18 @@ solids that tile the whole molmap surface EXACTLY, for multicolour printing
     python3 multicolor_split.py MODEL.pdb --resolution 3.7       # K rescaled + checked
     python3 multicolor_split.py MODEL.pdb --lay-flat             # fewer layers, less purge
     python3 multicolor_split.py MODEL.pdb --palette DiLiuLab     # lab colours in the previews
+    python3 multicolor_split.py MODEL.pdb --part 'bbA=/A & backbone' \
+        --part 'bbB=/B & backbone' --part rest     # atom selections as parts (ChimeraX's)
+    python3 multicolor_split.py MODEL.pdb --selection-syntax chimera \
+        --part "bbA=:.A@P,OP1,OP2,O5',C5',C4',O4',C3',O3',C2',C1'" --part rest   # Chimera's
 
 This is Curve It's "Multicolor Split..." tool; it also runs on its own.  In the
 GUI every field, checkbox and group of buttons has a light-blue ? that opens an
 explanation of the setting, with an example for every entry field.
 
 Output (default): ./<structure stem>_molmap<resolution>_split/ holding
-    <tag>_p1_chainA.stl, <tag>_p2_chainC.stl, ...   one per part (tag = the folder name)
+    <tag>_p1_chainA.stl, <tag>_p2_chainC.stl, ...   one per part (tag = the folder name;
+                                                    <tag>_p1_bbA.stl for a part --part names)
     <tag>_whole.stl                                 reference only
     <tag>_report.txt / .json                        scan + validation
     <tag>_preview.png / .glb                        local previews
@@ -34,11 +39,23 @@ FAILED / 1 error / 2 usage error / 130 interrupted or stopped.
 
 Needs UCSF ChimeraX (molmap + marching cubes, run headless) and a python3 with
 numpy, scipy, trimesh and manifold3d (tested with /opt/anaconda3/bin/python3);
-matplotlib for the preview PNG, tkinter for the GUI.  STL units are Angstroms;
+matplotlib for the preview PNG, tkinter for the GUI, and UCSF Chimera 1.x only
+for selections written in Chimera's convention.  STL units are Angstroms;
 slicers read them as mm, so 1:1 is 1 A -> 1 mm (--scale changes that).
 
 METHOD  (the two-colour BR strand-split procedure, generalised to N parts)
 --------------------------------------------------------------------------
+0. Parts.  A part is one or more whole chains (--parts), or an atom selection
+   (--part) in ChimeraX's convention or UCSF Chimera's (--selection-syntax),
+   evaluated once, before any map is made, by the program whose convention it
+   is: Chimera names the atoms it selects by chain, residue and atom name and
+   ChimeraX takes exactly those, so both conventions give the same parts from
+   the same atoms.  An atom two selections share goes to the earlier part
+   (--overlap error refuses the run instead), rest takes every atom no other
+   part takes, and every later ChimeraX job maps exactly those atoms, by index,
+   checked against a fingerprint of their names.  All below is the same for
+   chains and selections.
+
 1. Maps.  One molmap of all selected chains, T, at gridSpacing 0.5 A, and one
    molmap per part on the SAME grid (onGrid).  molmap Gaussians are additive,
    so T == sum of the part maps (checked every run, ~3e-7).  At molmap's
@@ -152,7 +169,7 @@ import tempfile
 import time
 from pathlib import Path
 
-__version__ = "1.4.2"
+__version__ = "1.5.0"
 TOOL_NAME = "Multicolor Split"
 
 try:
@@ -581,6 +598,146 @@ def parse_parts(tokens, available):
     return parts
 
 
+SELECTION_SYNTAXES = ("chimerax", "chimera")
+OVERLAP_RULES = ("first", "error")
+REST_WORD = "rest"
+_PART_NAME = re.compile(r"^\s*([A-Za-z][A-Za-z0-9_+-]*)\s*=\s*(.+?)\s*$", re.S)
+_NAME_LIKE = re.compile(r"^([\w\s+-]*?)\s*=")        # text before '=' with no selection symbols
+
+
+def selection_label(spec):
+    """A file-name label for an unnamed selection, from its words: /A &
+    backbone -> A_backbone, /A & ~backbone -> A_not_backbone."""
+    words = [{"~": "not", "|": "or"}.get(w, w) for w in re.findall(r"~|\||[A-Za-z0-9]+", spec)]
+    label = ""
+    for w in words:
+        if len(label) + len(w) + bool(label) > 24:
+            break
+        label += ("_" if label else "") + w
+    return label or (words[0][:24] if words else "sel")
+
+
+def selection_line_label(text):
+    """The label a --part value gets: its name, rest, or selection_label()."""
+    m = _PART_NAME.match(text)
+    if m:
+        return safe_tag(m.group(1))
+    return REST_WORD if text.strip().lower() == REST_WORD else selection_label(text)
+
+
+def parse_selection_parts(values, syntax="chimerax"):
+    """--part values -> [dict(label, spec, kind, syntax, name)], in peeling order.
+
+    Each value is one part: an atom specification in ChimeraX's or Chimera's
+    convention, optionally named as NAME=SPEC (the name goes into the file
+    name), or the word rest, for every atom no other part takes.  An
+    unnamed selection is labelled from its words (selection_label)."""
+    syntax = str(syntax or "chimerax").strip().lower()
+    if syntax not in SELECTION_SYNTAXES:
+        raise SplitError(f"unknown selection syntax {syntax!r}: use chimerax or chimera")
+    parts = []
+    for k, raw in enumerate(values or [], 1):
+        text = str(raw).strip()
+        name = None
+        m = _PART_NAME.match(text)
+        if m:
+            name, text = m.group(1), m.group(2).strip()
+        else:
+            bad = _NAME_LIKE.match(text)
+            if bad and bad.group(1).strip():
+                word = bad.group(1).strip()
+                if re.fullmatch(r"[A-Za-z][A-Za-z0-9_+-]*", word):
+                    raise SplitError(f"part {k} ({raw!r}) has no selection after its name")
+                raise SplitError(f"part {k} ({raw!r}): the name {word!r} before '=' must be one "
+                                 f"word that starts with a letter, using letters, digits and _ + - "
+                                 f"(e.g. bbA=/A & backbone)")
+        if not text:
+            raise SplitError(f"part {k} ({raw!r}) has no selection")
+        if ";" in text or "\n" in text or "\r" in text:
+            raise SplitError(f"part {k} ({raw!r}): a selection may not contain ';' or a line break "
+                             f"-- give each part as its own --part")
+        kind = "rest" if text.lower() == REST_WORD else "spec"
+        label = selection_line_label(str(raw).strip())
+        parts.append(dict(label=label, spec=REST_WORD if kind == "rest" else text, kind=kind,
+                          syntax=syntax, name=name))
+    if sum(p["kind"] == "rest" for p in parts) > 1:
+        raise SplitError("rest may be given only once: it already takes every atom no other part takes")
+    if len(parts) < 2:
+        raise SplitError("need at least two parts (colours) to split; got "
+                         f"{len(parts)} --part value(s)")
+    return parts
+
+
+_CHIMERA_CHAIN = re.compile(r":[^\s@&|~()]*\.[A-Za-z0-9]")                  # :.A  :12.A
+_CHIMERAX_CHAIN = re.compile(r"(^|[\s&|~(])/[A-Za-z0-9]|#[\d.]+/[A-Za-z0-9]")   # /A  #1/A
+_CHIMERAX_ONLY_WORDS = re.compile(r"\b(backbone|mainchain|sidechain|sideonly|side|"
+                                  r"nucleic(?!\s+acid))\b", re.I)
+
+
+def convention_hint(spec, syntax):
+    """For a selection that fails: a pointer to the other convention when it
+    looks written in that one, else ""."""
+    if syntax == "chimerax" and _CHIMERA_CHAIN.search(spec):
+        return ("; :.A and :12.A are Chimera's convention (ChimeraX writes /A and /A:12) -- or "
+                "choose the Chimera convention")
+    if syntax == "chimera":
+        if _CHIMERAX_CHAIN.search(spec):
+            return ("; /A is ChimeraX's convention (Chimera writes :.A) -- or choose the ChimeraX "
+                    "convention")
+        m = _CHIMERAX_ONLY_WORDS.search(spec)
+        if m:
+            return (f"; {m.group(1)} is a ChimeraX keyword Chimera does not have -- list the atom "
+                    f"names instead, e.g. :.A{CHIMERA_DNA_BACKBONE} for a DNA backbone and "
+                    f":.A & ~@P,OP1,... for its bases, or choose the ChimeraX convention")
+    return ""
+
+
+def selection_part_arg(p):
+    """One part as the --part value that rebuilds it."""
+    return (f"{p['name']}={p['spec']}" if p.get("name") else p["spec"])
+
+
+# The atom names ChimeraX's backbone keyword covers (ChimeraX 1.x, hydrogens
+# and older or other programs' names included), for writing it in Chimera's
+# convention, which has no such keyword and whose * does not match a primed
+# name.  H1, H2 and H3 are a protein's N-terminal hydrogens but a nucleotide's
+# base hydrogens, so they are listed only for a chain with no nucleotide.
+NA_BACKBONE_NAMES = ("P", "OP1", "OP2", "OP3", "O1P", "O2P", "O3P", "HP", "O5'", "C5'", "C4'",
+                     "O4'", "C3'", "O3'", "C2'", "O2'", "C1'", "H5'", "H5''", "H4'", "H3'",
+                     "H2'", "H2''", "HO2'", "H1'", "HO3'", "HO5'", "H5T", "H3T")
+AA_BACKBONE_NAMES = ("N", "CA", "C", "O", "OXT", "OT1", "OT2", "H", "HN", "HA", "HA1", "HA2",
+                     "HA3", "HT1", "HT2", "HT3")
+AA_TERMINAL_H = ("H1", "H2", "H3")
+CHIMERA_DNA_BACKBONE = "@P,OP1,OP2,O5',C5',C4',O4',C3',O3',C2',C1'"   # its heavy atoms only
+_NUCLEOTIDE = re.compile(r"^(D?[ACGTUI]|R[ACGU]|ADE|CYT|GUA|THY|URA)[35N]?$")
+_AMINO_ACIDS = {"ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", "LEU",
+                "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL", "MSE", "SEC",
+                "PYL", "HID", "HIE", "HIP", "HSD", "HSE", "HSP", "CYX", "CYM", "ASH", "GLH", "LYN"}
+
+
+def backbone_parts(chains, syntax="chimerax"):
+    """--part values for "each chain's backbone its own colour, then the
+    rest": one bb<chain> line per chain with an ID and a nucleotide or
+    amino-acid residue, in file order, then rest.  chains is
+    read_structure()'s list; both conventions select the same atoms."""
+    lines = []
+    for c in chains:
+        cid = str(c["id"]).strip()
+        names = set(c.get("resnames") or ())
+        na = any(_NUCLEOTIDE.match(n) for n in names)
+        aa = bool(names & _AMINO_ACIDS)
+        if not cid or not (na or aa):
+            continue
+        if syntax == "chimera":
+            atoms = (NA_BACKBONE_NAMES if na else ()) + \
+                    (AA_BACKBONE_NAMES + (() if na else AA_TERMINAL_H) if aa else ())
+            spec = f":.{cid}@" + ",".join(atoms)
+        else:
+            spec = f"/{cid} & backbone"
+        lines.append(f"bb{re.sub(r'[^A-Za-z0-9_+-]', '_', cid)} = {spec}")
+    return lines + [REST_WORD] if lines else []
+
+
 def part_label(chains):
     return ("chain" if len(chains) == 1 else "chains") + "+".join(chains)
 
@@ -638,6 +795,50 @@ def find_chimerax(user=None):
                      "(or set the CHIMERAX environment variable)")
 
 
+def _chimera_exe(p):
+    p = str(Path(p).expanduser())
+    if p.rstrip("/").endswith(".app"):                 # a macOS app bundle
+        p = str(Path(p) / "Contents" / "MacOS" / "chimera")
+    return p
+
+
+def _is_chimerax(p):
+    # macOS paths ignore case, so ChimeraX.app/Contents/MacOS/chimera exists
+    # too; ChimeraX must never stand in for Chimera
+    return "chimerax" in str(p).lower()
+
+
+def find_chimera(user=None):
+    """UCSF Chimera, which reads selections written in Chimera's own
+    atom-specification convention.  An explicitly given path (or $CHIMERA)
+    must work; only when neither is given is Chimera searched for."""
+    for given, what in ((user, "--chimera"), (os.environ.get("CHIMERA"), "$CHIMERA")):
+        if given:
+            p = _chimera_exe(given)
+            if _is_chimerax(p):
+                raise SplitError(f"{given} ({what}) is ChimeraX: selections in Chimera's convention "
+                                 f"need UCSF Chimera 1.x, e.g. /Applications/Chimera.app/Contents/MacOS/"
+                                 f"chimera -- or use --selection-syntax chimerax")
+            if not _exe_ok(p):
+                raise SplitError(f"UCSF Chimera not found at {given} ({what}); give the executable, "
+                                 f"e.g. /Applications/Chimera.app/Contents/MacOS/chimera")
+            return p
+    cands = ["/Applications/Chimera.app/Contents/MacOS/chimera"]
+    cands += sorted(glob.glob("/Applications/Chimera*.app/Contents/MacOS/chimera"), reverse=True)
+    cands += sorted(glob.glob(os.path.expanduser(
+        "~/Applications/Chimera*.app/Contents/MacOS/chimera")), reverse=True)
+    cands += [shutil.which("chimera"), "/usr/local/bin/chimera"]
+    cands += sorted(glob.glob("/opt/UCSF/Chimera*/bin/chimera"), reverse=True)
+    cands += sorted(glob.glob(r"C:\Program Files\Chimera*\bin\chimera.exe"), reverse=True)
+    for c in cands:
+        if c and _exe_ok(c) and not _is_chimerax(c):
+            return str(c)
+    raise SplitError("UCSF Chimera not found -- selections in Chimera's convention are read by "
+                     "Chimera itself: install it (https://www.cgl.ucsf.edu/chimera/download.html), "
+                     "pass --chimera PATH or set the CHIMERA environment variable, or write the "
+                     "selections in ChimeraX's convention (--selection-syntax chimerax)")
+
+
 # The ChimeraX side: maps, fields, marching cubes.  Runs INSIDE ChimeraX's
 # python; parameters come from a JSON file whose path replaces @@PARAMS@@.
 CHIMERAX_JOB = r'''
@@ -665,7 +866,7 @@ def say(msg):
     print("[chimerax] " + msg, flush=True)
 
 
-def job(P, man):
+def open_structure(P, man):
     run(session, "close", log=False)
     run(session, 'open "%s"' % P["pdb"], log=False)
     structs = [m for m in session.models if isinstance(m, AtomicStructure)]
@@ -682,6 +883,129 @@ def job(P, man):
         extra += " & ~solvent"
     if P["exclude_hydrogens"]:
         extra += " & ~H"
+    return s0, base, extra
+
+
+def atom_keys(atoms):
+    """chain:residue[insertion]@name for every atom, the names Chimera's
+    selections come back as."""
+    r = atoms.residues
+    return ["%s:%d%s@%s" % (c.strip(), n, ic.strip(), a)
+            for c, n, ic, a in zip(r.chain_ids, r.numbers, r.insertion_codes, atoms.names)]
+
+
+def fingerprint(keys, idx):
+    import hashlib
+    h = hashlib.sha1()
+    for i in idx:
+        h.update(keys[i].encode("utf-8") + b"\n")
+    return h.hexdigest()
+
+
+def select_job(P, man):
+    """Selection mode: turn each part's atom specification into the atoms it
+    takes, once, so every later job maps exactly the same atoms.  An atom two
+    parts select goes to the earlier part; rest takes every remaining atom."""
+    s0, base, extra = open_structure(P, man)
+    atoms = s0.atoms
+    keys = atom_keys(atoms)
+    run(session, "select clear", log=False)
+    run(session, "select %s%s" % (base, extra), log=False)
+    considered = np.array(atoms.selected, dtype=bool)
+    sels = P["selections"]
+    masks, raws, not_found = [], [], []
+    for k, p in enumerate(sels, 1):
+        if p["kind"] == "rest":
+            masks.append(None)
+            raws.append(0)
+            not_found.append(0)
+            continue
+        if p["syntax"] == "chimerax":
+            run(session, "select clear", log=False)
+            try:
+                run(session, "select (%s) & %s" % (p["spec"], base), log=False)
+            except Exception as e:
+                text = str(e).strip()
+                raise UserError("P%d (%s): ChimeraX cannot read the selection %r: %s%s" % (
+                    k, p["label"], p["spec"], text.splitlines()[0] if text else type(e).__name__,
+                    p.get("hint", "")))
+            raw = np.array(atoms.selected, dtype=bool)
+            not_found.append(0)
+        else:                                   # Chimera named its atoms; take those
+            want = set(p["keys"])
+            raw = np.array([key in want for key in keys], dtype=bool)
+            not_found.append(len(want - set(keys)))
+        raws.append(int(raw.sum()))
+        masks.append(raw & considered)
+    run(session, "select clear", log=False)
+    counts = {}
+    for i in np.nonzero(considered)[0]:
+        counts[keys[i]] = counts.get(keys[i], 0) + 1
+    twice = sorted(key for key, n in counts.items() if n > 1)
+    owner = np.full(len(atoms), -1, dtype=np.int64)
+    shared, lost = [], [dict() for _ in sels]
+    for k, m in enumerate(masks):
+        if m is None:
+            continue
+        for j in range(k):
+            if masks[j] is not None:
+                both = m & masks[j]
+                if both.any():
+                    shared.append(dict(earlier=j, later=k, count=int(both.sum()),
+                                       examples=[keys[i] for i in np.nonzero(both)[0][:5]]))
+        taken = m & (owner >= 0)
+        for j, n in zip(*np.unique(owner[taken], return_counts=True)):
+            lost[k][str(int(j))] = int(n)
+        owner[m & (owner < 0)] = k
+    if shared and P.get("overlap") == "error":
+        raise UserError("the part selections share atoms: " + "; ".join(
+            "P%d and P%d share %d (%s%s)" % (s["earlier"] + 1, s["later"] + 1, s["count"],
+                                            ", ".join(s["examples"]), ", ..." if s["count"] > 5 else "")
+            for s in shared) + " -- write them so no atom is in two parts, or leave out "
+                               "--overlap error to let the earlier part keep them")
+    for k, m in enumerate(masks):
+        if m is None:                           # rest: what no other part took
+            owner[considered & (owner < 0)] = k
+    out = []
+    for k, p in enumerate(sels):
+        idx = np.nonzero(owner == k)[0]
+        if not len(idx):
+            if masks[k] is not None and masks[k].any():
+                why = "every atom it selects belongs to an earlier part"
+            elif p["kind"] == "rest":
+                why = "the other parts take every atom"
+            elif raws[k]:
+                why = ("the %d atom(s) it selects are all solvent or hydrogens, which are left out"
+                       % raws[k])
+            elif not_found[k]:
+                why = ("Chimera selected %d atom(s), but none of them is in the structure as ChimeraX "
+                       "reads it (e.g. %s)" % (len(p["keys"]), ", ".join(p["keys"][:3])))
+            else:
+                chains = sorted({str(c).strip() for c in s0.residues.chain_ids} - {""})
+                why = "it selects no atoms (the structure%s has chain(s) %s)%s" % (
+                    ", %s," % base if p["syntax"] == "chimerax" else "",
+                    " ".join(chains) or "with blank IDs only", p.get("hint", ""))
+            raise UserError("P%d (%s) has no atoms: %s" % (k + 1, p["label"], why))
+        out.append(dict(selected=int(masks[k].sum()) if masks[k] is not None else int(len(idx)),
+                        n_atoms=int(len(idx)), lost=lost[k], not_found=int(not_found[k]),
+                        indices=idx.tolist(), fingerprint=fingerprint(keys, idx)))
+    left = np.nonzero(considered & (owner < 0))[0]
+    part_idx = np.nonzero(owner >= 0)[0]
+    elements = atoms.element_names
+    man["selection"] = dict(
+        n_considered=int(considered.sum()), unassigned=int(len(left)),
+        unassigned_examples=[keys[i] for i in left[:5]], shared=shared, parts=out,
+        names_twice=len(twice), names_twice_examples=twice[:5],
+        atoms=dict(part=owner[part_idx].tolist(),
+                   coords=np.asarray(atoms.coords, dtype=float)[part_idx].round(4).tolist(),
+                   is_h=[str(elements[i]) in ("H", "D") for i in part_idx],
+                   chain=[keys[i].split(":", 1)[0] for i in part_idx]))
+    say("parts selected: " + ", ".join("P%d %d atoms" % (k + 1, o["n_atoms"])
+                                       for k, o in enumerate(out)))
+
+
+def job(P, man):
+    s0, base, extra = open_structure(P, man)
 
     def select(chains):
         run(session, "select %s/%s%s" % (base, ",".join(chains), extra), log=False)
@@ -696,8 +1020,27 @@ def job(P, man):
         return v
 
     parts = P["parts"]
-    allch = [c for p in parts for c in p]
-    n_all = select(allch)
+    part_atoms = P.get("part_atoms")            # selection mode: each part's atoms, by index
+    if part_atoms is not None:
+        atoms = s0.atoms
+        keys = atom_keys(atoms)
+        for k, (idx, fp) in enumerate(zip(part_atoms, P["part_fingerprints"]), 1):
+            if max(idx) >= len(atoms) or fingerprint(keys, idx) != fp:
+                raise UserError("P%d: the structure's atoms no longer match the ones selected for "
+                                "it -- was the file changed during the run?" % k)
+
+        def select_part(k):
+            run(session, "select clear", log=False)
+            atoms[np.asarray(part_atoms[k], dtype=np.int64)].selected = True
+            return len(part_atoms[k])
+
+        run(session, "select clear", log=False)
+        union = sorted({i for idx in part_atoms for i in idx})
+        atoms[np.asarray(union, dtype=np.int64)].selected = True
+        n_all = len(union)
+    else:
+        allch = [c for p in parts for c in p]
+        n_all = select(allch)
     if n_all == 0:
         raise UserError("the selected chains contain no atoms")
     T = molmap_sel("gridSpacing %.10g" % P["grid"])
@@ -710,8 +1053,8 @@ def job(P, man):
     say("whole map: %d atoms, grid %s at %.3g A" % (n_all, "x".join(map(str, T.data.size)), P["grid"]))
 
     M, natoms = [], []
-    for chains in parts:
-        n = select(chains)
+    for k, chains in enumerate(parts):
+        n = select_part(k) if part_atoms is not None else select(chains)
         if n == 0:
             raise UserError("part %s selects no atoms%s" % (
                 "+".join(chains), " (after excluding solvent / hydrogens)" if extra else ""))
@@ -873,7 +1216,10 @@ try:
         man["chimerax_version"] = str(_v)
     except Exception:
         pass
-    job(P, man)
+    if P.get("mode") == "select":
+        select_job(P, man)
+    else:
+        job(P, man)
     man["ok"] = True
 except UserError as e:
     man["error"] = str(e)
@@ -934,6 +1280,89 @@ def run_chimerax(exe, params, work, phase):
         raise SplitError("ChimeraX job failed: " + man.get("error", "?") + "\n" +
                          man.get("traceback", "") + f"(full log: work/chimerax_{phase}.log)")
     log(f"   ChimeraX {phase} job done in {time.time() - t0:.0f} s")
+    return man
+
+
+# The Chimera side, for selections in Chimera's convention: UCSF Chimera reads
+# the structure and evaluates each part's atom specification itself, so its
+# own rules apply, and names the atoms it picks by chain, residue and atom
+# name; ChimeraX then takes exactly those atoms.  Chimera runs Python 2.7.
+CHIMERA_JOB = r'''
+# Generated by multicolor_split.py @@VERSION@@ -- a UCSF Chimera job.
+#   chimera --nogui --silent --script "<this file> <params.json>"
+import json, re, sys, traceback
+out = {"ok": False}
+params = None
+try:
+    params = json.load(open(sys.argv[1]))
+    import chimera
+    from chimera.specifier import evalSpec
+    out["chimera_version"] = str(chimera.version.release)
+    models = chimera.openModels.open(params["pdb"])
+    if not models:
+        out["user_error"] = True
+        raise ValueError("Chimera could not read " + params["pdb"])
+    models = models[:1]                          # the first model, as the ChimeraX side uses
+    keys = []
+    for name, spec, hint in zip(params["names"], params["specs"], params["hints"]):
+        try:
+            atoms = evalSpec(spec, models=models).atoms()
+        except Exception as e:                   # (%r would print u'...' in Python 2)
+            out["user_error"] = True
+            why = re.sub(r"\s*\(, line \d+\)$", "", " ".join(str(e).split()))
+            raise ValueError("%s: Chimera cannot read the selection '%s': %s%s" % (
+                name, spec, why or type(e).__name__, hint))
+        found = set()
+        for a in atoms:
+            rid = a.residue.id
+            found.add("%s:%d%s@%s" % (rid.chainId.strip(), rid.position,
+                                      rid.insertionCode.strip(), a.name))
+        keys.append(sorted(found))
+    out["keys"] = keys
+    out["ok"] = True
+except Exception as e:
+    if out.get("user_error"):
+        out["error"] = e.args[0] if e.args else str(e)
+    else:
+        out["error"] = "%s: %s" % (type(e).__name__, e)
+        out["traceback"] = traceback.format_exc()
+with open(params["manifest"] if params else sys.argv[1] + ".manifest.json", "w") as fh:
+    json.dump(out, fh)
+'''
+
+
+def run_chimera(exe, pdb, specs, work, names=None):
+    """Evaluate `specs` in UCSF Chimera; returns its manifest, whose "keys"
+    list the atoms each spec picks as chain:residue[insertion]@name.  names
+    (default: the specs themselves) say which part an error is about."""
+    pfile = work / "params_chimera.json"
+    manifest = work / "manifest_chimera.json"
+    specs = list(specs)
+    pfile.write_text(json.dumps(dict(pdb=str(pdb), specs=specs, manifest=str(manifest),
+                                     names=list(names) if names is not None else specs,
+                                     hints=[convention_hint(x, "chimera") for x in specs]),
+                                indent=1))
+    jfile = work / "chimera_job_select.py"
+    jfile.write_text(CHIMERA_JOB.replace("@@VERSION@@", __version__))
+    t0 = time.time()
+    try:                                        # an exception here also stops Chimera
+        proc = subprocess.run([exe, "--nogui", "--silent", "--script", f"{jfile.name} {pfile.name}"],
+                              cwd=str(work), capture_output=True, text=True, timeout=900)
+    except OSError as e:
+        raise SplitError(f"cannot start Chimera ({exe}): {e}")
+    except subprocess.TimeoutExpired:
+        raise SplitError("Chimera did not finish evaluating the selections within 15 minutes")
+    (work / "chimera_select.log").write_text((proc.stdout or "") + (proc.stderr or ""))
+    if not manifest.exists():
+        tail = "".join(((proc.stdout or "") + (proc.stderr or "")).splitlines(True)[-25:])
+        raise SplitError(f"Chimera exited ({proc.returncode}) without a result:\n{tail}")
+    man = json.loads(manifest.read_text())
+    if not man.get("ok"):
+        if man.get("user_error"):
+            raise SplitError(man.get("error", "?"))
+        raise SplitError("Chimera job failed: " + man.get("error", "?") + "\n" +
+                         man.get("traceback", "") + "(full log: work/chimera_select.log)")
+    log(f"   Chimera selection job done in {time.time() - t0:.0f} s")
     return man
 
 
@@ -1583,7 +2012,7 @@ def scan_table(records, N, expected_whole):
     return "\n".join(out)
 
 
-def no_level_hint(records):
+def no_level_hint(records, selections=False):
     reasons = " ".join(x for r in records for x in r["reasons"])
     tips = []
     if re.search(r"part \d+: empty", reasons):
@@ -1596,7 +2025,8 @@ def no_level_hint(records):
                     "must have one piece per separate molecule)")
     if re.search(r"S\d+: \d+pc", reasons):
         tips.append("--allow-multi-shell if a part is genuinely in several pieces")
-    tips.append("a different part order (--parts)")
+    tips.append("a different part order (the order of the --part values)" if selections
+                else "a different part order (--parts)")
     return "no contour level passed every check.  Try " + "; or ".join(tips) + "."
 
 
@@ -1604,11 +2034,12 @@ def _tool_logdir(d):
     return d.is_dir() and any(d.glob("params_*.json")) and any(d.glob("chimerax_job_*.py"))
 
 
-def previous_outputs(out, tag, pdb):
+def previous_outputs(out, tag, pdb, names=()):
     """This tool's earlier outputs for this tag in `out` -- nothing else: the
-    files listed by the previous report, the exact output-name patterns, this
-    tag's log folders, and (v1.1 layout) a work/ folder holding this tool's
-    jobs for the same structure."""
+    files listed by the previous report, the exact output-name patterns, the
+    `names` this run is about to write (a part named by --part has no fixed
+    pattern), this tag's log folders, and (v1.1 layout) a work/ folder
+    holding this tool's jobs for the same structure."""
     listed = set()
     rep = out / f"{tag}_report.json"
     if rep.is_file():
@@ -1617,6 +2048,7 @@ def previous_outputs(out, tag, pdb):
                       if Path(f).parent == out}
         except Exception:
             listed = set()
+    listed |= set(names)
     pat = re.compile(rf"^{re.escape(tag)}_(p\d+_chains?[^_/]+\.stl|whole\.stl|"
                      rf"preview\.(png|glb)|report\.(txt|json))$")
     items = [p for p in sorted(out.iterdir()) if p.is_file() and (p.name in listed or pat.match(p.name))]
@@ -1677,7 +2109,14 @@ def pipeline(a):
         raise SplitError(f"no atoms found in {pdb.name}")
     available = [c for c in all_ids if c.strip()]
     notes = []
-    if a.parts:
+    selections = None
+    if getattr(a, "part", None):
+        if a.parts or a.chains:
+            raise SplitError("give the parts either as chains (--parts / --chains) or as atom "
+                             "selections (--part), not both")
+        selections = parse_selection_parts(a.part, getattr(a, "selection_syntax", "chimerax"))
+        parts = [[f"P{i}"] for i in range(1, len(selections) + 1)]   # one id per part
+    elif a.parts:
         parts = parse_parts(a.parts, available)
     elif a.chains:
         parts = parse_parts([c for c in re.split(r"[,\s]+", a.chains) if c], available)
@@ -1687,14 +2126,15 @@ def pipeline(a):
                              + (" (atoms with a blank chain ID cannot be selected)"
                                 if len(available) < len(all_ids) else ""))
         parts = parse_parts(available, available)
-    blank_atoms = sum(c["atoms"] for c in info["chains"] if not c["id"].strip())
-    if blank_atoms:
-        notes.append(f"{blank_atoms} atom(s) with a BLANK chain ID are left out "
-                     f"(ChimeraX cannot select a blank chain)")
-    used = {c for p in parts for c in p}
-    left = [c for c in available if c not in used]
-    if left:
-        notes.append(f"chain(s) {' '.join(left)} are in no part and are LEFT OUT of the print")
+    if selections is None:
+        blank_atoms = sum(c["atoms"] for c in info["chains"] if not c["id"].strip())
+        if blank_atoms:
+            notes.append(f"{blank_atoms} atom(s) with a BLANK chain ID are left out "
+                         f"(ChimeraX cannot select a blank chain)")
+        used = {c for p in parts for c in p}
+        left = [c for c in available if c not in used]
+        if left:
+            notes.append(f"chain(s) {' '.join(left)} are in no part and are LEFT OUT of the print")
     N = len(parts)
     if N > AMS_SLOTS:
         notes.append(f"{N} parts need {N} filaments -- more than one {AMS_SLOTS}-slot AMS")
@@ -1702,11 +2142,13 @@ def pipeline(a):
     out = Path(a.out).expanduser().resolve() if a.out else Path.cwd() / tag
     if out.exists() and not out.is_dir():
         raise SplitError(f"output path {out} exists and is not a folder")
+    exe = find_chimerax(a.chimerax)
+    chimera_exe = (find_chimera(getattr(a, "chimera", None))
+                   if selections and selections[0]["syntax"] == "chimera" else None)
     try:
         out.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         raise SplitError(f"cannot create the output folder {out}: {e}")
-    exe = find_chimerax(a.chimerax)
     res, grid, dust = float(a.resolution), float(a.grid), float(a.dust)
     strict = not a.allow_multi_shell
     try:                                    # the preview colours; the STLs carry none
@@ -1723,7 +2165,8 @@ def pipeline(a):
         k_mode, ks = "scanned", (k_list or sorted({round(k0 * f, 2) for f in K_SCAN_FACTORS}))
     else:
         k_mode, ks = "documented", [DOC_K]
-    mol = analyse_molecules(info, parts, res, dust)
+    # selection mode learns its atoms from ChimeraX first; _pipeline analyses them
+    mol = analyse_molecules(info, parts, res, dust) if selections is None else None
     n_mol = mol["n"] if mol else None
     clusters = mol["clusters"] if mol else [1] * N
     closest = mol["closest"] if mol else None
@@ -1758,8 +2201,18 @@ def pipeline(a):
     log(f"           {info['fmt']}, {info['n_models']} model(s); chains "
         + ", ".join(f"{c['id'] if c['id'].strip() else repr(c['id'])} ({c['atoms']} atoms, "
                     f"{c['residues']} res)" for c in info["chains"]))
-    log(f"parts      " + "  ".join(f"P{i}={'+'.join(p)} ({pal[(i - 1) % len(pal)][0]})"
-                                 for i, p in enumerate(parts, 1)))
+    if selections is None:
+        log(f"parts      " + "  ".join(f"P{i}={'+'.join(p)} ({pal[(i - 1) % len(pal)][0]})"
+                                     for i, p in enumerate(parts, 1)))
+    else:
+        log("parts      " + "  ".join(f"P{i}={s['label']} ({pal[(i - 1) % len(pal)][0]})"
+                                     for i, s in enumerate(selections, 1)))
+        for i, s in enumerate(selections, 1):
+            log(f"           P{i} = {s['spec']}")
+        log(f"selections {'Chimera' if chimera_exe else 'ChimeraX'} convention"
+            + (f", read by Chimera ({chimera_exe})" if chimera_exe else "")
+            + ("; atoms two parts share go to the earlier part"
+               if getattr(a, "overlap", "first") == "first" else "; atoms shared by two parts are an error"))
     if palette != "default":
         log(f"palette    {palette}")
     if n_mol:
@@ -1787,7 +2240,8 @@ def pipeline(a):
                res=res, grid=grid, dust=dust, strict=strict, work=work, base=base,
                k_mode=k_mode, ks=ks, k0=k0, notes=notes, t_start=t_start, state=state,
                n_mol=n_mol, mol=mol, clusters=clusters, closest=closest, sliver=sliver,
-               dusted_chains=dusted_chains, palette=palette, pal=pal)
+               dusted_chains=dusted_chains, palette=palette, pal=pal,
+               selections=selections, chimera_exe=chimera_exe)
     try:
         return _pipeline(a, ctx)
     finally:
@@ -1802,7 +2256,89 @@ def pipeline(a):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def resolve_selections(a, c):
+    """Selection mode: fix every part's atoms once, before any map is made.
+    Chimera evaluates Chimera-convention specs; ChimeraX evaluates its own and
+    applies the rules shared by both -- solvent and hydrogens excluded as
+    asked, an atom two parts select given to the earlier part, rest filling
+    in -- and reports each part's atom indices, which every later ChimeraX
+    job maps exactly.  The molecule analysis then runs on those atoms."""
+    sels, work, notes = c["selections"], c["work"], c["notes"]
+    first_note = len(notes)                 # the notes before this step are already logged
+    chimera = c.get("chimera_exe")
+    log(f"\n[0] selecting each part's atoms ({'Chimera' if chimera else 'ChimeraX'} convention)")
+    payload = [dict(label=s["label"], spec=s["spec"], kind=s["kind"], syntax=s["syntax"],
+                    hint=convention_hint(s["spec"], s["syntax"]) if s["kind"] == "spec" else "")
+               for s in sels]
+    if chimera:
+        cman = run_chimera(chimera, c["pdb"], [s["spec"] for s in sels if s["kind"] == "spec"], work,
+                           [f"P{k} ({s['label']})" for k, s in enumerate(sels, 1) if s["kind"] == "spec"])
+        found = iter(cman["keys"])
+        for p in payload:
+            if p["kind"] == "spec":
+                p["keys"] = next(found)
+        c["chimera_version"] = cman.get("chimera_version")
+    man = run_chimerax(c["exe"], dict(c["base"], mode="select", selections=payload,
+                                      overlap=getattr(a, "overlap", "first")), work, "select")
+    sel = man["selection"]
+    for k, (s, r) in enumerate(zip(sels, sel["parts"]), 1):
+        s.update(n_selected=r["selected"], n_atoms=r["n_atoms"], lost=r["lost"],
+                 not_found=r["not_found"])
+        log(f"    P{k} {s['label']:10s} {r['n_atoms']:7d} atoms" +
+            (f"  ({r['selected']} selected; " + ", ".join(
+                f"{n} kept by P{int(j) + 1}" for j, n in sorted(r["lost"].items(), key=lambda t: int(t[0])))
+             + ")" if r["lost"] else ""))
+    for sh in sel["shared"]:
+        notes.append(f"P{sh['earlier'] + 1} ({sels[sh['earlier']]['label']}) and P{sh['later'] + 1} "
+                     f"({sels[sh['later']]['label']}) both select {sh['count']} atom(s), e.g. "
+                     f"{', '.join(sh['examples'][:3])}: the earlier part, P{sh['earlier'] + 1}, keeps them")
+    for k, s in enumerate(sels, 1):
+        if s.get("not_found"):
+            notes.append(f"P{k} ({s['label']}): {s['not_found']} atom(s) Chimera selected are not in "
+                         f"the structure ChimeraX read and are left out")
+    if chimera and sel.get("names_twice"):
+        notes.append(f"{sel['names_twice']} chain:residue@atom name(s) occur more than once in the "
+                     f"structure, e.g. {', '.join(sel['names_twice_examples'][:3])}: a part whose "
+                     f"Chimera selection names one takes every atom of that name")
+    if sel["unassigned"]:
+        notes.append(f"{sel['unassigned']} atom(s) are in no part and are LEFT OUT of the print, e.g. "
+                     f"{', '.join(sel['unassigned_examples'][:3])} -- add a rest part to take them")
+    c["base"] = dict(c["base"], part_atoms=[r["indices"] for r in sel["parts"]],
+                     part_fingerprints=[r["fingerprint"] for r in sel["parts"]])
+    at = sel["atoms"]
+    owner = np.asarray(at["part"], dtype=np.int64)
+    xyz = np.asarray(at["coords"], dtype=np.float64).reshape(-1, 3)
+    is_h = np.asarray(at["is_h"], dtype=bool)
+    ids = [f"P{k}" for k in range(1, len(sels) + 1)]
+    info = dict(chains=[dict(id=ids[k], atoms=int((owner == k).sum()), xyz=xyz[owner == k],
+                             is_h=is_h[owner == k]) for k in range(len(sels))])
+    mol = analyse_molecules(info, c["parts"], c["res"], c["dust"])
+    c.update(mol=mol, n_mol=mol["n"] if mol else None, clusters=mol["clusters"] if mol else [1] * len(sels),
+             closest=mol["closest"] if mol else None,
+             dusted_chains={x for chs, _ in (mol["removed"] if mol else []) for x in chs})
+    gone = collections.OrderedDict()
+    for chs, n_at in (mol["removed"] if mol else []):
+        g = gone.setdefault("+".join(chs), [0, 0])
+        g[0] += 1
+        g[1] += n_at
+    for chs, (n_m, n_at) in gone.items():
+        notes.append(f"{n_m} separate molecule(s) of part(s) {chs} ({n_at} heavy atoms) "
+                     f"{'is' if n_m == 1 else 'are'} smaller than the dust size and will not print")
+    for k, cl in enumerate(c["clusters"], 1):
+        if cl > 1:
+            notes.append(f"P{k} ({sels[k - 1]['label']}) has {cl} separate atom clusters -- "
+                         f"it may print as up to {cl} pieces")
+    if c["n_mol"]:
+        log(f"molecules  {c['n_mol']} separate piece(s) expected (heavy atoms within "
+            f"{CONTACT_CUTOFF:g} A form one)" + (f"; closest approach between separate molecules "
+                                                 f"{c['closest']:.2f} A" if c["closest"] else ""))
+    for n_ in notes[first_note:]:
+        log(f"note       {n_}")
+
+
 def _pipeline(a, c):
+    if c.get("selections"):
+        resolve_selections(a, c)
     pdb, info, parts, N, tag, out, exe = (c[k] for k in ("pdb", "info", "parts", "N", "tag", "out", "exe"))
     res, grid, dust, strict, work, base = (c[k] for k in ("res", "grid", "dust", "strict", "work", "base"))
     k_mode, ks, k0, notes, t_start, state = (c[k] for k in ("k_mode", "ks", "k0", "notes", "t_start", "state"))
@@ -1923,7 +2459,7 @@ def _pipeline(a, c):
                                  f"scan for a clean level.")
         else:
             log("\n" + scan_table(records, N, n_whole))
-            raise SplitError(no_level_hint(records))
+            raise SplitError(no_level_hint(records, selections=bool(c.get("selections"))))
     L = best["level"]
     log(f"\n    -> level {L:.4f}" + ("  (pinned)" if pinned else
                                     f"  (nearest clean level to the guess {guess:.4f})"))
@@ -1934,10 +2470,12 @@ def _pipeline(a, c):
     ref, (refV, refF, ref_deg), S, parts_m, pinfo = build_final(files, L, K, N, sliver)
     Vw = ref.volume()
     pieces = whole_solids(ref)
-    labels = [f"P{i}_{part_label(p)}" for i, p in enumerate(parts, 1)]
+    sels = c.get("selections")
+    plabels = [x["label"] for x in sels] if sels else [part_label(p) for p in parts]
+    labels = [f"P{i}_{lab}" for i, lab in enumerate(plabels, 1)]
     colors = [pal[i % len(pal)][1] for i in range(N)]
     A = placement(refV, a.lay_flat, float(a.scale))
-    names = [f"{tag}_p{i}_{part_label(p)}.stl" for i, p in enumerate(parts, 1)]
+    names = [f"{tag}_p{i}_{lab}.stl" for i, lab in enumerate(plabels, 1)]
     whole_name = f"{tag}_whole.stl"
     stage = out / f".{tag}_incoming"
     if stage.exists():
@@ -2092,12 +2630,19 @@ def _pipeline(a, c):
     n_fail = sum(x["status"] == "FAIL" for x in checks)
     n_warn = sum(x["status"] == "WARN" for x in checks)
 
-    prev_items = previous_outputs(out, tag, pdb)
+    prev_items = previous_outputs(out, tag, pdb, names)
     prev = aside_name(out, state["stamp"]) if prev_items else None
 
     # ---- report
-    repro = self_command() + [str(c["given"]), "--parts"] + \
-            [",".join(p) for p in parts] + \
+    if sels:                                    # selection mode: the parts as given
+        how = [f"--part={selection_part_arg(x)}" for x in sels]
+        if c.get("chimera_exe"):
+            how += ["--selection-syntax=chimera", f"--chimera={c['chimera_exe']}"]
+        if getattr(a, "overlap", "first") != "first":
+            how.append(f"--overlap={a.overlap}")
+    else:
+        how = ["--parts"] + [",".join(p) for p in parts]
+    repro = self_command() + [str(c["given"])] + how + \
             [f"--resolution={res:.12g}", f"--grid={grid:.12g}", f"--k={K:.12g}",
              f"--level={L:.12g}", f"--dust={dust:.12g}", f"--out={out}", f"--tag={tag}",
              f"--chimerax={exe}"]
@@ -2116,9 +2661,21 @@ def _pipeline(a, c):
     P_(f"chains      " + ", ".join(f"{x['id'] if x['id'].strip() else repr(x['id'])}: {x['atoms']} "
                                   f"atoms, {x['residues']} residues {x['first']}-{x['last']}"
                                   for x in info["chains"]))
-    P_(f"parts       " + "   ".join(f"P{i} = {'+'.join(p)} ({man['n_atoms_parts'][i - 1]} atoms, "
-                                    f"{pal[(i - 1) % len(pal)][0]})"
-                                    for i, p in enumerate(parts, 1)))
+    if sels:
+        P_(f"parts       atom selections, {'Chimera' if c.get('chimera_exe') else 'ChimeraX'} "
+           f"convention" + (f" (Chimera {c['chimera_version']})" if c.get("chimera_version") else "")
+           + ("; atoms two parts select go to the earlier part"
+              if getattr(a, "overlap", "first") == "first" else "; shared atoms refused"))
+        for i, x in enumerate(sels, 1):
+            P_(f"            P{i} = {x['label']}" + (f": {x['spec']}" if x["spec"] != x["label"] else "")
+               + f"   ({man['n_atoms_parts'][i - 1]} atoms, "
+               f"{pal[(i - 1) % len(pal)][0]})" +
+               (f"; {x['n_selected'] - x['n_atoms']} of its {x['n_selected']} selected atoms kept "
+                f"by an earlier part" if x.get("lost") else ""))
+    else:
+        P_(f"parts       " + "   ".join(f"P{i} = {'+'.join(p)} ({man['n_atoms_parts'][i - 1]} atoms, "
+                                        f"{pal[(i - 1) % len(pal)][0]})"
+                                        for i, p in enumerate(parts, 1)))
     P_(f"            P1 is peeled first; each boundary's field-built face belongs to "
        f"the earlier part")
     if n_mol:
@@ -2229,6 +2786,13 @@ def _pipeline(a, c):
     (stage / f"{tag}_report.txt").write_text(text + "\n")
     rep = dict(version=__version__, structure=str(c["given"]), structure_resolved=str(pdb),
                tag=tag, parts=parts, labels=labels,
+               selections=[dict(label=x["label"], spec=x["spec"], kind=x["kind"], syntax=x["syntax"],
+                                selected=x.get("n_selected"), atoms=x.get("n_atoms"),
+                                kept_by_earlier={f"P{int(j) + 1}": n for j, n in (x.get("lost") or {}).items()},
+                                not_found=x.get("not_found"))
+                           for x in sels] if sels else None,
+               overlap=getattr(a, "overlap", "first") if sels else None,
+               chimera=c.get("chimera_exe"), chimera_version=c.get("chimera_version"),
                colors={l: pal[i % len(pal)][0] for i, l in enumerate(labels)},
                resolution=res, grid=grid, k=K, k_mode=k_mode, level=L,
                level_mode="pinned" if pinned else "scanned", auto_level=auto_level,
@@ -2331,8 +2895,9 @@ HELP = {
     ),
     "parts": (
         "Parts (colour order)",
-        "Which chains go into which colour, and in what order. Each part "
-        "becomes one STL and one filament. "
+        "Which chains go into which colour, and in what order, when Parts by "
+        "is chains (for parts made of atom selections, see Selections). Each "
+        "part becomes one STL and one filament. "
         "Separate parts with spaces (or |) and join chains into one part with "
         "a comma (or +). Chain IDs must match the file exactly, a chain may be "
         "in only one part, and at least two parts are needed.\n\n"
@@ -2358,6 +2923,173 @@ HELP = {
         "A,B C      chains A and B share one colour\n"
         "A+B | C    the same, written another way\n"
         "C A        C peeled first: the boundary sits in C",
+    ),
+    "parts_by": (
+        "Parts by: chains or atom selections",
+        "How the parts are given. chains (the default): each part is one or "
+        "more whole chains, typed in Parts. atom selections: each part is a "
+        "set of atoms written as an atom selection in ChimeraX's or UCSF "
+        "Chimera's convention, one line per part in Selections, so a part can "
+        "be one chain's sugar-phosphate backbone, say, and one chain's atoms "
+        "can go to several parts.\n\n"
+        "Everything after the parts is the same either way: the maps, the K "
+        "and level scans, the peeling in part order, the checks and the "
+        "files. Only the rows of the chosen way are shown; switching keeps "
+        "what the other rows hold, and a run uses only the chosen one.\n\n"
+        "Command line: --parts A C for chains; --part once per part for atom "
+        "selections, e.g. --part 'bbA=/A & backbone' --part rest. The two "
+        "cannot be combined.",
+        "chains            A C\n"
+        "                  P1 = chain A, P2 = chain C\n"
+        "atom selections   bbA = /A & backbone\n"
+        "                  bbC = /C & backbone\n"
+        "                  rest\n"
+        "                  P1, P2 = each strand's backbone,\n"
+        "                  P3 = the bases of both",
+    ),
+    "part": (
+        "Selections (one part per line)",
+        "One part per line, in colour order: the first line is P1, peeled "
+        "first. Each line is an atom selection in the chosen Convention, "
+        "optionally named: NAME = selection. The name (a letter, then "
+        "letters, digits, _ + or -) goes into the file name, "
+        "<tag>_p1_NAME.stl; an unnamed line is named from its words, so "
+        "/A & backbone gives A_backbone and /A & ~backbone gives "
+        "A_not_backbone. The word rest on a line of its own (it may be named "
+        "too: bases = rest) takes every atom no other line takes; give it at "
+        "most once, anywhere in the order. At least two lines are needed, and "
+        "a line may not contain ;.\n\n"
+        "Selections are made in the structure's first model, after waters "
+        "are left out (unless Keep solvent is ticked), and hydrogens too when "
+        "Exclude hydrogens is ticked; a line that selects nothing else stops "
+        "the run with the reason. An atom two lines select goes to the "
+        "earlier part (see Shared atoms). Atoms no line selects, when there "
+        "is no rest line, are left out of the print; the log and the report "
+        "say how many, with examples.\n\n"
+        "ChimeraX's convention: /A is chain A, :12-20 residues, @P an atom "
+        "name, & and, | or, ~ not, and keywords such as backbone, sideonly, "
+        "sidechain, nucleic, protein and ligand. backbone is the "
+        "sugar-phosphate backbone of DNA and RNA (P, OP1, OP2, O5', C5', C4', "
+        "O4', C3', O3', C2', C1', O2' in RNA, and their hydrogens) and a "
+        "protein's main chain (N, CA, C, O, OXT and theirs). sidechain also "
+        "holds the sugar ring atoms C1', C2', C3', C4' and O4', which "
+        "backbone has too; the bases alone are sideonly, or ~backbone.\n\n"
+        "Chimera's convention: :.A is chain A, :12-20.A residues 12 to 20 of "
+        "chain A, @P an atom name, a comma makes a list (@P,OP1,OP2), and "
+        "& | ~ work as in ChimeraX. Chimera has no backbone keyword: list the "
+        "atom names, or click Backbone per chain.\n\n"
+        "The log and the report give each part's atom count, and say what the "
+        "Shared atoms rule did to it.\n\n"
+        "Command line: one --part per line, in order, e.g. --part "
+        "'bbA=/A & backbone' --part 'bbC=/C & backbone' --part rest. Quote "
+        "each, as the shell reads & | ~ ( ), and use double quotes for a "
+        "Chimera line with primes (C1'). The report's REPRODUCE line writes "
+        "them as NAME=selection.",
+        "ChimeraX convention (two strands, 18 nt each):\n"
+        "  bbA = /A & backbone        P1 bbA    198 atoms\n"
+        "  bbC = /C & backbone        P2 bbC    198 atoms\n"
+        "  rest                       P3 rest   342 atoms\n"
+        "Chimera convention, the same atoms and STLs:\n"
+        "  bbA = :.A@P,OP1,OP2,O5',C5',C4',O4',C3',O3',C2',C1'\n"
+        "  bbC = :.C@P,OP1,OP2,O5',C5',C4',O4',C3',O3',C2',C1'\n"
+        "  rest",
+    ),
+    "selection_syntax": (
+        "Convention (selection syntax)",
+        "The atom-specification rules the Selections are written in, and so "
+        "which program reads them. ChimeraX (the default): ChimeraX reads "
+        "them, the same ChimeraX that builds the maps. Chimera: UCSF Chimera "
+        "1.x reads them, run without a window for a few seconds before the "
+        "maps are made, so it must be installed (see the Chimera field, shown "
+        "for this convention).\n\n"
+        "Chimera evaluates each line with its own rules and names the atoms "
+        "it selects by chain, residue number, insertion code and atom name; "
+        "ChimeraX then takes exactly those atoms, so the same atoms written "
+        "in either convention give byte-identical STLs. Atoms Chimera names "
+        "that ChimeraX does not have (the two can read a file's chain or "
+        "residue names differently) are left out with a note, and a part left "
+        "with none stops the run. Where a file has two atoms with the same "
+        "chain, residue and name, a part whose Chimera selection names them "
+        "takes both, also noted.\n\n"
+        "The names before =, rest and the Shared atoms rule belong to this "
+        "tool, not to Chimera or ChimeraX, and work the same in both "
+        "conventions. A comma list in Chimera applies to its own level only: "
+        ":12-20.A,C does not add chain C; write :12-20.A | :12-20.C.\n\n"
+        "Command line: --selection-syntax chimera (default chimerax).",
+        "ChimeraX         Chimera            atoms (18 nt strands)\n"
+        "/A               :.A                342, chain A\n"
+        "/A:12-20         :12-20.A           171, residues 12-20\n"
+        "/A:12@P          :12.A@P            1\n"
+        "/A@P | /C@P      :.A@P | :.C@P      36\n"
+        "/A,C:12-20       :12-20.A | :12-20.C\n"
+        "                                    369, 12-20 of both chains\n"
+        ":DG              :DG                396, every DG residue\n"
+        "nucleic          nucleic acid       738, all DNA and RNA\n"
+        "protein          protein            0 in this DNA model\n"
+        "ligand           ligand             0 in this DNA model\n"
+        "/A & backbone    :.A@P,OP1,OP2,O5',C5',C4',O4',C3',O3',C2',C1'\n"
+        "                                    198, a DNA backbone\n"
+        "/A & ~backbone   :.A & ~@P,OP1,... (the same list)\n"
+        "                                    144, its bases",
+    ),
+    "overlap": (
+        "Shared atoms",
+        "What happens to an atom that two Selections both select. earlier "
+        "part keeps them (the default): it goes to the part listed first; the "
+        "log, the report and its JSON say how many atoms each pair shares, "
+        "with examples, and how many each later part lost. refuse the run: "
+        "the run stops before any map is made and lists the shared atoms, so "
+        "each atom may be in at most one selection.\n\n"
+        "With the default, order does the work: put the specific part first "
+        "and a broad one after it. bbA = /A & backbone, then A = /A, gives "
+        "chain A's backbone to P1 and the rest of chain A to P2, without "
+        "writing ~backbone. rest never shares: it takes only the atoms no "
+        "line takes. A part whose every atom an earlier part keeps stops the "
+        "run.\n\n"
+        "A frequent surprise in ChimeraX's convention: sidechain includes the "
+        "sugar ring atoms C1', C2', C3', C4' and O4', which backbone includes "
+        "too, so /A & backbone and /A & sidechain share five atoms per "
+        "nucleotide; the bases alone are sideonly.\n\n"
+        "Command line: --overlap error (default first).",
+        "bbA = /A & backbone    P1   198 atoms\n"
+        "scA = /A & sidechain   P2   144 (234 selected, 90 kept by P1)\n"
+        "rest                   P3   396 atoms\n"
+        "note  P1 (bbA) and P2 (scA) both select 90 atom(s), e.g.\n"
+        "      A:8@C4', A:8@O4', A:8@C3': the earlier part, P1,\n"
+        "      keeps them",
+    ),
+    "fill_backbone": (
+        "Backbone per chain",
+        "Fills Selections with one line per chain holding that chain's "
+        "backbone, named bb<chain>, in file order, then rest for everything "
+        "else: the bases, side chains and ligands. It is the usual start for "
+        "giving each strand's backbone its own colour and the bases one more; "
+        "edit, reorder or delete lines afterwards. Selections that already "
+        "hold other lines are replaced after a question.\n\n"
+        "It takes the chains Detect chains found (running it when needed), "
+        "and skips a chain with a blank ID or with no nucleotide or "
+        "amino-acid residue, which then falls to rest.\n\n"
+        "In ChimeraX's convention a line is /A & backbone. Chimera's has no "
+        "backbone keyword, so the line lists the atom names ChimeraX's "
+        "backbone covers, with hydrogens and other programs' names: for DNA "
+        "and RNA P, OP1, OP2, OP3, O1P, O2P, O3P, HP, O5', C5', C4', O4', "
+        "C3', O3', C2', O2', C1', H1', H2', H2'', H3', H4', H5', H5'', HO2', "
+        "HO3', HO5', H5T and H3T; for a protein N, CA, C, O, OXT, OT1, OT2, "
+        "H, HN, HA, HA1, HA2, HA3, HT1, HT2 and HT3, with H1, H2 and H3 only "
+        "in a chain with no nucleotide (in a nucleotide those are base "
+        "hydrogens). With the usual atom names both select the same atoms; "
+        "ChimeraX decides a hydrogen by the atom it is bonded to, so one with "
+        "an unusual name can differ.\n\n"
+        "Command line: write the --part values; Show command prints the ones "
+        "in this window.",
+        "chains A and C of a DNA duplex, ChimeraX convention:\n"
+        "  bbA = /A & backbone\n"
+        "  bbC = /C & backbone\n"
+        "  rest\n"
+        "Chimera convention (the lists cut short here):\n"
+        "  bbA = :.A@P,OP1,OP2,OP3,O1P,O2P,O3P,HP,O5',C5',...\n"
+        "  bbC = :.C@P,OP1,OP2,OP3,O1P,O2P,O3P,HP,O5',C5',...\n"
+        "  rest",
     ),
     "palette": (
         "Palette (part colours)",
@@ -2460,6 +3192,30 @@ HELP = {
         "/Applications/ChimeraX.app\n"
         "/Applications/ChimeraX.app/Contents/MacOS/ChimeraX\n"
         "/usr/bin/chimerax",
+    ),
+    "chimera": (
+        "Chimera",
+        "The UCSF Chimera program, 1.x (not ChimeraX), used only to read "
+        "Selections written in Chimera's convention; the maps are always "
+        "built by ChimeraX. The row is shown for that convention only. Give "
+        "the executable or, on macOS, the .app: a path ending in .app is read "
+        "as <app>/Contents/MacOS/chimera. A ChimeraX path is refused.\n\n"
+        "Blank means the $CHIMERA environment variable if it is set, else a "
+        "search: /Applications/Chimera*.app, ~/Applications/Chimera*.app, "
+        "chimera on the PATH, /usr/local/bin/chimera, "
+        "/opt/UCSF/Chimera*/bin/chimera and "
+        "C:\\Program Files\\Chimera*\\bin\\chimera.exe.\n\n"
+        "The window fills it in at start-up with the path it held the last "
+        "time Run split started a run (kept in ~/.multicolor_split_gui.json "
+        "with the ChimeraX path) if that path still works, or else with "
+        "$CHIMERA or what the search finds. A path in this field or in "
+        "$CHIMERA must work when a run needs it: it is never replaced by a "
+        "search. Chimera is available from "
+        "https://www.cgl.ucsf.edu/chimera/download.html.\n\n"
+        "Command line: --chimera PATH.",
+        "/Applications/Chimera.app\n"
+        "/Applications/Chimera.app/Contents/MacOS/chimera\n"
+        "/opt/UCSF/Chimera64-1.19/bin/chimera",
     ),
     "resolution": (
         "Resolution (Å)",
@@ -2808,7 +3564,8 @@ HELP = {
     ),
     "run": (
         "Run split, Stop and the other buttons",
-        "Run split checks the fields, remembers the ChimeraX path, and runs "
+        "Run split checks the fields, remembers the ChimeraX and Chimera "
+        "paths, and runs "
         "the split as a separate process with the options Show command "
         "prints; its output streams into the log below and the status line at "
         "the right says how it ended.\n\n"
@@ -2858,7 +3615,10 @@ HELP = {
 
 
 # ======================================================================= GUI
-GUI_PREFS = Path.home() / ".multicolor_split_gui.json"   # remembers the ChimeraX path only
+GUI_PREFS = Path.home() / ".multicolor_split_gui.json"   # remembers the ChimeraX and Chimera paths
+# Parts by atom selections: the menus' labels for the options' values
+SYNTAX_LABELS = {"chimerax": "ChimeraX", "chimera": "Chimera"}
+OVERLAP_LABELS = {"first": "earlier part keeps them", "error": "refuse the run"}
 
 # The numeric fields: key, label, default, hint
 GUI_NUMBERS = [
@@ -2893,8 +3653,9 @@ GUI_OPTIONS = [
 def run_gui(initial_file=None, prefill=None, selftest=None):
     """The window.  prefill: option name -> value, as main() collects them;
     initial_file becomes the structure unless prefill already names one.
-    selftest ("build", "run" or "help") keeps the window hidden, prints what
-    it checked and closes it.  Returns the exit code: with selftest "run" the
+    selftest ("build", "fill", "run" or "help") keeps the window hidden,
+    prints what it checked and closes it ("fill" clicks Backbone per chain
+    first).  Returns the exit code: with selftest "run" the
     split's own (2 when the fields give no command), with "help" 1 when a
     popup failed, otherwise 0."""
     import queue
@@ -3019,20 +3780,25 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             frm.pack(fill=tk.BOTH, expand=True)
             frm.columnconfigure(1, weight=1)
             self.v = {}
+            self.rows = {}              # key -> the widgets of its rows, to show or hide them
+            self.chain_rows = []        # read_structure()'s chains, for Backbone per chain
             r = 0
 
             # columns: 0 label, 1 entry, 2 Browse…, 3 the ? chip
             def row_entry(label, key, browse=None, width=70):
                 nonlocal r
-                ttk.Label(frm, text=label).grid(row=r, column=0, sticky=tk.W, pady=2)
+                ws = [ttk.Label(frm, text=label)]
+                ws[-1].grid(row=r, column=0, sticky=tk.W, pady=2)
                 var = tk.StringVar()
                 self.v[key] = var
-                ttk.Entry(frm, textvariable=var, width=width).grid(
-                    row=r, column=1, sticky=tk.EW, pady=2, padx=4)
+                ws.append(ttk.Entry(frm, textvariable=var, width=width))
+                ws[-1].grid(row=r, column=1, sticky=tk.EW, pady=2, padx=4)
                 if browse:
-                    ttk.Button(frm, text="Browse…", command=browse).grid(
-                        row=r, column=2, sticky=tk.W)
-                chip(frm, key).grid(row=r, column=3, sticky=tk.W, padx=(6, 0))
+                    ws.append(ttk.Button(frm, text="Browse…", command=browse))
+                    ws[-1].grid(row=r, column=2, sticky=tk.W)
+                ws.append(chip(frm, key))
+                ws[-1].grid(row=r, column=3, sticky=tk.W, padx=(6, 0))
+                self.rows[key] = ws
                 r += 1
                 return var
 
@@ -3057,10 +3823,61 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             self.tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
             tsb.pack(side=tk.LEFT, fill=tk.Y)
             r += 1
+            # the parts: whole chains, or atom selections (one of the two rows below)
+            ttk.Label(frm, text="Parts by").grid(row=r, column=0, sticky=tk.W, pady=2)
+            mf = ttk.Frame(frm)
+            mf.grid(row=r, column=1, columnspan=2, sticky=tk.W, padx=4)
+            self.v["parts_by"] = tk.StringVar(value="chains")
+            for value, text in (("chains", "chains"),
+                                ("selections", "atom selections (ChimeraX or Chimera convention)")):
+                ttk.Radiobutton(mf, text=text, value=value, variable=self.v["parts_by"]).pack(
+                    side=tk.LEFT, padx=(0, 12))
+            chip(frm, "parts_by").grid(row=r, column=3, sticky=tk.W, padx=(6, 0))
+            r += 1
             row_entry("Parts (colour order)", "parts")
-            ttk.Label(frm, text="one token per colour, space-separated; join chains with ','   "
-                                "e.g.  A C   or   A,B C", foreground="#666").grid(
-                row=r, column=1, sticky=tk.W, padx=4)
+            hint = ttk.Label(frm, text="one token per colour, space-separated; join chains with ','   "
+                                       "e.g.  A C   or   A,B C", foreground="#666")
+            hint.grid(row=r, column=1, sticky=tk.W, padx=4)
+            self.rows["parts"].append(hint)
+            r += 1
+            # one selection per line, then its convention, the rule for atoms
+            # two parts share, and a fill for the usual case
+            ws = [ttk.Label(frm, text="Selections\n(colour order)")]
+            ws[-1].grid(row=r, column=0, sticky=tk.NW, pady=2)
+            sf = ttk.Frame(frm)
+            sf.grid(row=r, column=1, columnspan=2, sticky=tk.EW, padx=4, pady=2)
+            ws.append(sf)
+            self.sel_text = tk.Text(sf, height=4, width=70, wrap=tk.NONE, undo=True,
+                                    font=("Menlo", 11))
+            ssb = ttk.Scrollbar(sf, orient=tk.VERTICAL, command=self.sel_text.yview)
+            self.sel_text.configure(yscrollcommand=ssb.set)
+            self.sel_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            ssb.pack(side=tk.LEFT, fill=tk.Y)
+            self.sel_text.bind("<<Modified>>", self.on_selections_edited)
+            ws.append(chip(frm, "part"))
+            ws[-1].grid(row=r, column=3, sticky=tk.NW, padx=(6, 0), pady=2)
+            r += 1
+            of = ttk.Frame(frm)
+            of.grid(row=r, column=1, columnspan=3, sticky=tk.W, padx=4, pady=(0, 2))
+            ws.append(of)
+            ttk.Label(of, text="Convention").pack(side=tk.LEFT)
+            self.v["selection_syntax"] = tk.StringVar(value=SYNTAX_LABELS["chimerax"])
+            ttk.Combobox(of, textvariable=self.v["selection_syntax"],
+                         values=list(SYNTAX_LABELS.values()), state="readonly",
+                         width=9).pack(side=tk.LEFT, padx=(4, 0))
+            chip(of, "selection_syntax").pack(side=tk.LEFT, padx=(6, 14))
+            ttk.Label(of, text="Shared atoms").pack(side=tk.LEFT)
+            self.v["overlap"] = tk.StringVar(value=OVERLAP_LABELS["first"])
+            ttk.Combobox(of, textvariable=self.v["overlap"], values=list(OVERLAP_LABELS.values()),
+                         state="readonly", width=21).pack(side=tk.LEFT, padx=(4, 0))
+            chip(of, "overlap").pack(side=tk.LEFT, padx=(6, 14))
+            ttk.Button(of, text="Backbone per chain", command=self.fill_backbone).pack(side=tk.LEFT)
+            chip(of, "fill_backbone").pack(side=tk.LEFT, padx=(6, 0))
+            r += 1
+            ws.append(ttk.Label(frm, text="one part per line, P1 first:   NAME = selection   or   "
+                                          "rest      e.g.  bbA = /A & backbone", foreground="#666"))
+            ws[-1].grid(row=r, column=1, columnspan=2, sticky=tk.W, padx=4)
+            self.rows["part"] = ws
             r += 1
             # the part colours: a menu, then one swatch per part in its colour
             ttk.Label(frm, text="Palette").grid(row=r, column=0, sticky=tk.W, pady=2)
@@ -3114,6 +3931,7 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
                 chip(opt, key).grid(row=i, column=1, sticky=tk.W, padx=(6, 0), pady=1)
 
             row_entry("ChimeraX", "chimerax", self.browse_cx)
+            row_entry("Chimera", "chimera", self.browse_chimera)   # the Chimera convention only
             bar = ttk.Frame(frm)
             bar.grid(row=r, column=0, columnspan=4, sticky=tk.EW, pady=6)
             r += 1
@@ -3145,19 +3963,31 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
                         self.v[k].set(bool(val))
                     else:
                         self.v[k].set(f"{val:.12g}" if isinstance(val, float) else str(val))
+            if prefill.get("part"):
+                self.set_selections(str(prefill["part"]).splitlines())
+            for key, labels in (("selection_syntax", SYNTAX_LABELS), ("overlap", OVERLAP_LABELS)):
+                given = self.v[key].get().strip()        # an option's value -> its label
+                self.v[key].set(labels.get(given.lower(), given))
             if not self.v["chimerax"].get():
                 try:
                     self.v["chimerax"].set(find_chimerax())
+                except SplitError:
+                    pass
+            if not self.v["chimera"].get():
+                try:
+                    self.v["chimera"].set(find_chimera())
                 except SplitError:
                     pass
             for key in ("structure", "resolution", "tag", "out"):
                 self.v[key].trace_add("write", lambda *_: self.update_names())
             for key in ("parts", "palette"):
                 self.v[key].trace_add("write", lambda *_: self.update_swatches())
+            for key in ("parts_by", "selection_syntax"):
+                self.v[key].trace_add("write", lambda *_: self.show_parts_mode())
             if self.v["structure"].get():
                 self.detect(fill_parts=not self.v["parts"].get())
             self.update_names()
-            self.update_swatches()
+            self.show_parts_mode(fit=False)
             self.say("Click any light-blue  ?  for an explanation and examples.\n")
             self.fit_window()
             root.after(120, self.poll)
@@ -3208,26 +4038,33 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             self.log.configure(state=tk.DISABLED)
 
         def load_prefs(self):
-            """The remembered ChimeraX path, if it still works.  One that no
-            longer does (ChimeraX moved or updated) is left out, so the field
-            is filled by $CHIMERAX or the search instead, not with a path
-            every run would fail on."""
+            """The remembered ChimeraX and Chimera paths, if they still work.
+            One that no longer does (the program moved or was updated) is
+            left out, so the field is filled by $CHIMERAX / $CHIMERA or the
+            search instead, not with a path every run would fail on."""
             try:
                 d = json.loads(GUI_PREFS.read_text())
             except Exception:
                 return
-            p = d.get("chimerax") if isinstance(d, dict) else None
-            if not p or not isinstance(p, str):
+            if not isinstance(d, dict):
                 return
-            if _exe_ok(_normalise_exe(p)):
-                self.v["chimerax"].set(p)
-            else:
-                self.say(f"(the remembered ChimeraX path {p} no longer works; "
-                         f"searching for ChimeraX instead)\n")
+            for key, name, works in (
+                    ("chimerax", "ChimeraX", lambda q: _exe_ok(_normalise_exe(q))),
+                    ("chimera", "Chimera", lambda q: _exe_ok(_chimera_exe(q)) and not _is_chimerax(
+                        _chimera_exe(q)))):
+                p = d.get(key)
+                if not p or not isinstance(p, str):
+                    continue
+                if works(p):
+                    self.v[key].set(p)
+                else:
+                    self.say(f"(the remembered {name} path {p} no longer works; "
+                             f"searching for {name} instead)\n")
 
         def save_prefs(self):
             try:
-                GUI_PREFS.write_text(json.dumps({"chimerax": self.v["chimerax"].get()}))
+                GUI_PREFS.write_text(json.dumps({"chimerax": self.v["chimerax"].get(),
+                                                 "chimera": self.v["chimera"].get()}))
             except Exception:
                 pass
 
@@ -3249,6 +4086,11 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             if p:
                 self.v["chimerax"].set(_normalise_exe(p))
 
+        def browse_chimera(self):
+            p = filedialog.askopenfilename(title="UCSF Chimera (the .app or its Contents/MacOS/chimera)")
+            if p:
+                self.v["chimera"].set(_chimera_exe(p))
+
         def detect(self, fill_parts=True):
             p = self.v["structure"].get().strip()
             if not p:
@@ -3262,6 +4104,7 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
                 self.error(f"Could not read {p}:\n{e}")
                 return
             self.chains = [c["id"] for c in info["chains"]]
+            self.chain_rows = info["chains"]
             self.tree.delete(*self.tree.get_children())
             for c in info["chains"]:
                 types = ", ".join(f"{k}×{n}" for k, n in sorted(c["resnames"].items()))
@@ -3298,7 +4141,8 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
 
         def update_swatches(self):
             """One swatch per part (the Parts field, or the detected chains
-            while it is blank) in the colour the previews give it."""
+            while it is blank; each line of Selections when the parts are
+            atom selections) in the colour the previews give it."""
             for w in self.swatch_box.winfo_children():
                 w.destroy()
             self.swatches = []
@@ -3306,8 +4150,11 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
                 pal = part_colors(self.v["palette"].get())
             except ValueError:
                 pal = PALETTE
-            text = re.sub(r"\s*([,+])\s*", r"\1", self.v["parts"].get().replace("|", " "))
-            tokens = text.split() or [c for c in self.chains if c.strip()]
+            if self.v["parts_by"].get() == "selections":
+                tokens = [selection_line_label(x) for x in self.selection_lines()]
+            else:
+                text = re.sub(r"\s*([,+])\s*", r"\1", self.v["parts"].get().replace("|", " "))
+                tokens = text.split() or [c for c in self.chains if c.strip()]
             if not tokens:
                 ttk.Label(self.swatch_box, text="each part's colour in the previews "
                                                 "(the STLs carry none)",
@@ -3344,7 +4191,20 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             if errs:
                 raise ValueError("\n".join(errs))
             args = [str(Path(g["structure"]).expanduser())]
-            if g["parts"]:
+            if g["parts_by"] == "selections":
+                lines = self.selection_lines()
+                try:
+                    parse_selection_parts(lines, self.syntax())
+                except SplitError as e:
+                    raise ValueError(f"Selections: {e}")
+                args += [f"--part={x}" for x in lines]
+                if self.syntax() != "chimerax":
+                    args.append(f"--selection-syntax={self.syntax()}")
+                    if g["chimera"]:
+                        args.append(f"--chimera={g['chimera']}")
+                if self.overlap() != "first":
+                    args.append(f"--overlap={self.overlap()}")
+            elif g["parts"]:
                 args += ["--parts"] + g["parts"].replace("|", " ").split()
             # --flag=VALUE so a value that starts with '-' still parses
             for key, flag in (("out", "--out"), ("tag", "--tag"), ("chimerax", "--chimerax")):
@@ -3359,6 +4219,63 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             if check_palette(g["palette"]) != "default":     # a menu, not a number field
                 args.append(palette_option(g["palette"]))
             return args
+
+        # ------------------------------------------------ atom-selection parts
+        def syntax(self):
+            s = self.v["selection_syntax"].get().strip().lower()
+            return s if s in SELECTION_SYNTAXES else "chimerax"
+
+        def overlap(self):
+            given = self.v["overlap"].get().strip()
+            return next((k for k, text in OVERLAP_LABELS.items() if given in (k, text)), "first")
+
+        def selection_lines(self):
+            return [x.strip() for x in self.sel_text.get("1.0", tk.END).splitlines() if x.strip()]
+
+        def set_selections(self, lines):
+            self.sel_text.delete("1.0", tk.END)
+            self.sel_text.insert("1.0", "\n".join(lines))
+            self.update_swatches()
+
+        def on_selections_edited(self, _event=None):
+            if self.sel_text.edit_modified():
+                self.sel_text.edit_modified(False)
+                self.update_swatches()
+
+        def show_parts_mode(self, fit=True):
+            """Show the Parts row for chains, the Selections rows for atom
+            selections, and the Chimera row for the Chimera convention."""
+            selections = self.v["parts_by"].get() == "selections"
+            shown = {"parts": not selections, "part": selections,
+                     "chimera": selections and self.syntax() == "chimera"}
+            for key, show in shown.items():
+                for w in self.rows[key]:
+                    if show:
+                        w.grid()
+                    else:
+                        w.grid_remove()
+            self.update_swatches()
+            if fit:
+                self.fit_window(initial=False)
+
+        def fill_backbone(self):
+            """Selections: each chain's backbone, bb<chain>, then rest."""
+            if not self.chain_rows and self.v["structure"].get().strip():
+                self.detect(fill_parts=not self.v["parts"].get())
+            if not self.chain_rows:
+                self.error("Choose a structure first: Backbone per chain takes its chains.")
+                return
+            lines = backbone_parts(self.chain_rows, self.syntax())
+            if not lines:
+                self.error("No chain with an ID has a nucleotide or amino-acid residue, so there "
+                           "is no backbone to select.")
+                return
+            old = self.selection_lines()
+            if old and old != lines and not selftest and not messagebox.askyesno(
+                    TOOL_NAME, "Replace the selections with each chain's backbone, then rest?"):
+                return
+            self.set_selections(lines)
+            self.v["parts_by"].set("selections")
 
         def show_cmd(self):
             try:
@@ -3510,6 +4427,10 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
         print("[selftest] palette: %s; swatches: %s"
               % (app.v["palette"].get(),
                  " | ".join(f"{t} {c}" for t, c in app.swatches) or "none"), flush=True)
+        print("[selftest] parts by: %s; convention %s; shared atoms %s; rows shown: %s"
+              % (app.v["parts_by"].get(), app.syntax(), app.overlap(),
+                 " ".join(k for k in ("parts", "part", "chimera") if app.rows[k][0].winfo_manager())),
+              flush=True)
         m = re.match(r"(\d+)x(\d+)", root.geometry())
         gw, gh = (int(m.group(1)), int(m.group(2))) if m else app.size
         print("[selftest] window: %dx%d geometry %dx%d"
@@ -3536,6 +4457,11 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             if selftest == "help":
                 help_popups()
                 return
+            if selftest == "fill":
+                app.fill_backbone()
+                print("[selftest] selections: " + " | ".join(app.selection_lines()), flush=True)
+                print("[selftest] swatches: " + (" | ".join(f"{t} {c}" for t, c in app.swatches)
+                                                 or "none"), flush=True)
             try:
                 args = app.build_args()
                 print("[selftest] args:", " ".join(shlex.quote(x) for x in args), flush=True)
@@ -3588,6 +4514,19 @@ def build_parser():
                    help="one token per colour part, in peeling order; join chains with ',' "
                         "(e.g. --parts A C, --parts A,B C).  Default: every chain its own part")
     g.add_argument("--chains", help="shorthand: comma-separated chains, one part each")
+    g.add_argument("--part", action="append", metavar="SPEC", default=None,
+                   help="one part as an atom selection instead of whole chains, given once per "
+                        "colour in peeling order: an atom specification in ChimeraX's convention "
+                        "(or Chimera's, with --selection-syntax chimera), optionally named as "
+                        "NAME=SPEC for the file name, or rest for every atom no other part takes; "
+                        "e.g. --part 'bbA=/A & backbone' --part 'bbB=/B & backbone' --part rest")
+    g.add_argument("--selection-syntax", choices=SELECTION_SYNTAXES, default="chimerax",
+                   help="the convention --part is written in: chimerax (/A:12@P, read by "
+                        "ChimeraX) or chimera (:12.A@P, read by UCSF Chimera, which must be "
+                        "installed)")
+    g.add_argument("--overlap", choices=OVERLAP_RULES, default="first",
+                   help="atoms two --part selections share: first gives each to the earlier part "
+                        "and says so in the log and report; error refuses the run")
     g.add_argument("--keep-solvent", action="store_true", help="include waters in the maps")
     g.add_argument("--no-hydrogens", action="store_true", help="leave hydrogens out of the maps")
     g = ap.add_argument_group("molmap")
@@ -3640,7 +4579,9 @@ def build_parser():
                         "or -T20 (default tint T100; T40 and T20 are pale on white). Read from "
                         "assets/diliulab_colors.json")
     g.add_argument("--chimerax", default=None, help="path to the ChimeraX executable (or its .app)")
-    ap.add_argument("--gui-selftest", choices=("build", "run", "help"), help=argparse.SUPPRESS)
+    g.add_argument("--chimera", default=None,
+                   help="path to UCSF Chimera (or its .app), for --selection-syntax chimera")
+    ap.add_argument("--gui-selftest", choices=("build", "fill", "run", "help"), help=argparse.SUPPRESS)
     ap.add_argument("--version", action="version", version=__version__)
     return ap
 
@@ -3697,7 +4638,11 @@ def main(argv=None):
                                           "dust", "k", "k_list", "level", "level_guess", "span",
                                           "step", "scale", "chimerax", "lay_flat", "k_scan",
                                           "allow_multi_shell", "no_widen", "keep_solvent",
-                                          "no_hydrogens", "keep_scan", "no_preview", "palette")}
+                                          "no_hydrogens", "keep_scan", "no_preview", "palette",
+                                          "selection_syntax", "overlap", "chimera")}
+        if a.part:
+            pre["part"] = "\n".join(a.part)
+            pre["parts_by"] = "selections"
         if a.parts:
             pre["parts"] = " ".join(a.parts)
         elif a.chains:
