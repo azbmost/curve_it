@@ -2030,6 +2030,19 @@ def no_level_hint(records, selections=False):
     return "no contour level passed every check.  Try " + "; or ".join(tips) + "."
 
 
+def software_versions():
+    """Python's and the mesh libraries' versions: the same STLs are only
+    promised for the same ones (and the same ChimeraX)."""
+    from importlib import metadata
+    found = {"python": sys.version.split()[0]}
+    for name in ("numpy", "scipy", "trimesh", "manifold3d"):
+        try:
+            found[name] = metadata.version(name)
+        except Exception:
+            found[name] = getattr(sys.modules.get(name), "__version__", "?")
+    return found
+
+
 def _tool_logdir(d):
     return d.is_dir() and any(d.glob("params_*.json")) and any(d.glob("chimerax_job_*.py"))
 
@@ -2582,7 +2595,10 @@ def _pipeline(a, c):
             frag.append(f"{fi['slivers']} of its own handed on")
         if fi["dropped_volume"]:
             frag.append(f"{fi['dropped_volume']:.2g} A^3 dropped (touched nothing)")
-        check(f"P{i} boolean result: manifold, {exp} piece(s)",
+        if not strict and fi["bodies"] != exp:  # the count is only reported, not required
+            detail += (f"; its atoms form {exp} cluster(s), and --allow-multi-shell allows "
+                       f"any number of pieces")
+        check(f"P{i} boolean result: manifold" + (f", {exp} piece(s)" if strict else ""),
               P.status() == mf.Error.NoError and (fi["bodies"] == exp or not strict),
               detail + ("; " + "; ".join(frag) if frag else ""))
         check(f"P{i} file: no open edges", rr["open_edges"] == 0, f"{rr['open_edges']} open edges")
@@ -2705,6 +2721,9 @@ def _pipeline(a, c):
         P_(f"  palette             {palette}   (the part colours of the previews and the colour "
            f"names above; the STLs carry no colour)")
     P_(f"  ChimeraX            {exe}" + (f"  ({cx_version})" if cx_version else ""))
+    software = software_versions()
+    P_(f"  python              {software['python']}  (" + ", ".join(
+        f"{name} {software[name]}" for name in ("numpy", "scipy", "trimesh", "manifold3d")) + ")")
     if k_records:
         P_("")
         P_("K SCAN (part fields at the level guess)")
@@ -2778,6 +2797,8 @@ def _pipeline(a, c):
     P_("")
     P_("REPRODUCE (everything pinned)")
     P_("  " + " ".join(shlex.quote(x) for x in repro))
+    P_("  (paste into a terminal to rebuild this set: the same STLs with the same ChimeraX and "
+       "libraries; the files now here move into _previous_<timestamp>/ first)")
     P_("")
     verdict = "ALL CHECKS PASS" if not n_fail and not n_warn else \
         (f"{n_fail} FAIL, {n_warn} WARN" if n_fail else f"PASS with {n_warn} warning(s)")
@@ -2814,7 +2835,7 @@ def _pipeline(a, c):
                pinch_vertices_separated=[m for m, _step in separated],
                keep_pinch_edges=bool(getattr(a, "keep_pinch_edges", False)),
                reread=reread, reread_whole=reread_whole, reproduce=repro, notes=notes,
-               chimerax=exe, chimerax_version=cx_version, grid_info=man["grid"],
+               chimerax=exe, chimerax_version=cx_version, software=software, grid_info=man["grid"],
                export_steps=man.get("export_steps"), additivity=man["additivity_max_abs"],
                n_atoms_parts=man["n_atoms_parts"])
     if palette != "default":
