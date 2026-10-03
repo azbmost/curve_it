@@ -91,6 +91,10 @@ Retain a user-provided 25-degree opening angle::
 
     python generate_sc_xyzV3_7.py -L 1071 -w -3 -a 25 -n 2000
 
+Choose the angle by the objective of the curve actually written (slower)::
+
+    python generate_sc_xyzV3_7.py -L 714 -w -1 --angle-search accurate -n 2000
+
 Generate the fully reoptimized zero-H0 family::
 
     python generate_sc_xyzV3_7.py -L 1071 -w -3 --zero-h0 -n 2000
@@ -108,7 +112,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Tuple
 
@@ -205,6 +209,25 @@ SCREENING_MODE_QUALIFYING_VIEWS = "qualifying-views"
 SCREENING_MODE_MINIMUM_RADIUS = "minimum-final-radius"
 SCREENING_MODE_RING = "not-applicable-ring"
 
+# Opening-angle search. QUICK, the default and the V3.7 behaviour, minimizes the
+# objective for the curve at DEFAULT_PHASE_TRIM and then holds that angle fixed
+# while radius or qualifying-view screening re-chooses the trim, so the curve
+# written is in general not the objective's optimum. ACCURATE gives every
+# candidate angle the complete screening and serialization a user-provided angle
+# receives and ranks the angles by the objective measured on the coordinates that
+# would be written. Equal-lobes re-solves its angle at every tested trim already,
+# so the two modes coincide for it.
+ANGLE_SEARCH_QUICK = "quick"
+ANGLE_SEARCH_ACCURATE = "accurate"
+ANGLE_SEARCH_MODES = (ANGLE_SEARCH_QUICK, ANGLE_SEARCH_ACCURATE)
+DEFAULT_ANGLE_SEARCH = ANGLE_SEARCH_QUICK
+ACCURATE_ANGLE_SEARCH_OBJECTIVES = (
+    CURVATURE_OBJECTIVE_BENDING_ENERGY,
+    CURVATURE_OBJECTIVE_MAX_LOCAL,
+    CURVATURE_OBJECTIVE_TOTAL,
+)
+ACCURATE_FILENAME_TOKEN = "Acc"
+
 
 OUTPUT_ANGLE_TOKENS = {
     CURVATURE_OBJECTIVE_BENDING_ENERGY: "ABend",
@@ -234,10 +257,12 @@ def automatic_output_filename(
     qualifying_views_percent: float = DEFAULT_QUALIFYING_VIEWS_PERCENT,
     minimum_final_radius: Optional[float] = DEFAULT_MINIMUM_FINAL_RADIUS,
     zero_h0: bool = DEFAULT_ZERO_H0,
+    angle_search: str = DEFAULT_ANGLE_SEARCH,
 ) -> str:
     """Build a deterministic XYZ filename from the curve-defining selections.
 
     Examples include ``sc_L1071_Wm3_R13_ABend.xyz`` for the V3.7 defaults,
+    ``sc_L1071_Wm3_R13_ABend_Acc.xyz`` for the accurate angle search,
     ``sc_L1071_Wm3_R13_ABend_H0zero.xyz`` for the opt-in zero-H0 family,
     ``sc_L1071_W0_NoTrim_Ring_H0zero.xyz`` for its direct zero-writhe limit,
     ``sc_L1071_W3_Q60_ALocal.xyz`` for qualifying-view screening, and
@@ -273,13 +298,37 @@ def automatic_output_filename(
                     curvature_objective
                 )
             ) from exc
+    accurate_suffix = (
+        "_" + ACCURATE_FILENAME_TOKEN
+        if _accurate_search_applies(
+            angle_search, curvature_objective, opening_angle_deg, target_writhe
+        )
+        else ""
+    )
     h0_suffix = "_H0zero" if bool(zero_h0) else ""
-    return "sc_{0}_{1}_{2}_{3}{4}.xyz".format(
+    return "sc_{0}_{1}_{2}_{3}{4}{5}.xyz".format(
         length_token,
         writhe_token,
         screening_token,
         angle_token,
+        accurate_suffix,
         h0_suffix,
+    )
+
+
+def _accurate_search_applies(
+    angle_search: str,
+    curvature_objective: str,
+    opening_angle_deg: Optional[float],
+    target_writhe: float,
+) -> bool:
+    """Return whether the accurate angle search changes anything for these inputs."""
+
+    return (
+        str(angle_search) == ANGLE_SEARCH_ACCURATE
+        and opening_angle_deg is None
+        and str(curvature_objective) in ACCURATE_ANGLE_SEARCH_OBJECTIVES
+        and abs(float(target_writhe)) > 1.0e-12
     )
 
 
@@ -349,6 +398,10 @@ class SCGenerationResult:
     screening_mode: str
     minimum_final_radius: Optional[float]
     projection_search_evaluations: int
+    angle_search: str = ANGLE_SEARCH_QUICK
+    angle_search_note: str = ""
+    angle_search_candidates: int = 0
+    angle_at_search_boundary: bool = False
 
 
 @dataclass
@@ -413,6 +466,7 @@ def validate_inputs(
     qualifying_views_percent: float = DEFAULT_QUALIFYING_VIEWS_PERCENT,
     minimum_final_radius: Optional[float] = None,
     zero_h0: bool = DEFAULT_ZERO_H0,
+    angle_search: str = DEFAULT_ANGLE_SEARCH,
 ) -> None:
     """Validate user-facing inputs and raise ``ValueError`` when invalid."""
 
@@ -447,6 +501,10 @@ def validate_inputs(
             "Automatic opening-angle objective must be one of: {0}.".format(
                 ", ".join(CURVATURE_OBJECTIVES)
             )
+        )
+    if str(angle_search) not in ANGLE_SEARCH_MODES:
+        raise ValueError(
+            "Opening-angle search must be one of: {0}.".format(", ".join(ANGLE_SEARCH_MODES))
         )
     if opening_angle_deg is not None and (
         not math.isfinite(float(opening_angle_deg))
@@ -2334,6 +2392,283 @@ def _generate_zero_h0_ring(
     )
 
 
+@dataclass
+class _AccurateTrial:
+    """One fully screened and serialized candidate of the accurate angle search."""
+
+    angle_deg: float
+    result: SCGenerationResult
+    rank: Tuple[float, float, float]
+
+
+def _qualifying_screen_at_angle(
+    total_length: float,
+    target_writhe: float,
+    num_points: int,
+    opening_angle_deg: float,
+    objective: str,
+    qualifying_fraction: float,
+) -> Tuple[float, _AngleCandidate, Dict[str, object], int]:
+    """Qualifying-view trim screening at one fixed angle.
+
+    Uses the trim sequence and fallback ranking of
+    ``_find_projection_robust_auto_candidate``; only the angle differs, being the
+    one given rather than the default-trim optimum.
+    """
+
+    tested = []
+    evaluations = 0
+    for trim in (DEFAULT_PHASE_TRIM,) + FALLBACK_PHASE_TRIMS:
+        _set_active_phase_trim(trim)
+        candidate = _fit_at_angle(
+            total_length, target_writhe, num_points, opening_angle_deg, objective
+        )
+        evaluations += 1
+        if candidate is None:
+            continue
+        stats = _candidate_projection_stats(candidate, total_length, target_writhe)
+        evaluations += 1
+        if stats is not None and bool(stats.get("applicable", False)):
+            tested.append((float(trim), candidate, stats))
+            if _projection_target_met(stats, qualifying_fraction):
+                return float(trim), candidate, stats, evaluations
+    if not tested:
+        raise RuntimeError("No feasible shortened-phase plectoneme at this opening angle.")
+    best = min(
+        tested,
+        key=lambda item: (
+            -float(item[2]["target_fraction"]),
+            _objective_value(item[1], objective),
+        ),
+    )
+    return best[0], best[1], best[2], evaluations
+
+
+def _result_objective_value(result: SCGenerationResult, objective: str) -> float:
+    """The objective as measured on the serialized coordinates of a result."""
+
+    if objective == CURVATURE_OBJECTIVE_TOTAL:
+        return float(result.total_curvature)
+    if objective == CURVATURE_OBJECTIVE_MAX_LOCAL:
+        return float(result.maximum_local_curvature)
+    return float(result.bending_energy_integral)
+
+
+def _accurate_trial(
+    total_length: float,
+    target_writhe: float,
+    num_points: int,
+    precision: int,
+    objective: str,
+    opening_angle_deg: float,
+    trim_enabled: bool,
+    qualifying_fraction: float,
+    minimum_final_radius: Optional[float],
+    legacy_geometry: bool,
+    is_integer: bool,
+) -> Optional[_AccurateTrial]:
+    """Screen, serialize and rank the curve that would be written at one angle.
+
+    The screening is exactly what a user-provided angle receives, and the
+    serialization and verification are those of the final output, so the curve
+    ranked here is byte-for-byte the curve ``-a`` at this angle writes. Returns
+    ``None`` for an angle whose curve cannot be screened or fails verification.
+    """
+
+    try:
+        if legacy_geometry:
+            _set_active_phase_trim(0.0)
+            candidate = _fit_at_angle(
+                total_length, target_writhe, num_points, opening_angle_deg, objective
+            )
+            if candidate is None:
+                return None
+            selected_trim = 0.0
+            stats = (
+                _candidate_projection_stats(candidate, total_length, target_writhe)
+                if is_integer
+                else None
+            )
+            if stats is None:
+                stats = {"applicable": False, "direction_count": SEARCH_PROJECTION_DIRECTIONS}
+            evaluations = 1
+        elif minimum_final_radius is not None:
+            selected_trim, candidate, stats, evaluations = _find_radius_constrained_candidate(
+                total_length,
+                target_writhe,
+                num_points,
+                precision,
+                objective,
+                float(minimum_final_radius),
+                opening_angle_deg=opening_angle_deg,
+            )
+        else:
+            selected_trim, candidate, stats, evaluations = _qualifying_screen_at_angle(
+                total_length,
+                target_writhe,
+                num_points,
+                opening_angle_deg,
+                objective,
+                qualifying_fraction,
+            )
+        result = _finalize_candidate(
+            candidate=candidate,
+            total_length=total_length,
+            target_writhe=target_writhe,
+            num_points=num_points,
+            precision=precision,
+            effective_objective=objective,
+            opening_angle_evaluations=evaluations,
+            selected_trim=selected_trim,
+            trim_enabled=trim_enabled,
+            qualifying_fraction=qualifying_fraction,
+            screening_mode=(
+                SCREENING_MODE_MINIMUM_RADIUS
+                if minimum_final_radius is not None
+                else SCREENING_MODE_QUALIFYING_VIEWS
+            ),
+            minimum_final_radius=minimum_final_radius,
+            search_stats=stats,
+            search_evaluations=evaluations,
+        )
+    except (RuntimeError, ValueError, ArithmeticError):
+        return None
+    value = _result_objective_value(result, objective)
+    if not math.isfinite(value):
+        return None
+    if minimum_final_radius is None and not legacy_geometry:
+        # Qualifying-view screening: curves meeting the requested percentage come
+        # first, then, as in the quick search's fallback, the larger percentage.
+        met = _projection_target_met(result.projection_stats, qualifying_fraction)
+        fraction = (
+            float(result.projection_stats["target_fraction"])
+            if bool(result.projection_stats.get("applicable", False))
+            else 0.0
+        )
+        rank = (0.0 if met else 1.0, 0.0 if met else -fraction, value)
+    else:
+        rank = (0.0, 0.0, value)
+    return _AccurateTrial(float(opening_angle_deg), result, rank)
+
+
+def _generate_accurate(
+    total_length: float,
+    target_writhe: float,
+    num_points: int,
+    precision: int,
+    objective: str,
+    trim_enabled: bool,
+    qualifying_fraction: float,
+    minimum_final_radius: Optional[float],
+    legacy_geometry: bool,
+    is_integer: bool,
+) -> SCGenerationResult:
+    """Accurate opening-angle search: optimize the objective of the written curve.
+
+    Each candidate angle is screened and serialized by ``_accurate_trial`` and
+    ranked by the objective measured on its serialized coordinates. The angle
+    grid and its refinement levels are those of ``_optimize_opening_angle``, so
+    the quick and accurate searches sample angles alike and differ only in what
+    they score.
+    """
+
+    cache: Dict[float, Optional[_AccurateTrial]] = {}
+
+    def evaluate(angle_deg: float) -> Optional[_AccurateTrial]:
+        clipped_angle = min(
+            MAX_AUTO_OPENING_ANGLE_DEG,
+            max(MIN_AUTO_OPENING_ANGLE_DEG, float(angle_deg)),
+        )
+        key = round(clipped_angle, 10)
+        if key not in cache:
+            cache[key] = _accurate_trial(
+                total_length,
+                target_writhe,
+                num_points,
+                precision,
+                objective,
+                clipped_angle,
+                trim_enabled,
+                qualifying_fraction,
+                minimum_final_radius,
+                legacy_geometry,
+                is_integer,
+            )
+        return cache[key]
+
+    def trial_key(trial: _AccurateTrial) -> Tuple[float, ...]:
+        return (
+            *trial.rank,
+            abs(trial.angle_deg - DEFAULT_OPENING_ANGLE_DEG),
+            trial.angle_deg,
+        )
+
+    initial_angles = np.linspace(
+        MIN_AUTO_OPENING_ANGLE_DEG,
+        MAX_AUTO_OPENING_ANGLE_DEG,
+        OPENING_ANGLE_GRID_SIZE,
+    )
+    feasible = [trial for trial in (evaluate(angle) for angle in initial_angles) if trial]
+    if not feasible:
+        raise RuntimeError(
+            "The accurate opening-angle search found no angle in [{0:g}, {1:g}] deg whose "
+            "screened, serialized curve passes verification.".format(
+                MIN_AUTO_OPENING_ANGLE_DEG, MAX_AUTO_OPENING_ANGLE_DEG
+            )
+        )
+    best = min(feasible, key=trial_key)
+    step = (MAX_AUTO_OPENING_ANGLE_DEG - MIN_AUTO_OPENING_ANGLE_DEG) / float(
+        OPENING_ANGLE_GRID_SIZE - 1
+    )
+    for _level in range(OPENING_ANGLE_REFINEMENT_LEVELS):
+        lower = max(MIN_AUTO_OPENING_ANGLE_DEG, best.angle_deg - step)
+        upper = min(MAX_AUTO_OPENING_ANGLE_DEG, best.angle_deg + step)
+        refinement_angles = np.linspace(lower, upper, OPENING_ANGLE_REFINEMENT_SAMPLES)
+        refined = [trial for trial in (evaluate(angle) for angle in refinement_angles) if trial]
+        if refined:
+            best = min((best, *refined), key=trial_key)
+        step = max(1.0e-4, (upper - lower) / float(OPENING_ANGLE_REFINEMENT_SAMPLES - 1))
+
+    at_boundary = (
+        abs(best.angle_deg - MIN_AUTO_OPENING_ANGLE_DEG) <= 1.0e-9
+        or abs(best.angle_deg - MAX_AUTO_OPENING_ANGLE_DEG) <= 1.0e-9
+    )
+    # Leave the module state as finalizing the chosen candidate leaves it.
+    _set_active_phase_trim(best.result.phase_trim)
+    return replace(
+        best.result,
+        opening_angle_evaluations=len(cache),
+        angle_search=ANGLE_SEARCH_ACCURATE,
+        angle_search_candidates=len(cache),
+        angle_at_search_boundary=bool(at_boundary),
+    )
+
+
+def _with_angle_search_note(
+    result: SCGenerationResult,
+    angle_search: str,
+    opening_angle_deg: Optional[float],
+    target_writhe: float,
+) -> SCGenerationResult:
+    """Say why a requested accurate search did not apply; quick results pass unchanged."""
+
+    if str(angle_search) != ANGLE_SEARCH_ACCURATE:
+        return result
+    if opening_angle_deg is not None:
+        reason = "the opening angle was provided"
+    elif abs(float(target_writhe)) <= 1.0e-12:
+        reason = "zero writhe has no opening-angle search"
+    else:
+        reason = "equal-lobes already re-solves its angle at every tested trim"
+    return replace(
+        result,
+        angle_search_note=(
+            "accurate requested but not applicable ({0}); the standard selection "
+            "ran".format(reason)
+        ),
+    )
+
+
 def generate_sc_points(
     total_length: float,
     target_writhe: float,
@@ -2345,8 +2680,13 @@ def generate_sc_points(
     qualifying_views_percent: float = DEFAULT_QUALIFYING_VIEWS_PERCENT,
     minimum_final_radius: Optional[float] = None,
     zero_h0: bool = DEFAULT_ZERO_H0,
+    angle_search: str = DEFAULT_ANGLE_SEARCH,
 ) -> SCGenerationResult:
     """Generate an optimized/manual plectoneme with V3_7 multi-view screening.
+
+    ``angle_search`` selects how an automatic opening angle is chosen: ``quick``
+    (default) is the V3.7 search, ``accurate`` ranks every candidate angle by the
+    objective of its own screened, serialized curve (see ``_generate_accurate``).
 
     ``zero_h0=False`` preserves the V3.6/default construction H0 = 2R.
     ``zero_h0=True`` selects H0 = 0. For nonzero W it re-runs the entire
@@ -2368,15 +2708,21 @@ def generate_sc_points(
         qualifying_views_percent,
         minimum_final_radius,
         zero_h0,
+        angle_search=angle_search,
     )
     num_points = int(num_points)
     qualifying_fraction = float(qualifying_views_percent) / 100.0
     if bool(zero_h0) and abs(float(target_writhe)) <= 1.0e-12:
-        return _generate_zero_h0_ring(
-            total_length=float(total_length),
-            num_points=num_points,
-            precision=int(precision),
-            qualifying_fraction=qualifying_fraction,
+        return _with_angle_search_note(
+            _generate_zero_h0_ring(
+                total_length=float(total_length),
+                num_points=num_points,
+                precision=int(precision),
+                qualifying_fraction=qualifying_fraction,
+            ),
+            angle_search,
+            opening_angle_deg,
+            target_writhe,
         )
     is_integer, nearest = _integer_request(target_writhe)
     legacy_geometry = (
@@ -2384,6 +2730,22 @@ def generate_sc_points(
         or not is_integer
         or nearest == 0
     )
+
+    if _accurate_search_applies(
+        angle_search, curvature_objective, opening_angle_deg, target_writhe
+    ):
+        return _generate_accurate(
+            total_length=float(total_length),
+            target_writhe=float(target_writhe),
+            num_points=num_points,
+            precision=int(precision),
+            objective=str(curvature_objective),
+            trim_enabled=bool(trim_enabled),
+            qualifying_fraction=qualifying_fraction,
+            minimum_final_radius=minimum_final_radius,
+            legacy_geometry=legacy_geometry,
+            is_integer=is_integer,
+        )
 
     if legacy_geometry:
         _set_active_phase_trim(0.0)
@@ -2458,7 +2820,7 @@ def generate_sc_points(
             effective_objective = OPENING_ANGLE_MODE_MANUAL
             angle_evaluations = search_evaluations
 
-    return _finalize_candidate(
+    result = _finalize_candidate(
         candidate=candidate,
         total_length=float(total_length),
         target_writhe=float(target_writhe),
@@ -2478,6 +2840,7 @@ def generate_sc_points(
         search_stats=search_stats,
         search_evaluations=search_evaluations,
     )
+    return _with_angle_search_note(result, angle_search, opening_angle_deg, target_writhe)
 
 
 def write_plain_xyz(points: PointArray, output_path: str, precision: int = DEFAULT_PRECISION) -> None:
@@ -2509,14 +2872,22 @@ def generation_summary(result: SCGenerationResult) -> str:
         if is_integer
         else "not constrained for fractional W"
     )
-    screening_suffix = (
-        " at the default-trim optimum; angle held fixed during phase-trim screening"
-        if is_integer
-        and nearest != 0
-        and result.trim_enabled
-        and result.curvature_objective != OPENING_ANGLE_OBJECTIVE_EQUAL_LOBES
-        else ""
-    )
+    if result.angle_search == ANGLE_SEARCH_ACCURATE:
+        screening_suffix = (
+            " of the written curve (accurate search: every candidate angle receives its "
+            "own phase-trim screening and serialization)"
+            if is_integer and nearest != 0 and result.trim_enabled
+            else " of the written curve (accurate search: scored on serialized coordinates)"
+        )
+    else:
+        screening_suffix = (
+            " at the default-trim optimum; angle held fixed during phase-trim screening"
+            if is_integer
+            and nearest != 0
+            and result.trim_enabled
+            and result.curvature_objective != OPENING_ANGLE_OBJECTIVE_EQUAL_LOBES
+            else ""
+        )
     if ring_mode:
         objective_label = "not applicable: direct planar ring for W = 0 and H0 = 0"
     elif result.curvature_objective == OPENING_ANGLE_MODE_MANUAL:
@@ -2772,6 +3143,32 @@ def generation_summary(result: SCGenerationResult) -> str:
                 "Projection note               = nonzero integer W is required for screening",
             ]
         )
+    angle_search_lines = []
+    if result.angle_search == ANGLE_SEARCH_ACCURATE:
+        angle_search_lines.append(
+            "Angle search mode       = accurate ({0} candidate angles, each screened, "
+            "serialized and verified)".format(result.angle_search_candidates)
+        )
+        if result.angle_at_search_boundary:
+            limit = (
+                MIN_AUTO_OPENING_ANGLE_DEG
+                if abs(result.opening_angle_deg - MIN_AUTO_OPENING_ANGLE_DEG) <= 1.0e-9
+                else MAX_AUTO_OPENING_ANGLE_DEG
+            )
+            angle_search_lines.append(
+                "Angle search boundary   = WARNING: the optimum lies at the {0:g} deg limit "
+                "of the automatic search; the objective may keep improving beyond it, which "
+                "-a can explore".format(limit)
+            )
+    elif result.angle_search_note:
+        angle_search_lines.append("Angle search mode       = " + result.angle_search_note)
+    if angle_search_lines:
+        anchor = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith("Candidates/search evaluations")
+        )
+        lines[anchor + 1:anchor + 1] = angle_search_lines
     return "\n".join(lines)
 
 
@@ -2805,6 +3202,20 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "-a", "--opening-angle", type=float, default=None,
         help="Use this opening angle in degrees instead of automatic optimization.",
+    )
+    parser.add_argument(
+        "--angle-search", dest="angle_search", choices=ANGLE_SEARCH_MODES,
+        default=DEFAULT_ANGLE_SEARCH,
+        help=(
+            "How the automatic opening angle is chosen. quick (default): optimize the "
+            "objective for the curve at the default phase trim, then keep that angle while "
+            "the trim is screened; fast, but the written curve need not be the objective's "
+            "optimum. accurate: give every candidate angle its own trim screening and "
+            "serialization and rank angles by the objective of the curve that would be "
+            "written; much slower (minutes). Adds _Acc to automatic filenames. Has no "
+            "effect with --opening-angle, for equal-lobes (which re-solves its angle at "
+            "every trim), or at W = 0."
+        ),
     )
     parser.add_argument(
         "--zero-h0",
@@ -2892,6 +3303,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             qualifying_views_percent=args.qualifying_views,
             minimum_final_radius=args.minimum_final_radius,
             zero_h0=args.zero_h0,
+            angle_search=args.angle_search,
         )
     return args
 
@@ -2910,6 +3322,7 @@ def run_cli(args: argparse.Namespace) -> SCGenerationResult:
         qualifying_views_percent=args.qualifying_views,
         minimum_final_radius=args.minimum_final_radius,
         zero_h0=args.zero_h0,
+        angle_search=args.angle_search,
     )
     write_plain_xyz(result.points, args.output, args.precision)
     print("Wrote {0} unique periodic points to: {1}".format(len(result.points), args.output))
@@ -3029,6 +3442,7 @@ def run_gui() -> None:
     minimum_final_radius_var = tk.StringVar(value=str(DEFAULT_MINIMUM_FINAL_RADIUS))
     points_var = tk.StringVar(value=str(DEFAULT_NUM_POINTS))
     precision_var = tk.StringVar(value=str(DEFAULT_PRECISION))
+    angle_search_var = tk.StringVar(value=DEFAULT_ANGLE_SEARCH)
     initial_auto_output = automatic_output_filename(
         total_length=DEFAULT_TOTAL_LENGTH,
         target_writhe=DEFAULT_WRITHE,
@@ -3174,15 +3588,53 @@ def run_gui() -> None:
     manual_angle_entry = ttk.Entry(objective_frame, textvariable=opening_angle_var, width=9)
     manual_angle_entry.grid(row=4, column=1, sticky="w", padx=(8, 0))
     ttk.Label(objective_frame, text="deg").grid(row=4, column=2, sticky="w", padx=(4, 0))
+    angle_search_frame = ttk.Frame(objective_frame)
+    angle_search_frame.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    angle_search_label = ttk.Label(angle_search_frame, text="Angle search:")
+    angle_search_label.pack(side="left")
+    angle_search_buttons = []
+    for search_text, search_value in (
+        ("Quick (default)", ANGLE_SEARCH_QUICK),
+        ("Accurate (slower)", ANGLE_SEARCH_ACCURATE),
+    ):
+        search_button = ttk.Radiobutton(
+            angle_search_frame,
+            text=search_text,
+            variable=angle_search_var,
+            value=search_value,
+        )
+        search_button.pack(side="left", padx=(8, 0))
+        angle_search_buttons.append(search_button)
+    add_help_button(
+        objective_frame,
+        5,
+        3,
+        "Angle search (--angle-search)",
+        "Quick (default) is the V3.7 search. It chooses the angle that optimizes the "
+        "selected objective for the curve at the default phase trim, then keeps that angle "
+        "while radius or qualifying-view screening chooses the final trim. It is fast, but "
+        "the written curve is generally not the objective's optimum, and can be well off "
+        "it: for a 714-A loop at W = -1 the written bending energy is 9% above the best "
+        "available, and at W = -2 with Minimize largest local curvature the written largest "
+        "curvature is 32% above it.\n\n"
+        "Accurate gives every candidate angle the complete screening and serialization a "
+        "provided angle receives and ranks the angles by the objective measured on the "
+        "coordinates that would be written, so the result is the objective's optimum among "
+        "the curves Generate SC can write with these settings. It samples the same angles "
+        "as Quick and takes much longer, typically minutes, during which the window waits. "
+        "The filename gains _Acc. It applies to the three curvature objectives: "
+        "equal-lobes already re-solves its angle at every trim, and a provided angle has "
+        "nothing to search.",
+    )
     trim_checkbutton = ttk.Checkbutton(
         objective_frame,
         text="Enable arm-phase trimming (default)",
         variable=trim_enabled_var,
     )
-    trim_checkbutton.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    trim_checkbutton.grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))
     add_help_button(
         objective_frame,
-        5,
+        6,
         3,
         "Arm-phase trimming (--trim / --no-trim)",
         "Shortens the centered arm phase below pi*|W| and refits the end loops to preserve "
@@ -3195,10 +3647,10 @@ def run_gui() -> None:
         objective_frame,
         text="Use H0 = 0 construction (default: H0 = 2R)",
         variable=zero_h0_var,
-    ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(4, 0))
+    ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(4, 0))
     add_help_button(
         objective_frame,
-        6,
+        7,
         3,
         "Zero-H0 construction (--zero-h0)",
         "Selects the distinct H0 = 0 arm-height family instead of the default H0 = 2R. "
@@ -3228,6 +3680,19 @@ def run_gui() -> None:
                 else "disabled"
             )
         )
+        try:
+            nonzero_writhe = abs(float(writhe_var.get().strip())) > 1.0e-12
+        except (TypeError, ValueError):
+            nonzero_writhe = True
+        search_state = (
+            "!disabled"
+            if curvature_objective_var.get() in ACCURATE_ANGLE_SEARCH_OBJECTIVES
+            and nonzero_writhe
+            else "disabled"
+        )
+        angle_search_label.state((search_state,))
+        for search_button in angle_search_buttons:
+            search_button.state((search_state,))
 
     def update_screening_state(*_args) -> None:
         ring_mode = zero_h0_ring_selected()
@@ -3270,6 +3735,7 @@ def run_gui() -> None:
                 qualifying_views_percent=float(qualifying_views_var.get().strip()),
                 minimum_final_radius=minimum_radius,
                 zero_h0=bool(zero_h0_var.get()),
+                angle_search=angle_search_var.get().strip() or DEFAULT_ANGLE_SEARCH,
             )
         except (TypeError, ValueError):
             return
@@ -3300,6 +3766,7 @@ def run_gui() -> None:
         zero_h0_var,
         qualifying_views_var,
         minimum_final_radius_var,
+        angle_search_var,
     ):
         filename_input_var.trace_add("write", update_automatic_output)
     update_manual_state()
@@ -3368,8 +3835,8 @@ def run_gui() -> None:
         "  Performs the same preview/verification (or reuses its cached result when the\n"
         "  geometry inputs are unchanged), then writes the selected XYZ output file.\n\n"
         "Automatic output filename:\n"
-        "  Follows L, W, radius/screening mode, opening-angle selection, and H0 mode until you\n"
-        "  enter or browse to a custom filename. W = 0 with H0 = 0 uses the Ring token."
+        "  Follows L, W, screening mode, angle selection and search, and H0 mode until you\n"
+        "  enter or browse to a custom filename. Accurate search adds _Acc; W = 0, H0 = 0 uses Ring."
     )
     status_var = tk.StringVar(value="Ready.")
     ttk.Label(main, textvariable=status_var).grid(row=3, column=0, sticky="w", pady=(10, 0))
@@ -3389,6 +3856,7 @@ def run_gui() -> None:
         num_points = int(points_var.get().strip())
         precision = int(precision_var.get().strip())
         zero_h0 = bool(zero_h0_var.get())
+        angle_search = angle_search_var.get().strip() or DEFAULT_ANGLE_SEARCH
         ring_mode = zero_h0 and abs(target_writhe) <= 1.0e-12
         trim_enabled = bool(trim_enabled_var.get()) and not ring_mode
         if ring_mode:
@@ -3418,6 +3886,7 @@ def run_gui() -> None:
             qualifying_views,
             minimum_final_radius,
             zero_h0,
+            angle_search=angle_search,
         )
         return (
             total_length,
@@ -3428,6 +3897,7 @@ def run_gui() -> None:
             qualifying_views,
             minimum_final_radius,
             zero_h0,
+            angle_search,
             num_points,
             precision,
             output,
@@ -3445,6 +3915,7 @@ def run_gui() -> None:
             qualifying_views,
             minimum_final_radius,
             zero_h0,
+            angle_search,
             num_points,
             precision,
             output,
@@ -3458,6 +3929,7 @@ def run_gui() -> None:
             qualifying_views,
             minimum_final_radius,
             zero_h0,
+            angle_search,
             num_points,
             precision,
         )
@@ -3465,6 +3937,9 @@ def run_gui() -> None:
             status_var.set(
                 "Generating and verifying the direct planar ring..."
                 if zero_h0 and abs(target_writhe) <= 1.0e-12
+                else "Accurate angle search: screening and serializing every candidate angle; "
+                "this takes minutes and the window waits until it finishes..."
+                if _accurate_search_applies(angle_search, objective, manual_angle, target_writhe)
                 else "Fitting Gauss writhe and screening generic projections..."
             )
             root.update_idletasks()
@@ -3479,6 +3954,7 @@ def run_gui() -> None:
                 qualifying_views_percent=qualifying_views,
                 minimum_final_radius=minimum_final_radius,
                 zero_h0=zero_h0,
+                angle_search=angle_search,
             )
             cached_key = key
         set_summary(generation_summary(cached_result))
