@@ -16,6 +16,8 @@ solids that tile the whole molmap surface EXACTLY, for multicolour printing
         --part 'bbB=/B & backbone' --part rest     # atom selections as parts (ChimeraX's)
     python3 multicolor_split.py MODEL.pdb --selection-syntax chimera \
         --part "bbA=:.A@P,OP1,OP2,O5',C5',C4',O4',C3',O3',C2',C1'" --part rest   # Chimera's
+    python3 multicolor_split.py MODEL.pdb --blobs --part "phosA=/A@P,OP1,OP2,O5',O3'" \
+        --part "phosB=/B@P,OP1,OP2,O5',O3'" --part rest   # blobs, each its own molmap
 
 This is Curve It's "Multicolor Split..." tool; it also runs on its own.  In the
 GUI every field, checkbox and group of buttons has a light-blue ? that opens an
@@ -55,6 +57,22 @@ METHOD  (the two-colour BR strand-split procedure, generalised to N parts)
    part takes, and every later ChimeraX job maps exactly those atoms, by index,
    checked against a fingerprint of their names.  All below is the same for
    chains and selections.
+
+   Blob parts (--blobs) replace steps 2-3's ownership fields for parts that
+   are separate blobs (phosphate groups): every part but the last is cut by
+   its OWN molmap M_i -- its atoms' density alone -- at the contour level,
+   clipped to the whole (an overlap goes to the earlier blob), and the last
+   part is the whole minus the blobs.  A blob's own surface lies a hair inside
+   the whole's where it faces out (the other atoms add a trace of density), so
+   cut exactly the last part would film over most of each blob (on the
+   switchback666 duplex at 3.7 A, 80 % of the phosphates' surface, one blob
+   sealed in -- mostly ~10 um at 1 mm per A, which slicers drop on walls, but
+   the files, previews and near-flat tops show it); so where the other atoms'
+   density M_o is below blob_skin * |grad T| and M_i > M_o, the blob field is T
+   itself and the blob reaches the surface (--blob-skin, default 0.2 A; 0 =
+   the exact molmap).  No K; the level scan stops at the nearest clean level
+   (the one a full scan would pick); dust anchors for the last part (and for
+   exact blobs) come from where each part's density dominates.
 
 1. Maps.  One molmap of all selected chains, T, at gridSpacing 0.5 A, and one
    molmap per part on the SAME grid (onGrid).  molmap Gaussians are additive,
@@ -169,7 +187,7 @@ import tempfile
 import time
 from pathlib import Path
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 TOOL_NAME = "Multicolor Split"
 
 try:
@@ -200,6 +218,8 @@ DEFAULT_DUST = 20.0
 DEFAULT_SPAN = 0.008
 DEFAULT_STEP = 0.002
 K_SCAN_FACTORS = (0.5, 0.75, 1.0, 1.25, 1.5)
+DEFAULT_BLOB_SKIN = 0.2   # A: with --blobs, a skin of the last part thinner than this goes to the blob
+MAX_BLOB_SKIN = 1.0
 
 SLIVER_VOXELS = 4.0  # a boolean body under this many voxels (0.5 A^3 at grid 0.5) is a fragment
 TOL_REL = 1e-5      # sum / overlap / void tolerance as a fraction of the whole (0.001 %)
@@ -340,6 +360,8 @@ def check_numbers(v):
             errs.append(f"{name} must be positive (got {x:g})")
         elif name == "dust" and x < 0:
             errs.append(f"dust must be >= 0 (got {x:g})")
+        elif name == "blob_skin" and not 0 <= x <= MAX_BLOB_SKIN:
+            errs.append(f"blob skin must be from 0 to {MAX_BLOB_SKIN:g} A (got {x:g})")
     s, st = v.get("span"), v.get("step")
     if s and st and math.isfinite(s) and math.isfinite(st) and 0 < s < st:
         errs.append(f"level scan step {st:g} is larger than the span {s:g}: only the guess "
@@ -1111,7 +1133,7 @@ def job(P, man):
         t = np.asarray(verts, dtype=np.float64)[tris]
         return float(np.einsum("ij,ij->i", t[:, 0], np.cross(t[:, 1], t[:, 2])).sum() / 6.0)
 
-    def export(v, level, path, label, anchors_out=None, keep_rows=None, keep_outer=False):
+    def export(v, level, path, label, anchors_out=None, keep_rows=None, keep_outer=False, save=True):
         # step 1 = every voxel.  Headless ChimeraX keeps full maps at step 1,
         # but force it AND verify it before anything is written.
         run(session, "volume #%s level %.10g style surface step 1 region all" % (v.id_string, level), log=False)
@@ -1163,16 +1185,67 @@ def job(P, man):
                 vi = pieces[big][0]
                 sel = vi[np.linspace(0, len(vi) - 1, num=min(512, len(vi))).astype(np.int64)]
                 anchors_out.append(vq(verts[sel]))
-        run(session, 'save "%s" models #%s' % (path, v.id_string), log=False)
+        if save:
+            run(session, 'save "%s" models #%s' % (path, v.id_string), log=False)
 
     files = {"ref": {}, "fields": {}}
     anchors = {L: [] for L in levels}
     N = len(M)
+    if P.get("blobs"):
+        # blob parts: part i (all but the last) is its OWN molmap at the level.
+        # Where the other atoms' density M_o covers the blob with a skin of the
+        # remainder thinner than blob_skin (estimated as M_o / |grad T|) and the
+        # blob's own density dominates, the field is T itself, so the blob
+        # reaches the surface there instead of lying a hair beneath it.
+        skin = float(P.get("blob_skin") or 0.0)
+        if skin > 0:
+            gz, gy, gx = np.gradient(Ta, *[float(s) for s in grid.step[::-1]])   # z, y, x order
+            reach = (np.float32(skin) * np.sqrt(gz * gz + gy * gy + gx * gx)).astype(np.float32)
+            del gz, gy, gx
+        files["fields"]["blob"] = {}
+        for i in range(N - 1):
+            label = "B%d" % (i + 1)
+            other = Ta - M[i]
+            F = M[i] if skin <= 0 else \
+                np.where((other < reach) & (M[i] > other), Ta, M[i]).astype(np.float32)
+            del other
+            for L in levels:
+                g = ArrayGridData(F, origin=grid.origin, step=grid.step,
+                                  name="blob_%s_L%.6f" % (label, L))
+                v = volume_from_grid_data(g, session, style="surface", show_dialog=False)
+                v.position = T.position
+                p = "%s/%s_L%.6f.stl" % (out, label, L)
+                export(v, L, p, label, anchors_out=anchors[L], keep_outer=True)
+                files["fields"]["blob"].setdefault("%.6f" % L, {})[label] = p
+                run(session, "close #%s" % v.id_string, log=False)
+            del F
+        # Dust spares a piece of the whole only through anchor vertices it
+        # shares with a part's field.  A blob field shares the whole's
+        # vertices only where the skin rule made it T, and the last part has
+        # no field at all, so these get an anchor-only contour of a field that
+        # is T wherever the part's density beats every other part's -- what
+        # the S_i field of the ownership mode is there.
+        for i in [N - 1] + (list(range(N - 1)) if skin <= 0 else []):
+            rival = np.maximum.reduce([M[j] for j in range(N) if j != i])
+            mine = M[i] >= rival
+            del rival
+            for L in levels:
+                A = np.where(Ta >= np.float32(L), np.where(mine, Ta, np.float32(0)), Ta)
+                g = ArrayGridData(A.astype(np.float32), origin=grid.origin, step=grid.step,
+                                  name="anchor_P%d_L%.6f" % (i + 1, L))
+                v = volume_from_grid_data(g, session, style="surface", show_dialog=False)
+                v.position = T.position
+                export(v, L, None, "P%d" % (i + 1), anchors_out=anchors[L], keep_outer=True,
+                       save=False)
+                run(session, "close #%s" % v.id_string, log=False)
+                del A
+            del mine
+        say("blob parts: %d field(s) x %d level(s) exported" % (N - 1, len(levels)))
     # (label, own part, rivals): S_i = part i against all others (the part's
     # own field-built solid), H_k = part k against LATER parts (peeling, k>=2)
     specs = [("S%d" % (i + 1), i, [j for j in range(N) if j != i]) for i in range(N)]
     specs += [("H%d" % (k + 1), k, list(range(k + 1, N))) for k in range(1, N - 1)]
-    for K in P["ks"]:
+    for K in ([] if P.get("blobs") else P["ks"]):
         kk = "%.12g" % K
         files["fields"][kk] = {}
         for label, own, rivals in specs:
@@ -1555,6 +1628,10 @@ def _pinch_edges(M):
     return mesh_stats(*weld(*arrays(M))[:2])["pinch_edges"]
 
 
+FINISH_KEYS = ("bodies", "cavities", "slivers", "sliver_volume", "received", "received_volume",
+               "dropped_volume")
+
+
 def finish_parts(raw, sliver):
     """Clean the peeled parts.  Bodies below `sliver` (SLIVER_VOXELS voxels,
     0.5 A^3 at gridSpacing 0.5) are boolean fragments (they form where three parts meet):
@@ -1626,6 +1703,18 @@ def tri_areas(V, F):
 
 
 # ============================================================== construction
+def blob_names(N):
+    """'P1 is its own molmap surface, and P2 is' / 'P1-P3 are each ... P4 is'."""
+    return ("P1 is its own molmap surface, and P2 is" if N == 2 else
+            f"P1-P{N - 1} are each their own molmap surface, and P{N} is")
+
+
+def field_key(K):
+    """The key of one K's fields in a ChimeraX job's files; blob parts have
+    no K."""
+    return "blob" if K is None else f"{K:.12g}"
+
+
 def peel(ref, fields):
     """P_k = R_(k-1) & F_k, R_k = R_(k-1) - F_k; the last part is the remainder."""
     R, parts = ref, []
@@ -1714,7 +1803,8 @@ def evaluate(files, L, K, N, strict, expected_whole, clusters, sliver, construct
         except SplitError as e:
             whole_ok = False
             rec["reasons"].append(str(e))
-    flds = files["fields"][f"{K:.12g}"][Ls]
+    flds = files["fields"][field_key(K)][Ls]
+    blobs = "B1" in flds                    # blob parts: B_i, no S_N, no H_k
     meshes = {}
     fields_ok = True
     for label in sorted(flds, key=lambda s: (s[0] != "S", int(s[1:]))):
@@ -1729,25 +1819,26 @@ def evaluate(files, L, K, N, strict, expected_whole, clusters, sliver, construct
     # inside the whole, at most one piece per cluster of the part's own atoms
     if strict and ref is not None:
         for i in range(1, N + 1):
-            s = rec["fields"][f"S{i}"]
-            if not s["clean"] or not s["faces"]:
+            lab = f"B{i}" if blobs else f"S{i}"
+            s = rec["fields"].get(lab)          # (the last blob-mode part has no field)
+            if s is None or not s["clean"] or not s["faces"]:
                 continue
             try:
-                pcs = len(outer_bodies(to_manifold(*meshes[f"S{i}"], f"S{i}") ^ ref))
+                pcs = len(outer_bodies(to_manifold(*meshes[lab], lab) ^ ref))
             except SplitError as e:
                 fields_ok = False
-                rec["reasons"].append(f"S{i}: {e}")
+                rec["reasons"].append(f"{lab}: {e}")
                 continue
             s["pieces_in_whole"], s["expected_bodies"] = pcs, clusters[i - 1]
             if pcs < 1 or pcs > clusters[i - 1]:
                 fields_ok = False
-                rec["reasons"].append(f"S{i}: {pcs}pc (at most {clusters[i - 1]})")
+                rec["reasons"].append(f"{lab}: {pcs}pc (at most {clusters[i - 1]})")
     rec["fields_ok"] = whole_ok and fields_ok
     if not construct or ref is None or (not rec["fields_ok"] and not force):
         return rec
     try:
-        fields = [to_manifold(*meshes["S1"], "S1")] + \
-                 [to_manifold(*meshes[f"H{k}"], f"H{k}") for k in range(2, N)]
+        order = [f"B{k}" for k in range(1, N)] if blobs else ["S1"] + [f"H{k}" for k in range(2, N)]
+        fields = [to_manifold(*meshes[lab], lab) for lab in order]
         parts, pinfo = finish_parts(peel(ref, fields), sliver)
     except SplitError as e:
         rec["reasons"].append(str(e))
@@ -1787,19 +1878,32 @@ def evaluate(files, L, K, N, strict, expected_whole, clusters, sliver, construct
     if rec["void"] > TOL_REL * Vw:
         rec["reasons"].append(f"void {rec['void']:.3g}")
     rec["accepted"] = not rec["reasons"]
+    rec["_built"] = (ref, (ref_V, ref_F, ref_deg), parts,
+                     [{k: v for k, v in p.items() if k in FINISH_KEYS} for p in pinfo])
     return rec
 
 
-def build_final(files, L, K, N, sliver):
+def build_final(files, L, K, N, sliver, built=None):
     """Rebuild the chosen candidate, keeping the manifold objects.  S (each
     part's own field solid inside the whole) feeds only the report's boundary
-    statistics: if one is not a valid manifold S is returned as None."""
+    statistics: if one is not a valid manifold S is returned as None.
+    built: what evaluate() made for this candidate (the same calls on the
+    same files), reused instead of peeling again."""
     Ls = f"{L:.6f}"
-    ref_V, ref_F, ref_deg = read_stl_cached(files["ref"][Ls])
-    flds = files["fields"][f"{K:.12g}"][Ls]
-    ref = to_manifold(ref_V, ref_F, "whole")
+    flds = files["fields"][field_key(K)][Ls]
+    if built is not None:
+        ref, ref_mesh, parts, infos = built
+    else:
+        ref_mesh = read_stl_cached(files["ref"][Ls])
+        ref = to_manifold(ref_mesh[0], ref_mesh[1], "whole")
+    if "B1" in flds:                        # blob parts: no own-field statistics
+        if built is None:
+            fields = [to_manifold(*read_stl(flds[f"B{k}"])[:2], f"B{k}") for k in range(1, N)]
+            parts, infos = finish_parts(peel(ref, fields), sliver)
+        return ref, ref_mesh, None, parts, infos
     S1 = to_manifold(*read_stl(flds["S1"])[:2], "S1")
-    fields = [S1] + [to_manifold(*read_stl(flds[f"H{k}"])[:2], f"H{k}") for k in range(2, N)]
+    if built is None:
+        fields = [S1] + [to_manifold(*read_stl(flds[f"H{k}"])[:2], f"H{k}") for k in range(2, N)]
     S = [S1 ^ ref]
     for i in range(2, N + 1):
         try:
@@ -1807,8 +1911,9 @@ def build_final(files, L, K, N, sliver):
         except SplitError:
             S = None
             break
-    parts, infos = finish_parts(peel(ref, fields), sliver)
-    return ref, (ref_V, ref_F, ref_deg), S, parts, infos
+    if built is None:
+        parts, infos = finish_parts(peel(ref, fields), sliver)
+    return ref, ref_mesh, S, parts, infos
 
 
 # ============================================================ outputs & report
@@ -1977,6 +2082,21 @@ def pct(x):
 
 
 # ================================================================== pipeline
+def nearest_first(levels, guess, check):
+    """Blob mode's level scan: check(L) -> record for the levels nearest the
+    guess first, stopping at the first distance where one is accepted, since
+    choose() takes the accepted level nearest the guess.  Returns (records in
+    level order, how many levels were left unchecked)."""
+    order = sorted(levels, key=lambda x: (round(abs(x - guess), 9), x))
+    recs = []
+    for n_done, L in enumerate(order):
+        if any(r["accepted"] for r in recs) and \
+                round(abs(L - guess), 9) > round(abs(recs[-1]["level"] - guess), 9):
+            return sorted(recs, key=lambda r: r["level"]), len(order) - n_done
+        recs.append(check(L))
+    return sorted(recs, key=lambda r: r["level"]), 0
+
+
 def choose(records, guess):
     ok = [r for r in records if r.get("accepted")]
     if not ok:
@@ -1985,19 +2105,20 @@ def choose(records, guess):
                                      r.get("pinch_total", 0), r["level"]))[0]
 
 
-def scan_table(records, N, expected_whole):
+def scan_table(records, N, expected_whole, blobs=False):
     if not records:
         return "  (no candidate levels)"
-    heads = ["level", "whole"] + [f"S{i}" for i in range(1, N + 1)] + \
-            [f"H{k}" for k in range(2, N)] + ["parts", "pinch", "sum", "verdict"]
+    own = [f"B{i}" for i in range(1, N)] if blobs else [f"S{i}" for i in range(1, N + 1)]
+    peeling = [] if blobs else [f"H{k}" for k in range(2, N)]
+    heads = ["level", "whole"] + own + peeling + ["parts", "pinch", "sum", "verdict"]
     rows = []
     for r in records:
         row = [f"{r['level']:.4f}", fmt_mesh(r["whole"], expected_whole)]
-        for i in range(1, N + 1):
-            s = r["fields"].get(f"S{i}")
+        for lab in own:
+            s = r["fields"].get(lab)
             row.append(fmt_mesh(s, s.get("expected_bodies")) if s else "-")
-        for k in range(2, N):
-            s = r["fields"].get(f"H{k}")
+        for lab in peeling:
+            s = r["fields"].get(lab)
             row.append(fmt_mesh(s) if s else "-")
         if "parts" in r:
             row += ["/".join(str(p["bodies"]) for p in r["parts"]), str(r["pinch_total"]),
@@ -2023,7 +2144,7 @@ def no_level_hint(records, selections=False):
     if "whole:" in reasons:
         tips.append("--level-guess near a clean row, or a finer --level-step 0.001 (the whole "
                     "must have one piece per separate molecule)")
-    if re.search(r"S\d+: \d+pc", reasons):
+    if re.search(r"[SB]\d+: \d+pc", reasons):
         tips.append("--allow-multi-shell if a part is genuinely in several pieces")
     tips.append("a different part order (the order of the --part values)" if selections
                 else "a different part order (--parts)")
@@ -2172,7 +2293,15 @@ def pipeline(a):
     doc_point = abs(res - DOC_RESOLUTION) < 1e-9 and abs(grid - DOC_GRID) < 1e-9
     k0 = DOC_K * (res / DOC_RESOLUTION) * (DOC_GRID / grid)
     k_list = parse_k_list(a.k_list) if a.k_list else None
-    if a.k is not None:
+    blobs = bool(getattr(a, "blobs", False))
+    if getattr(a, "blob_skin", None) is not None and not blobs:
+        notes.append("--blob-skin is used only with --blobs")
+    a.blob_skin = DEFAULT_BLOB_SKIN if getattr(a, "blob_skin", None) is None else float(a.blob_skin)
+    if blobs:                               # blob parts are their own molmaps: no K
+        k_mode, ks = "none", []
+        if a.k is not None or a.k_scan or k_list:
+            notes.append("--k, --k-scan and --k-list are not used with --blobs: blob parts need no K")
+    elif a.k is not None:
         k_mode, ks = "given", [float(a.k)]
     elif a.k_scan or k_list or not doc_point:
         k_mode, ks = "scanned", (k_list or sorted({round(k0 * f, 2) for f in K_SCAN_FACTORS}))
@@ -2246,7 +2375,8 @@ def pipeline(a):
     base = dict(pdb=str(pdb), parts=parts, resolution=res, grid=grid, dust=dust,
                 exclude_solvent=exclude_solvent, exclude_hydrogens=bool(a.no_hydrogens),
                 level_guess=a.level_guess, span=float(a.span), step=float(a.step),
-                levels=None, ks=None, export_ref=True, guess_only=False)
+                levels=None, ks=None, export_ref=True, guess_only=False,
+                blobs=blobs, blob_skin=a.blob_skin)
     work = Path(tempfile.mkdtemp(prefix="multicolor_"))
     state = dict(retired=False, stamp=time.strftime("%Y%m%d-%H%M%S"), stage=None)
     ctx = dict(pdb=pdb, given=given, info=info, parts=parts, N=N, tag=tag, out=out, exe=exe,
@@ -2254,7 +2384,7 @@ def pipeline(a):
                k_mode=k_mode, ks=ks, k0=k0, notes=notes, t_start=t_start, state=state,
                n_mol=n_mol, mol=mol, clusters=clusters, closest=closest, sliver=sliver,
                dusted_chains=dusted_chains, palette=palette, pal=pal,
-               selections=selections, chimera_exe=chimera_exe)
+               selections=selections, chimera_exe=chimera_exe, blobs=blobs)
     try:
         return _pipeline(a, ctx)
     finally:
@@ -2362,7 +2492,14 @@ def _pipeline(a, c):
     cx_version = None
 
     # ---- phase 1 (only when K has to be found): fields at the guess level only
-    if k_mode == "scanned":
+    blobs = c.get("blobs")
+    if blobs:
+        K = None
+        log(f"\n[1] blob parts: {blob_names(N)} the whole minus "
+            f"{'it' if N == 2 else 'them'} -- no K" + (f"; a skin of P{N} thinner than "
+                                                        f"{a.blob_skin:g} A over a blob goes to the "
+                                                        f"blob" if a.blob_skin > 0 else ""))
+    elif k_mode == "scanned":
         log(f"\n[1] K scan at the level guess: K = {', '.join(f'{k:g}' for k in ks)}"
             f"   (K0 = {k0:.3g}, the per-voxel equivalent of K=16 @ res 4 / grid 0.5)")
         lv = [a.level] if a.level is not None else None
@@ -2396,6 +2533,7 @@ def _pipeline(a, c):
     else:
         K = ks[0]
         log(f"\n[1] K = {K:g} ({'given' if k_mode == 'given' else 'documented value for res 4 / grid 0.5'})")
+    k_text = "blob parts" if K is None else f"K = {K:g}"
 
     # ---- phase 2: level scan (or the pinned level)
     pinned = a.level is not None
@@ -2405,7 +2543,7 @@ def _pipeline(a, c):
         guess = a.level
     else:
         g = f"{guess:.4f}" if guess is not None else "molmap auto level"
-        log(f"\n[2] level scan: {g} +/- {a.span:g} in {a.step:g} steps, K = {K:g}")
+        log(f"\n[2] level scan: {g} +/- {a.span:g} in {a.step:g} steps, {k_text}")
         man = run_chimerax(exe, dict(base, level_guess=guess, ks=[K]), work, "level")
         guess = man["guess"]
     cx_version = man.get("chimerax_version") or cx_version
@@ -2422,16 +2560,30 @@ def _pipeline(a, c):
             log(f"    note: at {float(at):.4f} dust would have removed a piece of the whole that "
                 f"carries a part -- kept")
 
+    held = {}                               # the best candidate's built objects so far
+
     def scan(levels):
         counts = whole_counts(files, levels)
         n_whole, basis = expected_pieces(counts, guess, n_mol, pinned)
-        recs = []
-        for L in levels:
+        def check(L):
             r = evaluate(files, L, K, N, strict, n_whole, clusters, sliver, force=pinned)
-            recs.append(r)
+            built = r.pop("_built", None)
+            if built is not None and (r["accepted"] or pinned):
+                rank = (round(abs(L - guess), 9), r.get("pinch_total", 0), L)   # = choose()
+                if "rank" not in held or rank < held["rank"]:
+                    held.update(rank=rank, level=L, built=built)
             log(f"    level {L:.4f}: " + ("ACCEPT" if r["accepted"] else "reject")
                 + ("" if r["accepted"] else "  (" + "; ".join(r["reasons"]) + ")")
                 + (f"  [{r['pinch_total']} pinch edges after welding]" if "parts" in r else ""))
+            return r
+
+        if blobs:                           # nearest the guess first: the nearest clean level wins
+            recs, skipped = nearest_first(levels, guess, check)
+            if skipped:
+                log(f"    ({skipped} level(s) further from the guess not checked: the nearest clean "
+                    f"level wins)")
+        else:
+            recs = [check(L) for L in levels]
         return recs, n_whole, basis
 
     records, n_whole, basis = scan(levels)
@@ -2448,11 +2600,12 @@ def _pipeline(a, c):
                 f"({len(more)} more level(s))")
             man2 = run_chimerax(exe, dict(base, levels=more, ks=[K]), work, "widen")
             files["ref"].update(man2["files"]["ref"])
-            files["fields"][f"{K:.12g}"].update(man2["files"]["fields"][f"{K:.12g}"])
+            files["fields"][field_key(K)].update(man2["files"]["fields"][field_key(K)])
             vox.update(man2["voxel_counts"])
             protected += man2.get("dust_protected", [])
             levels = sorted(levels + list(man2["levels"]))
-            log("    re-checking every level against the wider scan:")
+            log("    re-checking the levels against the wider scan, nearest the guess first:"
+                if blobs else "    re-checking every level against the wider scan:")
             records, n_whole, basis = scan(levels)
             best = choose(records, guess)
     pinned_fail = False
@@ -2471,7 +2624,7 @@ def _pipeline(a, c):
                                  f"({'; '.join(r['reasons'])}).  Drop --level to let the tool "
                                  f"scan for a clean level.")
         else:
-            log("\n" + scan_table(records, N, n_whole))
+            log("\n" + scan_table(records, N, n_whole, blobs=bool(blobs)))
             raise SplitError(no_level_hint(records, selections=bool(c.get("selections"))))
     L = best["level"]
     log(f"\n    -> level {L:.4f}" + ("  (pinned)" if pinned else
@@ -2480,7 +2633,9 @@ def _pipeline(a, c):
     # ---- phase 3: build, validate and write everything to a staging folder;
     # it replaces the previous set only once the report is complete
     log("\n[3] building the parts at the chosen level")
-    ref, (refV, refF, ref_deg), S, parts_m, pinfo = build_final(files, L, K, N, sliver)
+    ref, (refV, refF, ref_deg), S, parts_m, pinfo = build_final(
+        files, L, K, N, sliver, built=held.get("built") if held.get("level") == L else None)
+    held.clear()
     Vw = ref.volume()
     pieces = whole_solids(ref)
     sels = c.get("selections")
@@ -2531,13 +2686,16 @@ def _pipeline(a, c):
         S_ov = max((max(0.0, (S[i] ^ S[j]).volume()) for i in range(N) for j in range(i + 1, N)),
                    default=0.0)
         gap_vol = max(0.0, Vw - S_union.volume())
-    iface = []
+    iface, shown = [], []
     for V, F in part_arrays:
         if len(F) == 0:
             iface.append(0.0)
+            shown.append(0.0)
             continue
-        on = surface_is_on(V, refV)
-        iface.append(float(tri_areas(V, F)[~(on[F].all(axis=1))].sum()))
+        on = surface_is_on(V, refV)[F].all(axis=1)
+        areas = tri_areas(V, F)
+        iface.append(float(areas[~on].sum()))
+        shown.append(float(areas[on].sum()))
     iface_total = sum(iface) / 2.0
     gap_t = gap_vol / iface_total if (S is not None and iface_total > 1.0) else 0.0
 
@@ -2560,7 +2718,8 @@ def _pipeline(a, c):
     if not a.no_preview:
         try:
             render_preview(ex_meshes, labels, colors, stage / preview_png,
-                           f"{tag}  --  molmap {res:g} A, level {L:.4f}, K {K:g}")
+                           f"{tag}  --  molmap {res:g} A, level {L:.4f}, "
+                           + ("blob parts" if K is None else f"K {K:g}"))
         except Exception as e:
             log(f"    (preview PNG skipped: {e})")
         try:
@@ -2625,7 +2784,7 @@ def _pipeline(a, c):
               f"{n_mol} separate molecule(s) but the whole is {len(pieces)} piece(s) at this level "
               f"-- " + ("molecules are joined by the molmap" if len(pieces) < n_mol
                         else "a molecule is split by the contour"), soft=True)
-    if vc and sum(vc):
+    if vc and sum(vc) and not blobs:
         for i in range(N):
             share, dens = 100 * pvol[i] / Vw, 100 * vc[i] / sum(vc)
             # (a part that owns molecules dust removes cannot be compared: its
@@ -2659,8 +2818,9 @@ def _pipeline(a, c):
     else:
         how = ["--parts"] + [",".join(p) for p in parts]
     repro = self_command() + [str(c["given"])] + how + \
-            [f"--resolution={res:.12g}", f"--grid={grid:.12g}", f"--k={K:.12g}",
-             f"--level={L:.12g}", f"--dust={dust:.12g}", f"--out={out}", f"--tag={tag}",
+            [f"--resolution={res:.12g}", f"--grid={grid:.12g}"] + \
+            (["--blobs", f"--blob-skin={a.blob_skin:.12g}"] if blobs else [f"--k={K:.12g}"]) + \
+            [f"--level={L:.12g}", f"--dust={dust:.12g}", f"--out={out}", f"--tag={tag}",
              f"--chimerax={exe}"]
     if a.scale != 1.0:
         repro.append(f"--scale={a.scale:.12g}")
@@ -2692,8 +2852,13 @@ def _pipeline(a, c):
         P_(f"parts       " + "   ".join(f"P{i} = {'+'.join(p)} ({man['n_atoms_parts'][i - 1]} atoms, "
                                         f"{pal[(i - 1) % len(pal)][0]})"
                                         for i, p in enumerate(parts, 1)))
-    P_(f"            P1 is peeled first; each boundary's field-built face belongs to "
-       f"the earlier part")
+    if blobs:
+        P_(f"            blob parts: {blob_names(N)} the whole minus {'it' if N == 2 else 'them'}; "
+           f"a blob is its atoms' density alone at the contour level, clipped to the whole and "
+           f"to the blobs before it")
+    else:
+        P_(f"            P1 is peeled first; each boundary's field-built face belongs to "
+           f"the earlier part")
     if n_mol:
         P_(f"molecules   {n_mol} (heavy atoms within {CONTACT_CUTOFF:g} A form one)"
            + (f"; closest approach between separate molecules {closest:.2f} A" if closest else "")
@@ -2705,8 +2870,14 @@ def _pipeline(a, c):
     P_(f"  molmap resolution   {res:g} A")
     P_(f"  gridSpacing         {grid:g} A      (grid {' x '.join(map(str, man['grid']['size']))}; "
        f"surfaces at voxel step {steps} = every grid point, verified)")
-    P_(f"  K (penalty slope)   {K:g}          ({k_mode}"
-       + (f"; K0 = {k0:.3g}" if k_mode == 'scanned' else "") + ")")
+    if blobs:
+        P_("  blob parts          no K; " + (f"a skin of P{N} thinner than {a.blob_skin:g} A over a "
+                                             f"blob goes to the blob" if a.blob_skin > 0 else
+                                             "blob skin 0: each blob is exactly its own molmap "
+                                             "surface"))
+    else:
+        P_(f"  K (penalty slope)   {K:g}          ({k_mode}"
+           + (f"; K0 = {k0:.3g}" if k_mode == 'scanned' else "") + ")")
     P_(f"  contour level       {L:.6g}      ({'pinned' if pinned else 'scanned'}; "
        f"molmap auto {auto_level:.5f}, guess {guess:.4f})")
     P_(f"  whole must be       {n_whole} piece(s)  ({basis})")
@@ -2731,11 +2902,13 @@ def _pipeline(a, c):
             P_(f"  K {r['k']:<7g} " + ("clean" if not r["field_reasons"]
                                        else "; ".join(r["field_reasons"])))
     P_("")
-    P_("LEVEL SCAN  (S_i = part i's own field-built solid, H_k = peeling field; cells: ok / "
-       "Nopen / NNM = non-manifold edges / Npc = unexpected number of pieces)")
-    P_(scan_table(records, N, n_whole))
+    P_("LEVEL SCAN  (" + ("B_i = part i's blob, its own molmap" if blobs else
+                          "S_i = part i's own field-built solid, H_k = peeling field")
+       + "; cells: ok / Nopen / NNM = non-manifold edges / Npc = unexpected number of pieces)")
+    P_(scan_table(records, N, n_whole, blobs=bool(blobs)))
     P_("")
-    P_(f"VALIDATION at level {L:.6g}, K {K:g}   (volumes in A^3 = mm^3 at 1:1)")
+    P_(f"VALIDATION at level {L:.6g}, " + ("blob parts" if blobs else f"K {K:g}")
+       + "   (volumes in A^3 = mm^3 at 1:1)")
     P_(f"  whole molmap            {Vw:12,.1f}" + (f"   ({len(pieces)} separate pieces)"
                                                     if len(pieces) > 1 else ""))
     for i, (P, lab) in enumerate(zip(parts_m, labels), 1):
@@ -2757,7 +2930,12 @@ def _pipeline(a, c):
         P_("  n/a -- the parts do not touch (separate pieces)")
     else:
         P_(f"  interface area          {iface_total:,.1f} A^2")
-        if S is None:
+        if blobs:
+            P_("  on the whole's surface  " + "   ".join(f"P{i} {x:,.1f} A^2" for i, x in
+                                                        enumerate(shown, 1)))
+            P_(f"  -> each blob's face inside the model is its own molmap surface; P{N} fills "
+               f"around it")
+        elif S is None:
             P_("  field-built statistics  n/a (a part's own field solid is not a valid manifold)")
         else:
             P_(f"  field-built solids      sum {pct((S_sum - Vw) / Vw)} vs whole, max pairwise "
@@ -2815,7 +2993,8 @@ def _pipeline(a, c):
                overlap=getattr(a, "overlap", "first") if sels else None,
                chimera=c.get("chimera_exe"), chimera_version=c.get("chimera_version"),
                colors={l: pal[i % len(pal)][0] for i, l in enumerate(labels)},
-               resolution=res, grid=grid, k=K, k_mode=k_mode, level=L,
+               resolution=res, grid=grid, k=K, k_mode=k_mode, level=L, blobs=bool(blobs),
+               blob_skin=float(a.blob_skin) if blobs else None, part_surface_shown=shown,
                level_mode="pinned" if pinned else "scanned", auto_level=auto_level,
                guess=guess, dust=dust, dust_protected=protected, scale=a.scale,
                lay_flat=bool(a.lay_flat), transform=A.tolist(), whole_volume=Vw,
@@ -2969,7 +3148,9 @@ HELP = {
         "last part is the exact remainder. At each colour boundary the "
         "field-built face belongs to the earlier part, so the boundary sits "
         "about 0.1–0.2 Å into the earlier part; reorder the parts to choose "
-        "which side takes it.\n\n"
+        "which side takes it. With Blob parts, every part but the last is "
+        "instead its own molmap surface and the last part is the remainder, so "
+        "the order decides which parts are blobs.\n\n"
         "Files are named <tag>_p1_chainA.stl, and <tag>_p1_chainsA+B.stl for a "
         "joined part.\n\n"
         "Command line: --parts A C (quote a |, e.g. --parts 'A+B|C', or the "
@@ -3369,7 +3550,7 @@ HELP = {
         "K0 wins (the lower one on a tie), and if none is clean, K0 itself is "
         "used and the level scan decides.\n\n"
         "A number typed here is used as it is, with no K scan, even when K "
-        "candidates are given or Force a K scan is ticked. "
+        "candidates are given or Force a K scan is ticked. Blob parts use no K. "
         "K moves the colour boundary only by hundredths of a mm.\n\n"
         "Command line: --k 16.",
         "blank, 4 Å / 0.5 Å     K = 16 (documented)\n"
@@ -3408,7 +3589,8 @@ HELP = {
         "A pinned level is never widened. The whole's expected piece count is "
         "then what the whole has at that level; a mismatch with the molecule "
         "count is only a warning. A K scan, if one runs, uses the pinned level. "
-        "Every report's REPRODUCE line pins the level and K that run used.\n\n"
+        "Every report's REPRODUCE line pins the level and K that run used "
+        "(with Blob parts, the level, --blobs and its skin).\n\n"
         "Command line: --level 0.112.",
         "0.112, from the log:\n"
         "    level 0.1120: ACCEPT  [2 pinch edges after welding]",
@@ -3530,10 +3712,73 @@ HELP = {
         "piece-count rule and every other check still apply.\n\n"
         "Use it also when a part really is in several pieces and the scan "
         "rejects every level for the piece count of that part's field (Npc "
-        "under S1, S2 ...); the run suggests it then. With it, a part cut "
+        "under S1, S2 ..., or B1, B2 ... with Blob parts); the run suggests it then. With it, a part cut "
         "into islands by its neighbours is no longer caught.\n\n"
         "Command line: --allow-multi-shell.",
         None,
+    ),
+    "blobs": (
+        "Blob parts",
+        "Another way to cut the parts, for parts that are separate blobs, such as "
+        "each chain's phosphate groups. Ticked, every part but the last is its "
+        "own molmap surface: the surface its atoms' density alone has at the "
+        "contour level, the molmap ChimeraX draws for those atoms on their own, "
+        "clipped to the whole (where two blobs overlap, the earlier part keeps the "
+        "overlap). The last part is the whole minus the blobs, so the blobs sit in "
+        "sockets in it, and the parts still tile the whole exactly.\n\n"
+        "Off (the default), each part is the territory where its own density beats "
+        "the others' (ownership fields with the K penalty), which cuts a part "
+        "midway between its atoms and the neighbouring ones. A blob's face inside "
+        "the model is instead its own rounded molmap surface, so it reaches as far "
+        "into its neighbours as its own density does. On the switchback666 duplex "
+        "at 3.7 Å, chain A's phosphate groups (P, OP1, OP2, O5′, O3′) make "
+        "1,474 Å³ as blobs against 1,274 Å³ as ownership territory, and show "
+        "954 Å² of surface against 1,042 Å².\n\n"
+        "Put the part that should fill around the blobs last (rest, for "
+        "instance): the order decides which parts are blobs. No K is used, so "
+        "there is no K scan, and the level scan checks the levels nearest the "
+        "guess first and stops at the nearest clean one, which is the level a "
+        "full scan would pick; on a 210 bp supercoil this halved the run time. "
+        "Each level it checks gets the same checks, except that the last part "
+        "has no field of its own, and the report leaves out the density-share "
+        "warning, which a blob is not meant to meet. Blob skin sets what happens "
+        "where a blob would lie a hair beneath the surface.\n\n"
+        "Command line: --blobs.",
+        "Parts by atom selections, Blob parts ticked:\n"
+        "  `phosA = /A@P,OP1,OP2,OP3,O5',O3'`\n"
+        "  `phosC = /C@P,OP1,OP2,OP3,O5',O3'`\n"
+        "  `rest`\n"
+        "P1, P2 = each phosphate group's own molmap blob\n"
+        "P3 = the whole minus the blobs",
+    ),
+    "blob_skin": (
+        "Blob skin (Å)",
+        "Used only with Blob parts. Where a blob faces outwards, its own molmap "
+        "surface lies a hair inside the whole's, because the neighbouring atoms "
+        "add a trace of density there. Cut exactly, the last part would wrap each "
+        "blob in a film, mostly under 0.01 Å thick and up to a few tenths of an "
+        "Å near the blob's edge.\n\n"
+        "Printed together at 1 mm per Å, most of that film is about 10 µm: far "
+        "below what a slicer prints, so on the blob's sides the blob's colour "
+        "shows anyway. What the film does change is the files. The last part's "
+        "STL covers the blobs (and can seal one in completely), its mesh roughly "
+        "doubles, the preview PNG and GLB and the slicer's view before slicing "
+        "show the blobs in the last part's colour, and the thicker band near a "
+        "blob's edge, a near-flat blob top, or a large Scale can print as strips "
+        "or patches of the last part's colour.\n\n"
+        "Where the last part's skin over a blob would be thinner than this and "
+        "the blob's own density dominates, the blob takes the skin, so the files "
+        "show what prints. The skin is estimated from the maps: the other atoms' "
+        "density over the slope of the whole map. Blank means 0.2 Å; 0 keeps "
+        "every blob exactly its own molmap surface, films included. Above about "
+        "0.3 Å it changes little, since only places where the blob's own density "
+        "dominates are ever taken. Allowed 0 to 1.\n\n"
+        "Command line: --blob-skin 0.2.",
+        "switchback666 at 3.7 Å, chain A's phosphate blobs:\n"
+        "`0.2`   1,474 Å³; 954 Å² on the whole's surface\n"
+        "`0`     1,437 Å³; 208 Å² on the surface: the rest's\n"
+        "        film covers the rest of each blob, and seals\n"
+        "        one blob in",
     ),
     "no_widen": (
         "Do not widen a failed level scan",
@@ -3588,7 +3833,8 @@ HELP = {
         "each level and each part field at each K and level, in scan_kscan/, "
         "scan_level/ and scan_widen/ inside <tag>_work/ (or "
         "<tag>_work_failed/). S1, S2 ... are the parts' own fields and H2 ... "
-        "the peeling fields of 3 or more parts. Off (the default), only the "
+        "the peeling fields of 3 or more parts; with Blob parts, B1, B2 ... "
+        "are the blobs (B1_L0.112000.stl, no K and no K scan). Off (the default), only the "
         "ChimeraX jobs, parameters and logs are kept.\n\n"
         "Useful to look at why a level was rejected; each file is a full-size "
         "STL, so the folder grows with every level and K tried.\n\n"
@@ -3707,6 +3953,7 @@ GUI_NUMBERS = [
     ("span", "Level scan span (±)", f"{DEFAULT_SPAN:g}", "contour units"),
     ("step", "Level scan step", f"{DEFAULT_STEP:g}", "contour increment -- NOT the voxel step"),
     ("scale", "Scale (mm per Å)", "1", "1 = 1 Å → 1 mm"),
+    ("blob_skin", "Blob skin (Å)", "", f"blank = {DEFAULT_BLOB_SKIN:g}; Blob parts: thinner skins go to the blob"),
 ]
 # The CLI flag of a GUI_NUMBERS key when listed here; otherwise it is
 # "--" + key.replace("_", "-").
@@ -3717,6 +3964,7 @@ GUI_OPTIONS = [
     ("lay_flat", "Lay flat for printing (fewer layers → less purge)", False),
     ("k_scan", "Force a K scan", False),
     ("allow_multi_shell", "Allow parts with several shells", False),
+    ("blobs", "Blob parts (each but the last is its own molmap)", False),
     ("no_widen", "Do not widen a failed level scan", False),
     ("keep_solvent", "Keep solvent (waters)", False),
     ("no_hydrogens", "Exclude hydrogens", False),
@@ -4295,7 +4543,7 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
                 if g[key]:
                     args.append(f"{flag}={g[key]}")
             for key, _, _, _ in GUI_NUMBERS:
-                if g[key] != "":
+                if g[key] != "" and (key != "blob_skin" or g["blobs"]):
                     args.append(f"{GUI_FLAG_NAMES.get(key, '--' + key.replace('_', '-'))}={g[key]}")
             for key, _, _ in GUI_OPTIONS:
                 if g[key]:
@@ -4638,6 +4886,18 @@ def build_parser():
     g.add_argument("--no-widen", action="store_true", help="do not widen a failed scan")
     g.add_argument("--allow-multi-shell", action="store_true",
                    help="accept parts made of several separate pieces")
+    g.add_argument("--blobs", action="store_true",
+                   help="blob parts: every part but the last is its own molmap surface at the "
+                        "contour level (its atoms' density alone), clipped to the whole, and the "
+                        "last part is the whole minus them -- for parts that are separate blobs, "
+                        "such as phosphate groups.  No K is used (--k, --k-scan and --k-list are "
+                        "ignored)")
+    g.add_argument("--blob-skin", type=float, default=None,
+                   help="with --blobs: where the last part would cover a blob with a skin thinner "
+                        "than this (A) and the blob's own density dominates, the blob takes the "
+                        "skin, so it reaches the surface instead of lying a hair beneath it; 0 "
+                        "keeps each blob exactly its own molmap surface (0 to 1; default "
+                        f"{DEFAULT_BLOB_SKIN:g})")
     g = ap.add_argument_group("output")
     g.add_argument("-o", "--out", default=None,
                    help="output folder (default ./<tag>, i.e. ./<stem>_molmap<res>_split)")
@@ -4708,7 +4968,7 @@ def main(argv=None):
         if not a.parts:
             a.parts = None
     nums = {k: getattr(a, k) for k in ("resolution", "grid", "dust", "k", "level",
-                                       "level_guess", "span", "step", "scale")}
+                                       "level_guess", "span", "step", "scale", "blob_skin")}
     errs = check_numbers(nums)
     if a.k_list:
         try:
@@ -4723,7 +4983,8 @@ def main(argv=None):
                                           "step", "scale", "chimerax", "lay_flat", "k_scan",
                                           "allow_multi_shell", "no_widen", "keep_solvent",
                                           "no_hydrogens", "keep_scan", "no_preview", "palette",
-                                          "selection_syntax", "overlap", "chimera")}
+                                          "selection_syntax", "overlap", "chimera", "blobs",
+                                          "blob_skin")}
         if a.part:
             pre["part"] = "\n".join(a.part)
             pre["parts_by"] = "selections"

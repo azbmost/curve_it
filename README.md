@@ -443,6 +443,8 @@ STL units are Angstrom and slicers read them as millimetres, so the default is 1
 
 A part can also be a set of atoms rather than whole chains: give `--part` once per colour, in peeling order, each an atom selection, optionally named as `NAME=selection` for its file name, and the word `rest` for every atom no other part takes. `--part 'bbA=/A & backbone' --part 'bbC=/C & backbone' --part rest` gives each strand's sugar-phosphate backbone its own colour and the bases of both a third. Selections are written in ChimeraX's convention by default; `--selection-syntax chimera` takes UCSF Chimera's instead, which UCSF Chimera itself reads, so `:.A@P,OP1,OP2,O5',C5',C4',O4',C3',O3',C2',C1'` there is the same backbone, and both conventions give byte-identical STLs from the same atoms. An atom two selections share goes to the earlier part, and the log and the report say how many each pair shares; `--overlap error` refuses such a run instead. In the window, **Parts by** switches between chains and atom selections, and **Backbone per chain** fills in each chain's backbone and `rest` in either convention.
 
+Parts that are separate blobs, such as each chain's phosphate groups, can instead be cut as **blob parts** (`--blobs`, or **Blob parts** in the window). Every part but the last is then its own molmap surface, the surface its atoms' density alone has at the contour level, clipped to the whole, and the last part is the whole minus the blobs, so the blobs sit in sockets in it. A blob is rounder than an ownership part, and reaches as far into its neighbours as its own density does: on the switchback666 duplex at 3.7 A, chain A's phosphate groups make 1,474 A^3 as blobs against 1,274 A^3 by ownership. No K is needed, and the level scan stops at the nearest clean level, so a 210 bp supercoil's phosphate split took about half the time. Where a blob faces outwards its own surface lies a hair inside the whole's, which would leave the last part a near-zero film over it in the files and previews; `--blob-skin` (default 0.2 A) gives such skins to the blob, and `--blob-skin 0` keeps each blob exactly its own molmap surface.
+
 Before opening the window, the Curve It launcher checks for ChimeraX and the three packages, and if something is missing it says so and asks whether to open the tool anyway. Every field and checkbox in the window has a light-blue `?` beside it that opens an explanation, with an example for every entry field.
 
 ```bash
@@ -455,6 +457,8 @@ python3 curve_it_lib/multicolor_split.py MODEL.pdb --part 'bbA=/A & backbone' --
                                                                      # atom selections as parts, ChimeraX's convention
 python3 curve_it_lib/multicolor_split.py MODEL.pdb --selection-syntax chimera \
     --part "bbA=:.A@P,OP1,OP2,O5',C5',C4',O4',C3',O3',C2',C1'" --part rest   # Chimera's convention
+python3 curve_it_lib/multicolor_split.py MODEL.pdb --blobs \
+    --part "phosA=/A@P,OP1,OP2,O5',O3'" --part "phosB=/B@P,OP1,OP2,O5',O3'" --part rest   # phosphate blobs
 python3 curve_it_lib/multicolor_split.py MODEL.pdb --gui             # the window, pre-filled
 ```
 
