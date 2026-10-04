@@ -65,14 +65,17 @@ METHOD  (the two-colour BR strand-split procedure, generalised to N parts)
    part is the whole minus the blobs.  A blob's own surface lies a hair inside
    the whole's where it faces out (the other atoms add a trace of density), so
    cut exactly the last part would film over most of each blob (on the
-   switchback666 duplex at 3.7 A, 80 % of the phosphates' surface, one blob
-   sealed in -- mostly ~10 um at 1 mm per A, which slicers drop on walls, but
-   the files, previews and near-flat tops show it); so where the other atoms'
-   density M_o is below blob_skin * |grad T| and M_i > M_o, the blob field is T
-   itself and the blob reaches the surface (--blob-skin, default 0.2 A; 0 =
-   the exact molmap).  No K; the level scan stops at the nearest clean level
-   (the one a full scan would pick); dust anchors for the last part (and for
-   exact blobs) come from where each part's density dominates.
+   switchback666 duplex at 3.7 A, 96 % of the phosphates' outward surface,
+   80 % by more than 0.0001 A, with one blob sealed in; about half of the film
+   is under 10 um at 1 mm per A, which slicers should drop on walls, not
+   tested, but the files, previews and near-flat tops show it); so where the
+   other atoms' density M_o is below blob_skin * |grad T| and M_i > M_o, the
+   blob field is T itself and the blob reaches the surface (--blob-skin,
+   default 0.2 A; 0 = the exact molmap).  M_o / |grad T| estimates the skin,
+   low for thicker ones: at 0.2 A the blob takes skins up to about 0.3 A.
+   No K; the level scan stops at the nearest clean level (the one a full scan
+   would pick); dust anchors for the last part (and for exact blobs) come from
+   where each part's density dominates.
 
 1. Maps.  One molmap of all selected chains, T, at gridSpacing 0.5 A, and one
    molmap per part on the SAME grid (onGrid).  molmap Gaussians are additive,
@@ -140,8 +143,8 @@ METHOD  (the two-colour BR strand-split procedure, generalised to N parts)
        joined to another chain in one part).  On the part fields it only
        fills small cavities -- it never removes a piece, so a part's detached
        bit (the tail after a chain break, a small part anywhere in the order)
-       keeps its colour.  (At a two-part boundary a filled cavity goes to the
-       later part.)
+       keeps its colour wherever the whole keeps it.  (At a two-part boundary
+       a filled cavity goes to the later part.)
      * zero-area triangles (two corners welded onto one point where the
        contour passes exactly through a grid point) are dropped, as slicers
        do, and counted -- they are not treated as defects.
@@ -157,10 +160,12 @@ METHOD  (the two-colour BR strand-split procedure, generalised to N parts)
 5. Validation (report + JSON): parts sum vs whole (+0.0000 % expected), pieces,
    cavities, manifoldness, pinch edges after vertex welding (where the
    complement's reclaimed shell closes to zero thickness, the boolean result
-   keeps one vertex copy per sheet at a single point; the copies are moved a
-   sub-micron step apart before writing, so the files have none and slicers
-   that weld equal coordinates find no non-manifold edge -- --keep-pinch-edges
-   writes them as v1.4.1 did), real pairwise overlap, void, the exported files
+   keeps one vertex copy per sheet at a single point; each copy is moved
+   1/1000 of the median edge (or 32 float32 steps if larger; about 0.5 um at
+   1 mm per A) into its own solid before writing, leaving the copies up to
+   twice that apart, so the files have none and slicers that weld equal
+   coordinates find no non-manifold edge -- --keep-pinch-edges writes them as
+   v1.4.1 did), real pairwise overlap, void, the exported files
    re-read from disk, thin-neck and separate-piece warnings, and the
    colour-boundary offset.
 
@@ -218,7 +223,8 @@ DEFAULT_DUST = 20.0
 DEFAULT_SPAN = 0.008
 DEFAULT_STEP = 0.002
 K_SCAN_FACTORS = (0.5, 0.75, 1.0, 1.25, 1.5)
-DEFAULT_BLOB_SKIN = 0.2   # A: with --blobs, a skin of the last part thinner than this goes to the blob
+DEFAULT_BLOB_SKIN = 0.2   # A: with --blobs, a skin of the last part estimated thinner than this goes to
+                          # the blob where the blob's density exceeds the other atoms' together
 MAX_BLOB_SKIN = 1.0
 
 SLIVER_VOXELS = 4.0  # a boolean body under this many voxels (0.5 A^3 at grid 0.5) is a fragment
@@ -1195,7 +1201,8 @@ def job(P, man):
         # blob parts: part i (all but the last) is its OWN molmap at the level.
         # Where the other atoms' density M_o covers the blob with a skin of the
         # remainder thinner than blob_skin (estimated as M_o / |grad T|) and the
-        # blob's own density dominates, the field is T itself, so the blob
+        # blob's own density exceeds the other atoms' together (M_i > M_o), the
+        # field is T itself, so the blob
         # reaches the surface there instead of lying a hair beneath it.
         skin = float(P.get("blob_skin") or 0.0)
         if skin > 0:
@@ -1268,7 +1275,7 @@ def job(P, man):
                 del Fm
             del F
         say("K=%s: %d field(s) x %d level(s) exported" % (kk, len(specs), len(levels)))
-    # the whole LAST, so dust can spare every piece that carries a part
+    # the whole LAST, so dust can spare every piece that carries a part's main piece
     if P["export_ref"]:
         for L in levels:
             p = "%s/ref_L%.6f.stl" % (out, L)
@@ -2496,9 +2503,10 @@ def _pipeline(a, c):
     if blobs:
         K = None
         log(f"\n[1] blob parts: {blob_names(N)} the whole minus "
-            f"{'it' if N == 2 else 'them'} -- no K" + (f"; a skin of P{N} thinner than "
+            f"{'it' if N == 2 else 'them'} -- no K" + (f"; a skin of P{N} estimated thinner than "
                                                         f"{a.blob_skin:g} A over a blob goes to the "
-                                                        f"blob" if a.blob_skin > 0 else ""))
+                                                        f"blob where its density exceeds the other "
+                                                        f"atoms' together" if a.blob_skin > 0 else ""))
     elif k_mode == "scanned":
         log(f"\n[1] K scan at the level guess: K = {', '.join(f'{k:g}' for k in ks)}"
             f"   (K0 = {k0:.3g}, the per-voxel equivalent of K=16 @ res 4 / grid 0.5)")
@@ -2765,8 +2773,8 @@ def _pipeline(a, c):
         check(f"P{i} file: pinch edges",
               rr["pinch_edges"] <= max(PINCH_WARN, PINCH_WARN_REL * rr["faces"]),
               f"{rr['pinch_edges']} after welding" +
-              (f" ({moved} vertex copies at pinch points moved {step:.2g} apart before "
-               f"writing)" if moved else "") +
+              (f" ({moved} vertex copies at pinch points each moved {step:.2g} mm into its own "
+               f"solid, up to {2 * step:.2g} mm apart, before writing)" if moved else "") +
               (" -- slicers such as Bambu Studio report these as non-manifold edges; "
                "leave out --keep-pinch-edges to separate them" if rr["pinch_edges"] else ""),
               soft=True)
@@ -2871,8 +2879,9 @@ def _pipeline(a, c):
     P_(f"  gridSpacing         {grid:g} A      (grid {' x '.join(map(str, man['grid']['size']))}; "
        f"surfaces at voxel step {steps} = every grid point, verified)")
     if blobs:
-        P_("  blob parts          no K; " + (f"a skin of P{N} thinner than {a.blob_skin:g} A over a "
-                                             f"blob goes to the blob" if a.blob_skin > 0 else
+        P_("  blob parts          no K; " + (f"a skin of P{N} estimated thinner than {a.blob_skin:g} A "
+                                             f"over a blob goes to the blob where its density "
+                                             f"exceeds the other atoms' together" if a.blob_skin > 0 else
                                              "blob skin 0: each blob is exactly its own molmap "
                                              "surface"))
     else:
@@ -2882,8 +2891,9 @@ def _pipeline(a, c):
        f"molmap auto {auto_level:.5f}, guess {guess:.4f})")
     P_(f"  whole must be       {n_whole} piece(s)  ({basis})")
     spared = sum(1 for p_ in protected if "part piece" in p_ and abs(float(p_.rsplit("@", 1)[1]) - L) < 1e-9)
-    P_(f"  surface dust        {dust:g} A      (removes specks / fills small cavities of the whole; "
-       f"never removes a part's piece" + (f"; spared {spared} part piece(s) here" if spared else "") + ")")
+    P_(f"  surface dust        {dust:g} A      (removes specks / fills small cavities; never removes the "
+       f"whole's largest piece, one carrying a part's main piece, or a piece of a part's field"
+       + (f"; spared {spared} part piece(s) here" if spared else "") + ")")
     P_(f"  solvent / H         {'kept' if a.keep_solvent else 'excluded'} / "
        f"{'excluded' if a.no_hydrogens else 'as in the file'}")
     P_(f"  export              scale {a.scale:g} (1 A -> {a.scale:g} mm), "
@@ -2933,6 +2943,9 @@ def _pipeline(a, c):
         if blobs:
             P_("  on the whole's surface  " + "   ".join(f"P{i} {x:,.1f} A^2" for i, x in
                                                         enumerate(shown, 1)))
+            if a.blob_skin == 0:
+                P_(f"  (skin 0: where P{N}'s film is thinner than 0.0001 A both its faces count, and so "
+                   f"does the blob under it, so these can add up to more than the whole's surface)")
             P_(f"  -> each blob's face inside the model is its own molmap surface; P{N} fills "
                f"around it")
         elif S is None:
@@ -3738,7 +3751,7 @@ HELP = {
         "instance): the order decides which parts are blobs. No K is used, so "
         "there is no K scan, and the level scan checks the levels nearest the "
         "guess first and stops at the nearest clean one, which is the level a "
-        "full scan would pick; on a 210 bp supercoil this halved the run time. "
+        "full scan would pick; on a 210 bp supercoil the phosphate split took 184 s this way, against 496 s by ownership with v1.5.0. "
         "Each level it checks gets the same checks, except that the last part "
         "has no field of its own, and the report leaves out the density-share "
         "warning, which a blob is not meant to meet. Blob skin sets what happens "
@@ -3756,29 +3769,32 @@ HELP = {
         "Used only with Blob parts. Where a blob faces outwards, its own molmap "
         "surface lies a hair inside the whole's, because the neighbouring atoms "
         "add a trace of density there. Cut exactly, the last part would wrap each "
-        "blob in a film, mostly under 0.01 Å thick and up to a few tenths of an "
-        "Å near the blob's edge.\n\n"
-        "Printed together at 1 mm per Å, most of that film is about 10 µm: far "
-        "below what a slicer prints, so on the blob's sides the blob's colour "
-        "shows anyway. What the film does change is the files. The last part's "
-        "STL covers the blobs (and can seal one in completely), its mesh roughly "
-        "doubles, the preview PNG and GLB and the slicer's view before slicing "
+        "blob in a film, about half of it under 0.01 Å thick and up to a few "
+        "tenths of an Å near the blob's edge.\n\n"
+        "Printed together at 1 mm per Å, that half is under 10 µm, far below "
+        "what a slicer prints, so a slicer should drop it on the blob's sides "
+        "and show the blob's colour there (not tested). What the film does "
+        "change is the files. The last part's STL covers the blobs (and can seal "
+        "one in completely), its mesh grows by about 70 %, the preview PNG and GLB and the slicer's view before slicing "
         "show the blobs in the last part's colour, and the thicker band near a "
         "blob's edge, a near-flat blob top, or a large Scale can print as strips "
         "or patches of the last part's colour.\n\n"
         "Where the last part's skin over a blob would be thinner than this and "
-        "the blob's own density dominates, the blob takes the skin, so the files "
-        "show what prints. The skin is estimated from the maps: the other atoms' "
-        "density over the slope of the whole map. Blank means 0.2 Å; 0 keeps "
-        "every blob exactly its own molmap surface, films included. Above about "
-        "0.3 Å it changes little, since only places where the blob's own density "
-        "dominates are ever taken. Allowed 0 to 1.\n\n"
+        "the blob's own density exceeds that of all the other atoms together, the blob takes the "
+        "skin, so the files come closer to what should print. The skin is estimated from the "
+        "maps: the other atoms' density over the slope of the whole map. The "
+        "estimate runs low for thicker skins, so at 0.2 Å skins up to about "
+        "0.3 Å thick go to the blob. Blank means 0.2 Å; 0 keeps every blob "
+        "exactly its own molmap surface, films included. Above about 0.3 Å it "
+        "changes little, since only places where the blob's own density exceeds "
+        "the other atoms' together are ever taken. Allowed 0 to 1.\n\n"
         "Command line: --blob-skin 0.2.",
         "switchback666 at 3.7 Å, chain A's phosphate blobs:\n"
         "`0.2`   1,474 Å³; 954 Å² on the whole's surface\n"
-        "`0`     1,437 Å³; 208 Å² on the surface: the rest's\n"
-        "        film covers the rest of each blob, and seals\n"
-        "        one blob in",
+        "`0`     1,437 Å³; 208 Å² within 0.0001 Å of the\n"
+        "        surface, 168 Å² of it still under the rest's\n"
+        "        film, which covers the rest of each blob and\n"
+        "        seals one blob in",
     ),
     "no_widen": (
         "Do not widen a failed level scan",
@@ -4866,7 +4882,8 @@ def build_parser():
     g.add_argument("--grid", type=float, default=DOC_GRID, help="molmap gridSpacing, A")
     g.add_argument("--dust", type=float, default=DEFAULT_DUST,
                    help="'surface dust' size, A: removes specks and fills enclosed cavities smaller "
-                        "than this; never removes a solid's largest piece or a part")
+                        "than this; never removes the whole's largest piece, a piece carrying a "
+                        "part's main piece, or a piece of a part's field")
     g = ap.add_argument_group("split")
     g.add_argument("--k", type=float, default=None,
                    help="penalty slope K (default 16 at res 4 / grid 0.5; otherwise "
@@ -4893,9 +4910,9 @@ def build_parser():
                         "such as phosphate groups.  No K is used (--k, --k-scan and --k-list are "
                         "ignored)")
     g.add_argument("--blob-skin", type=float, default=None,
-                   help="with --blobs: where the last part would cover a blob with a skin thinner "
-                        "than this (A) and the blob's own density dominates, the blob takes the "
-                        "skin, so it reaches the surface instead of lying a hair beneath it; 0 "
+                   help="with --blobs: where the last part would cover a blob with a skin estimated "
+                        "thinner than this (A) and the blob's own density exceeds that of all the other atoms together, "
+                        "the blob takes the skin, so it reaches the surface instead of lying a hair beneath it; 0 "
                         "keeps each blob exactly its own molmap surface (0 to 1; default "
                         f"{DEFAULT_BLOB_SKIN:g})")
     g = ap.add_argument_group("output")
