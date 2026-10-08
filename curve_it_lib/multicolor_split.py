@@ -177,12 +177,14 @@ METHOD  (the two-colour BR strand-split procedure, generalised to N parts)
    +Z up, the bed at the whole's lowest point), a blob face is taken to touch
    the slicer's support when it is one of the whole's faces, faces down at a
    slope from horizontal below --support-angle (the slicer's support threshold
-   angle, default 35, plus the 1 degree Bambu Studio adds: n_z < -cos(36),
-   with the normal averaged over 1 A of the blob's surface) and stands more
-   than one layer (0.2 mm) above the bed.  Under each such face the pad fills the vertical
-   column --pad-thickness deep (default 0.8 A, to the bed at most); its top is
-   the blob's own faces turned over, so pad and blob share faces exactly.  A
-   face is left bare when its column comes within 0.5 A of anything but its
+   angle or more, default 45, plus the 1 degree Bambu Studio adds:
+   n_z < -cos(46), with the normal averaged over 1 A of the blob's surface).
+   Under each such face the pad fills the vertical column --pad-thickness
+   deep (default 0.8 A), below the model's lowest point if need be, so the
+   print may stand up to that much taller, and down to the pads' lowest point
+   when it would end less than two layers (0.4 mm) above it; its top is the
+   blob's own faces turned over, so pad and blob share faces exactly.  A face
+   is left bare when its column comes within 0.5 A of anything but its
    own blob -- the other parts and the other bodies of its own part (exact
    point-to-triangle distances at samples of the column, with a margin of 5 %;
    manifold3d's min_gap on each finished pad is the gate, and a pad that fails
@@ -221,7 +223,7 @@ import tempfile
 import time
 from pathlib import Path
 
-__version__ = "1.7.0"
+__version__ = "1.7.1"
 TOOL_NAME = "Multicolor Split"
 
 try:
@@ -256,7 +258,7 @@ DEFAULT_BLOB_SKIN = 0.2   # A: with --blobs, a skin of the last part estimated t
                           # the blob where the blob's density exceeds the other atoms' together
 MAX_BLOB_SKIN = 1.0
 # Pads (--pads) under the blob faces the slicer will support
-DEFAULT_SUPPORT_ANGLE = 35.0   # degrees from horizontal: the slicer's support threshold angle
+DEFAULT_SUPPORT_ANGLE = 45.0   # degrees from horizontal: the slicer's support threshold angle, or more
 DEFAULT_PAD_THICKNESS = 0.8    # A (x --scale mm)
 MAX_PAD_THICKNESS = 5.0
 PAD_GAP = 0.5                  # A (x --scale mm): a pad keeps this far from every part but its own blob
@@ -2068,16 +2070,23 @@ def pad_patches(F, V=None):
     return [F[lab == k] for k in range(int(lab.max()) + 1)]
 
 
-def pad_prism(V, F, thickness, bed):
+def pad_bottom(z, thickness, low, snap):
+    """The bottom of a pad under a top at height z: the thickness lower, or the
+    lowest point `low` when it would end less than `snap` above it."""
+    b = np.asarray(z, dtype=np.float64) - thickness
+    return np.where(b < low + snap, low, b)
+
+
+def pad_prism(V, F, thickness, low, snap):
     """The closed solid under a patch: its top is the patch's own faces turned
     over (the same vertices, so pad and blob share faces exactly), its bottom
-    the patch lowered by the thickness but never below the bed, and vertical
-    walls along the patch's boundary."""
+    the patch lowered by the thickness (see pad_bottom), and vertical walls
+    along the patch's boundary."""
     used, Fl = np.unique(F, return_inverse=True)
     Fl = Fl.reshape(-1, 3)
     top = np.asarray(V, dtype=np.float64)[used]
     bottom = top.copy()
-    bottom[:, 2] = np.maximum(top[:, 2] - thickness, bed)
+    bottom[:, 2] = pad_bottom(top[:, 2], thickness, low, snap)
     n = len(used)
     e, _, inv, cnt = _edges(Fl)
     b = e[cnt[inv] == 1]                    # boundary edges, in the faces' own direction
@@ -2187,7 +2196,7 @@ def solid_bodies(V, F):
     return lab
 
 
-def make_pads(meshes, whole, n_blobs, angle, thickness, gap, bed, min_height, min_area, layer=0.2,
+def make_pads(meshes, whole, n_blobs, angle, thickness, gap, bed, snap, min_area, layer=0.2,
               unit=1.0, log=None):
     """Pads under the blob parts' faces that the slicer will support.
 
@@ -2199,9 +2208,11 @@ def make_pads(meshes, whole, n_blobs, angle, thickness, gap, bed, min_height, mi
     three float32 corners), faces down at a slope from horizontal below the
     slicer's support threshold angle -- Bambu Studio adds 1 degree, so
     n_z < -cos(angle + 1), with the normal averaged over 1 A of the blob's
-    surface and the face's own normal pointing down too -- and stands more
-    than min_height above the bed.  Under each such face the pad fills the
-    vertical column `thickness` deep (stopping at the bed).  A face is left
+    surface and the face's own normal pointing down too.  Under each such face
+    the pad fills the vertical column `thickness` deep, below the model's
+    lowest point if need be (the print then stands that much taller), and
+    down to the pads' lowest point when it would end less than `snap` above
+    it, so no pad hangs over a gap too thin for support.  A face is left
     bare when its column meets its own blob below or comes within `gap` of
     anything but its own blob -- the other parts and the other bodies of its
     own part -- measured exactly to every face nearby from samples of the
@@ -2246,14 +2257,13 @@ def make_pads(meshes, whole, n_blobs, angle, thickness, gap, bed, min_height, mi
     w = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [.5, .5, 0], [0, .5, .5], [.5, 0, .5],
                   [1 / 3, 1 / 3, 1 / 3], [.75, .25, 0], [.25, .75, 0], [0, .75, .25], [0, .25, .75],
                   [.25, 0, .75], [.75, 0, .25]])
-    depths = np.linspace(0.0, thickness, int(math.ceil(thickness / (0.1 * unit))) + 1)
-    per, keep_all, zspans, overlap_blob = [], [], [], 0.0
+    # first the faces that need support, in every blob part: the pads' lowest
+    # point (a pad may reach below the model) decides where pads reach down to it
+    pre = []
     for k in range(n_blobs):
-        V, F, lab = Vs[k], Fs[k], bodies[k]
-        row = dict(part=k + 1, support_area=0.0, padded_area=0.0, pads=0, volume=0.0, min_gap=None,
-                   bodies_support=0, bodies_padded=0, dropped_small=0, dropped_close=0, invalid=0)
-        per.append(row)
+        V, F = Vs[k], Fs[k]
         if not len(F):
+            pre.append(None)
             continue
         t = V[F]
         nrm = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0])
@@ -2267,29 +2277,43 @@ def make_pads(meshes, whole, n_blobs, angle, thickness, gap, bed, min_height, mi
         exposed = (fid >= 0).all(axis=1)
         exposed[exposed] = np.isin(keys(fid[exposed]), w_keys)
         E = np.flatnonzero(exposed)
-        if not len(E):
+        cand = np.zeros(0, np.int64)
+        if len(E):
+            # the slope, from the normal averaged over 1 A of the exposed surface
+            cE = t[E].mean(axis=1)
+            pairs = cKDTree(cE).query_pairs(1.0 * unit, output_type="ndarray")
+            n = len(E)
+            Wm = coo_matrix((np.ones(2 * len(pairs) + n),
+                             (np.concatenate([pairs[:, 0], pairs[:, 1], np.arange(n)]),
+                              np.concatenate([pairs[:, 1], pairs[:, 0], np.arange(n)]))), shape=(n, n)).tocsr()
+            sm = Wm @ (area[E][:, None] * unit_n[E])
+            sm /= np.maximum(np.linalg.norm(sm, axis=1), 1e-30)[:, None]
+            cand = E[(sm[:, 2] < -cos_a) & (unit_n[E, 2] < -min(0.05, cos_a)) & (area[E] > 1e-9 * unit * unit)]
+        pre.append(dict(t=t, area=area, cand=cand))
+    low = min([bed] + [float(p["t"][p["cand"]][:, :, 2].min()) - thickness
+                       for p in pre if p is not None and len(p["cand"])])
+    nsteps = int(math.ceil((thickness + snap) / (0.1 * unit))) + 1
+    frac = np.linspace(0.0, 1.0, nsteps)
+    per, keep_all, zspans, overlap_blob = [], [], [], 0.0
+    for k in range(n_blobs):
+        V, F, lab = Vs[k], Fs[k], bodies[k]
+        row = dict(part=k + 1, support_area=0.0, padded_area=0.0, pads=0, volume=0.0, min_gap=None,
+                   bodies_support=0, bodies_padded=0, dropped_small=0, dropped_close=0, invalid=0)
+        per.append(row)
+        if pre[k] is None or not len(pre[k]["cand"]):
             continue
-        # the slope, from the normal averaged over 1 A of the exposed surface
-        cE = t[E].mean(axis=1)
-        pairs = cKDTree(cE).query_pairs(1.0 * unit, output_type="ndarray")
-        n = len(E)
-        Wm = coo_matrix((np.ones(2 * len(pairs) + n),
-                         (np.concatenate([pairs[:, 0], pairs[:, 1], np.arange(n)]),
-                          np.concatenate([pairs[:, 1], pairs[:, 0], np.arange(n)]))), shape=(n, n)).tocsr()
-        sm = Wm @ (area[E][:, None] * unit_n[E])
-        sm /= np.maximum(np.linalg.norm(sm, axis=1), 1e-30)[:, None]
-        cand = E[(sm[:, 2] < -cos_a) & (unit_n[E, 2] < -min(0.05, cos_a)) & (area[E] > 1e-9 * unit * unit) &
-                 (t[E][:, :, 2].min(axis=1) > bed + min_height)]
+        t, area, cand = pre[k]["t"], pre[k]["area"], pre[k]["cand"]
         row["support_area"] = float(area[cand].sum())
         row["bodies_support"] = int(len(np.unique(lab[cand])))
-        if not len(cand):
-            continue
-        # each face's column, sampled; the nearest distance to anything but its own blob
+        # each face's column, sampled down to its bottom; the nearest distance to
+        # anything but its own blob
         pts = np.einsum("pk,ckd->cpd", w, t[cand])
-        col = np.repeat(pts[:, :, None, :], len(depths), axis=2)
-        col[..., 2] = np.maximum(col[..., 2] - depths[None, None, :], bed)
+        zt = pts[..., 2]
+        depth = zt - pad_bottom(zt, thickness, low, snap)
+        col = np.repeat(pts[:, :, None, :], nsteps, axis=2)
+        col[..., 2] = zt[..., None] - frac[None, None, :] * depth[..., None]
         P = col.reshape(-1, 3)
-        per_face = pts.shape[1] * len(depths)
+        per_face = pts.shape[1] * nsteps
         thr = gap * (1 + margins[-1])
         dist = np.full(len(P), np.inf)
         # the other parts: points provably farther than thr (nearest vertex minus
@@ -2338,7 +2362,7 @@ def make_pads(meshes, whole, n_blobs, angle, thickness, gap, bed, min_height, mi
         below = np.full(len(org), np.inf)
         if len(ray):
             below[ray] = org[ray, 2] - loc[:, 2]
-        free = ~(below.reshape(len(cand), -1) < thickness).any(axis=1)
+        free = ~(below < depth.reshape(-1)).reshape(len(cand), -1).any(axis=1)
         # the gate: manifold3d's exact min_gap to the other parts and to the
         # other bodies of this part
         others = [manifolds[j] for j in range(len(meshes)) if j != k and len(Fs[j])]
@@ -2388,7 +2412,7 @@ def make_pads(meshes, whole, n_blobs, angle, thickness, gap, bed, min_height, mi
             solids, rows_in = [], []
             for patch in pad_patches(F[cand[live]], V):
                 rows = np.array([row_of[tuple(sorted(f))] for f in patch.tolist()], dtype=np.int64)
-                M = to_manifold_or_none(*pad_prism(V, patch, thickness, bed))
+                M = to_manifold_or_none(*pad_prism(V, patch, thickness, low, snap))
                 if M is None:
                     invalid += 1
                     done[rows] = True
@@ -2458,15 +2482,18 @@ def make_pads(meshes, whole, n_blobs, angle, thickness, gap, bed, min_height, mi
             f"{row['bodies_support']} blob(s) the support would touch; "
             f"{row['padded_area'] / unit ** 2:,.1f} of {row['support_area'] / unit ** 2:,.1f} A^2")
     gaps = [r["min_gap"] for r in per if r["min_gap"] is not None]
-    height = float(wV[:, 2].max()) - bed
+    lowest = min([bed] + [z0 for z0, _ in zspans])     # the print's lowest point, pads included
+    height = float(wV[:, 2].max()) - lowest
     in_layers = set()
     for z0, z1 in zspans:
-        in_layers.update(range(int(math.floor((z0 - bed) / layer)), int(math.ceil((z1 - bed) / layer))))
+        in_layers.update(range(int(math.floor((z0 - lowest) / layer + 1e-9)),
+                               int(math.ceil((z1 - lowest) / layer - 1e-9))))
     info = dict(parts=per, count=sum(r["pads"] for r in per), volume=sum(r["volume"] for r in per),
                 min_gap=min(gaps) if gaps else None,
                 min_gap_is_bound=bool(gaps) and min(gaps) >= 2 * gap * (1 - 1e-9),
                 overlap_whole=0.0, overlap_blob=overlap_blob,
-                layers=len(in_layers), layers_total=int(math.ceil(height / layer)))
+                layers=len(in_layers), layers_total=int(math.ceil(height / layer - 1e-9)),
+                lowest=lowest, lift=bed - lowest)
     if not keep_all:
         return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64), info
     allpads = mf.Manifold.batch_boolean(keep_all, mf.OpType.Add)
@@ -2483,7 +2510,8 @@ def pads_in_angstrom(info, scale):
         return {}
     s = float(scale)
     out = dict(info)
-    for key, power in (("min_gap", 1), ("volume", 3), ("overlap_whole", 3), ("overlap_blob", 3)):
+    for key, power in (("min_gap", 1), ("volume", 3), ("overlap_whole", 3), ("overlap_blob", 3),
+                       ("lowest", 1), ("lift", 1)):
         if out.get(key) is not None:
             out[key] = out[key] / s ** power
     out["parts"] = []
@@ -3273,7 +3301,7 @@ def _pipeline(a, c):
             f"{a.pad_thickness:g} A thick, at least {PAD_GAP:g} A from the other parts and blobs")
         pV, pF, pad_info = make_pads(ex_meshes, (Wx, WFx), N - 1, a.support_angle,
                                      a.pad_thickness * a.scale, PAD_GAP * a.scale, float(Wx[:, 2].min()),
-                                     LAYER_H, PAD_MIN_AREA, layer=LAYER_H, unit=float(a.scale), log=log)
+                                     2 * LAYER_H, PAD_MIN_AREA, layer=LAYER_H, unit=float(a.scale), log=log)
         if len(pF):
             if not getattr(a, "keep_pinch_edges", False):
                 pV, moved_p, step_p, _ = unpinch(pV, pF)
@@ -3606,11 +3634,13 @@ def _pipeline(a, c):
         P_("PADS  (under the blob faces the slicer will support, in this orientation and size)")
         t_mm, g_mm = a.pad_thickness * a.scale, PAD_GAP * a.scale
         P_(f"  rule                    faces whose surface, averaged over 1 A, slopes less than "
-           f"{a.support_angle:g} deg from horizontal (Bambu adds 1: < {min(a.support_angle + 1, 89):g}), "
-           f"more than {LAYER_H:g} mm above the bed")
+           f"{a.support_angle:g} deg from horizontal (Bambu adds 1: < {min(a.support_angle + 1, 89):g})")
         P_(f"  pads                    {a.pad_thickness:g} A deep = {t_mm:.2f} mm = {t_mm / LAYER_H:.1f} layers "
-           f"of {LAYER_H:g} mm (to the bed at most); at least {PAD_GAP:g} A = {g_mm:.2f} mm from the other "
-           f"parts and blobs; under {PAD_MIN_AREA:g} mm^2 dropped")
+           f"of {LAYER_H:g} mm, down to the print's lowest point when within {2 * LAYER_H:g} mm of it; at least "
+           f"{PAD_GAP:g} A = {g_mm:.2f} mm from the other parts and blobs; under {PAD_MIN_AREA:g} mm^2 dropped")
+        if pad_mesh is not None and pad_info["lift"] > 1e-9:
+            P_(f"  below the model         the lowest pads reach {pad_info['lift']:.2f} mm below the parts: imported "
+               f"together, the print stands that much taller")
         sc2 = float(a.scale) ** 2
         for r in pad_info["parts"]:
             sa, pa = r["support_area"] / sc2, r["padded_area"] / sc2
@@ -3632,6 +3662,10 @@ def _pipeline(a, c):
     P_(f"  model size (PDB frame)  {ext_pdb[0]:.1f} x {ext_pdb[1]:.1f} x {ext_pdb[2]:.1f} A")
     P_(f"  exported size           {ext_out[0]:.1f} x {ext_out[1]:.1f} x {ext_out[2]:.1f} mm   "
        f"height {ext_out[2]:.1f} mm = ~{int(math.ceil(ext_out[2] / LAYER_H))} layers at {LAYER_H} mm")
+    if pad_mesh is not None and pad_info["lift"] > 1e-9:
+        h_p = ext_out[2] + pad_info["lift"]
+        P_(f"  with the pads           height {h_p:.1f} mm = ~{int(math.ceil(h_p / LAYER_H - 1e-9))} layers "
+           f"(the pads reach {pad_info['lift']:.2f} mm below the parts)")
     if not a.lay_flat and flat_h < 0.8 * ext_out[2]:
         P_(f"  laid flat it would be   {flat_h:.1f} mm tall (~{int(math.ceil(flat_h / LAYER_H))} layers) "
            f"-- purge scales with layer count: re-run without --no-lay-flat"
@@ -4498,10 +4532,13 @@ HELP = {
         "support would touch, so the support touches the pad instead.\n\n"
         "A blob face is taken to touch the support when it is on the model's "
         "surface, faces down at a slope from horizontal below the Support angle "
-        "(the slicer's support threshold angle) and stands more than 0.2 mm "
-        "above the bed. Under each such face the pad fills the space straight "
-        "below it, Pad thickness deep (to the bed at most), and shares the "
-        "blob's faces exactly, so the two touch. A face whose pad would come "
+        "(the slicer's support threshold angle). Under each such face the pad "
+        "fills the space straight below it, Pad thickness deep, and shares the "
+        "blob's faces exactly, so the two touch. Under a blob near the bed the "
+        "pad reaches below the model, so the print stands up to Pad thickness "
+        "taller, and a pad that would end less than two 0.2 mm layers above the "
+        "lowest pad reaches down to it, so none hangs over a gap too thin for "
+        "support. A face whose pad would come "
         f"within {PAD_GAP:g} Å of any other part (the last part or another blob) "
         "is left bare, so a pad touches only its own blob, and pads smaller than "
         f"{PAD_MIN_AREA:g} mm² are dropped. The report's PADS section gives, per "
@@ -4519,9 +4556,9 @@ HELP = {
         "layers or its gap is narrower than a 0.4 mm line.\n\n"
         "Command line: --pads (with --blobs).",
         "210 bp supercoil at 3.7 Å, phosphate blobs, laid flat:\n"
-        "P1  170 blobs, 911 Å², would touch the support;\n"
-        "    120 of them padded, 580 Å², by 123 pads\n"
-        "P2  167 blobs, 876 Å²; 122 padded, 586 Å²\n"
+        "P1  192 blobs, 1,522 Å², would touch the support;\n"
+        "    134 of them padded, 983 Å², by 138 pads\n"
+        "P2  191 blobs, 1,492 Å²; 137 padded, 997 Å²\n"
         "closest approach to another part or blob 0.52 Å",
     ),
     "support_angle": (
@@ -4529,20 +4566,23 @@ HELP = {
         "Used only with Pads. The slicer's support threshold angle: the slicer "
         "supports a face that slopes less than this from horizontal, so those "
         "are the blob faces that get pads. Give the number set in the slicer "
-        "(in Bambu Studio, Support > Threshold angle). Bambu Studio adds 1° to "
-        "it, and so does the tool. A face's slope is taken from the blob's "
+        "(in Bambu Studio, Support > Threshold angle) or a larger one: a larger "
+        "angle pads steeper faces too, which costs only pad material, while a "
+        "smaller one leaves faces the slicer supports bare. Bambu Studio adds 1° "
+        "to it, and so does the tool. A face's slope is taken from the blob's "
         "surface averaged over 1 Å, so the pads are not speckled by the mesh. "
-        "A larger angle pads steeper faces too. Blank means 35°.\n\n"
-        "Command line: --support-angle 35.",
-        "`35`   faces sloping less than 36° from horizontal\n"
+        "Blank means 45°.\n\n"
+        "Command line: --support-angle 45.",
+        "`45`   faces sloping less than 46° from horizontal\n"
         "       get pads\n"
-        "`45`   steeper faces too, up to 46°",
+        "`35`   only the flatter ones, up to 36°",
     ),
     "pad_thickness": (
         "Pad thickness (Å)",
         "Used only with Pads. How far each pad reaches below its blob face, in "
         "Å, so in mm times Scale: at the default 1 mm per Å, 0.8 Å is 0.8 mm, "
-        "four 0.2 mm layers. A pad near the bed stops at the bed. Blank means "
+        "four 0.2 mm layers. Under a blob near the bed the pad reaches below the "
+        "model, so the print can stand up to this much taller. Blank means "
         "0.8 Å; allowed above 0 and up to 5 Å.\n\n"
         "Command line: --pad-thickness 0.8.",
         "`0.8`   at Scale 1: 0.8 mm, four 0.2 mm layers\n"
@@ -5686,14 +5726,16 @@ def build_parser():
     g.add_argument("--pads", action="store_true",
                    help="with --blobs: write <tag>_pads.stl, one part holding a pad under each "
                         "blob face the slicer will support (its surface, over 1 A, sloping less than "
-                        "--support-angle + 1 from horizontal, above the bed) where a pad fits "
+                        "--support-angle + 1 from horizontal) where a pad fits "
                         f"--pad-thickness deep and at least {PAD_GAP:g} A from the other parts and "
                         "blobs (other faces stay bare), so the support touches the pads, not the "
-                        "blobs; made for the exported orientation and scale")
+                        "blobs; a pad may reach below the model, so the print stands up to "
+                        "--pad-thickness taller; made for the exported orientation and scale")
     g.add_argument("--support-angle", type=float, default=None,
                    help="with --pads: the slicer's support threshold angle, degrees, as set in "
-                        "the slicer; Bambu Studio supports a face sloping less than this + 1 from "
-                        f"horizontal, and so does the tool (default {DEFAULT_SUPPORT_ANGLE:g})")
+                        "the slicer or larger, which pads steeper faces too; Bambu Studio supports "
+                        "a face sloping less than this + 1 from horizontal, and so does the tool "
+                        f"(default {DEFAULT_SUPPORT_ANGLE:g})")
     g.add_argument("--pad-thickness", type=float, default=None,
                    help=f"with --pads: pad thickness, A (default {DEFAULT_PAD_THICKNESS:g}; "
                         "x --scale in mm)")
