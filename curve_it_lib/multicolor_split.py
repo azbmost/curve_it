@@ -10,7 +10,7 @@ solids that tile the whole molmap surface EXACTLY, for multicolour printing
     python3 multicolor_split.py MODEL.pdb --parts A C
     python3 multicolor_split.py MODEL.pdb --parts A,B C          # A+B = one colour
     python3 multicolor_split.py MODEL.pdb --resolution 3.7       # K rescaled + checked
-    python3 multicolor_split.py MODEL.pdb --lay-flat             # fewer layers, less purge
+    python3 multicolor_split.py MODEL.pdb --no-lay-flat          # keep the PDB frame
     python3 multicolor_split.py MODEL.pdb --palette DiLiuLab     # lab colours in the previews
     python3 multicolor_split.py MODEL.pdb --part 'bbA=/A & backbone' \
         --part 'bbB=/B & backbone' --part rest     # atom selections as parts (ChimeraX's)
@@ -18,6 +18,8 @@ solids that tile the whole molmap surface EXACTLY, for multicolour printing
         --part "bbA=:.A@P,OP1,OP2,O5',C5',C4',O4',C3',O3',C2',C1'" --part rest   # Chimera's
     python3 multicolor_split.py MODEL.pdb --blobs --part "phosA=/A@P,OP1,OP2,O5',O3'" \
         --part "phosB=/B@P,OP1,OP2,O5',O3'" --part rest   # blobs, each its own molmap
+    python3 multicolor_split.py MODEL.pdb --blobs --pads ...  # + pads under the blobs
+                                                             # where the support touches
 
 This is Curve It's "Multicolor Split..." tool; it also runs on its own.  In the
 GUI every field, checkbox and group of buttons has a light-blue ? that opens an
@@ -26,6 +28,7 @@ explanation of the setting, with an example for every entry field.
 Output (default): ./<structure stem>_molmap<resolution>_split/ holding
     <tag>_p1_chainA.stl, <tag>_p2_chainC.stl, ...   one per part (tag = the folder name;
                                                     <tag>_p1_bbA.stl for a part --part names)
+    <tag>_pads.stl                                  with --pads: all the pads, one part
     <tag>_whole.stl                                 reference only
     <tag>_report.txt / .json                        scan + validation
     <tag>_preview.png / .glb                        local previews
@@ -78,7 +81,8 @@ METHOD  (the two-colour BR strand-split procedure, generalised to N parts)
    where each part's density dominates.
 
 1. Maps.  One molmap of all selected chains, T, at gridSpacing 0.5 A, and one
-   molmap per part on the SAME grid (onGrid).  molmap Gaussians are additive,
+   molmap per part on the SAME grid (onGrid), of the heavy atoms (hydrogens
+   are left out unless --keep-hydrogens).  molmap Gaussians are additive,
    so T == sum of the part maps (checked every run, ~3e-7).  At molmap's
    default grid (resolution/3) the colour interface cannot be resolved finer
    than ~1 mm, whatever else is done.  Every surface is contoured at voxel
@@ -169,11 +173,36 @@ METHOD  (the two-colour BR strand-split procedure, generalised to N parts)
    re-read from disk, thin-neck and separate-piece warnings, and the
    colour-boundary offset.
 
+6. Pads (--pads, with --blobs).  In the printed frame (laid flat by default,
+   +Z up, the bed at the whole's lowest point), a blob face is taken to touch
+   the slicer's support when it is one of the whole's faces, faces down at a
+   slope from horizontal below --support-angle (the slicer's support threshold
+   angle, default 35, plus the 1 degree Bambu Studio adds: n_z < -cos(36),
+   with the normal averaged over 1 A of the blob's surface) and stands more
+   than one layer (0.2 mm) above the bed.  Under each such face the pad fills the vertical
+   column --pad-thickness deep (default 0.8 A, to the bed at most); its top is
+   the blob's own faces turned over, so pad and blob share faces exactly.  A
+   face is left bare when its column comes within 0.5 A of anything but its
+   own blob -- the other parts and the other bodies of its own part (exact
+   point-to-triangle distances at samples of the column, with a margin of 5 %;
+   manifold3d's min_gap on each finished pad is the gate, and a pad that fails
+   it is rebuilt alone with its margin widened to 15, 30 and 60 %, then
+   dropped) -- or meets its own blob below; each edge-connected patch (at a
+   bowtie vertex only its largest fan) becomes one prism with vertical walls,
+   pads under 0.5 mm^2 are dropped, and all pads go into <tag>_pads.stl, one
+   part.  The report checks that the pads are
+   closed, keep 0.5 A from every part but their own blob, and lie outside the
+   model.
+
 Slicing (Bambu Studio): import all part STLs AT ONCE -> one object with one
 sub-model per part, already registered; give each part a filament; check
-"First layer filament sequence".  Lay long models flat (--lay-flat): purge
-scales with layer count.  Enable flush into infill / support.  When the whole
-is one piece the colours fuse into one solid -- nothing comes apart.
+"First layer filament sequence".  Models are laid flat by default
+(--no-lay-flat keeps the PDB frame): purge scales with layer count.  With
+--pads, <tag>_pads.stl is one more sub-model, in a filament that does not bond
+to the parts' (PVA / BVOH, or PETG with PLA), and the object keeps its exported
+orientation and size (give the print scale with --scale).  Enable flush
+into infill / support.  When the whole is one piece the colours fuse into one
+solid -- nothing comes apart.
 """
 import argparse
 import collections
@@ -192,7 +221,7 @@ import tempfile
 import time
 from pathlib import Path
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 TOOL_NAME = "Multicolor Split"
 
 try:
@@ -226,6 +255,13 @@ K_SCAN_FACTORS = (0.5, 0.75, 1.0, 1.25, 1.5)
 DEFAULT_BLOB_SKIN = 0.2   # A: with --blobs, a skin of the last part estimated thinner than this goes to
                           # the blob where the blob's density exceeds the other atoms' together
 MAX_BLOB_SKIN = 1.0
+# Pads (--pads) under the blob faces the slicer will support
+DEFAULT_SUPPORT_ANGLE = 35.0   # degrees from horizontal: the slicer's support threshold angle
+DEFAULT_PAD_THICKNESS = 0.8    # A (x --scale mm)
+MAX_PAD_THICKNESS = 5.0
+PAD_GAP = 0.5                  # A (x --scale mm): a pad keeps this far from every part but its own blob
+PAD_MIN_AREA = 0.5             # mm^2 of top: smaller pads are dropped (narrower than a few lines)
+PAD_COLOR = (0.35, 0.35, 0.35)  # the pads in the previews
 
 SLIVER_VOXELS = 4.0  # a boolean body under this many voxels (0.5 A^3 at grid 0.5) is a fragment
 TOL_REL = 1e-5      # sum / overlap / void tolerance as a fraction of the whole (0.001 %)
@@ -368,6 +404,10 @@ def check_numbers(v):
             errs.append(f"dust must be >= 0 (got {x:g})")
         elif name == "blob_skin" and not 0 <= x <= MAX_BLOB_SKIN:
             errs.append(f"blob skin must be from 0 to {MAX_BLOB_SKIN:g} A (got {x:g})")
+        elif name == "support_angle" and not 0 < x < 90:
+            errs.append(f"support angle must be between 0 and 90 degrees (got {x:g})")
+        elif name == "pad_thickness" and not 0 < x <= MAX_PAD_THICKNESS:
+            errs.append(f"pad thickness must be above 0 and at most {MAX_PAD_THICKNESS:g} A (got {x:g})")
     s, st = v.get("span"), v.get("step")
     if s and st and math.isfinite(s) and math.isfinite(st) and 0 < s < st:
         errs.append(f"level scan step {st:g} is larger than the span {s:g}: only the guess "
@@ -1569,12 +1609,20 @@ def mesh_stats(V, F, n_deg=0):
 
 
 def to_manifold(V, F, what):
-    mesh = mf.Mesh(vert_properties=np.ascontiguousarray(V, dtype=np.float32),
-                   tri_verts=np.ascontiguousarray(F, dtype=np.uint32))
+    # (np.require copies only when needed: manifold3d takes no read-only array,
+    # such as the views arrays() returns)
+    mesh = mf.Mesh(vert_properties=np.require(V, dtype=np.float32, requirements=["C", "W"]),
+                   tri_verts=np.require(F, dtype=np.uint32, requirements=["C", "W"]))
     M = mf.Manifold(mesh)
     if M.status() != mf.Error.NoError:
         raise SplitError(f"{what} is not a valid manifold ({M.status()})")
     return M
+
+
+def to_manifold_or_none(V, F):
+    M = mf.Manifold(mf.Mesh(vert_properties=np.require(V, dtype=np.float32, requirements=["C", "W"]),
+                            tri_verts=np.require(F, dtype=np.uint32, requirements=["C", "W"])))
+    return M if M.status() == mf.Error.NoError else None
 
 
 def arrays(M):
@@ -1932,8 +1980,14 @@ def placement(refV, lay_flat, scale):
         c = X.mean(axis=0)
         _, vecs = np.linalg.eigh(np.cov((X - c).T))
         R = vecs[:, ::-1].T.copy()          # rows: longest -> x, middle -> y, shortest -> z
-        if np.linalg.det(R) < 0:
-            R[2] *= -1
+        # eigh leaves each axis's sign to the LAPACK build: fix them, so the
+        # model (and its pads) come out the same way up everywhere -- x and z
+        # each point along their largest component, y completes a right-handed
+        # frame
+        for r in (0, 2):
+            if R[r, np.argmax(np.abs(R[r]))] < 0:
+                R[r] *= -1
+        R[1] = np.cross(R[2], R[0])
         Y = (X - c) @ R.T
         t = -np.array([(Y[:, 0].min() + Y[:, 0].max()) / 2,
                        (Y[:, 1].min() + Y[:, 1].max()) / 2, Y[:, 2].min()])
@@ -1945,6 +1999,501 @@ def placement(refV, lay_flat, scale):
 
 def apply(A, V):
     return np.asarray(V, dtype=np.float64) @ A[:3, :3].T + A[:3, 3]
+
+
+# ============================================================ pads under blobs
+def _edges(F):
+    """(directed edges in the faces' own order, their undirected keys, inverse, counts)."""
+    e = np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]])
+    key = np.sort(e, axis=1)
+    _, inv, cnt = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+    return e, key, inv.reshape(-1), cnt
+
+
+def pad_patches(F, V=None):
+    """Split a face set into edge-connected patches that are each a 2-manifold
+    with boundary.  At a vertex where the set is more than one fan (more than
+    two boundary edges, a bowtie) only the largest fan is kept (by area when V
+    is given, else by face count), until no bowtie is left."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    F = np.asarray(F, dtype=np.int64)
+    while len(F):
+        e, key, inv, cnt = _edges(F)
+        nb = np.bincount(key[cnt[inv] == 1].reshape(-1), minlength=int(F.max()) + 1)
+        bad = np.flatnonzero(nb > 2)
+        if not len(bad):
+            break
+        weight = tri_areas(V, F) if V is not None else np.ones(len(F))
+        drop = np.zeros(len(F), bool)
+        for v in bad:
+            at = np.flatnonzero((F == v).any(axis=1) & ~drop)
+            if len(at) < 2:
+                continue
+            # fans: faces at v joined through an edge that contains v (they share another vertex)
+            others = [set(F[f].tolist()) - {int(v)} for f in at]
+            parent = list(range(len(at)))
+
+            def root(i):
+                while parent[i] != i:
+                    parent[i] = parent[parent[i]]
+                    i = parent[i]
+                return i
+            for i in range(len(at)):
+                for j in range(i + 1, len(at)):
+                    if others[i] & others[j]:
+                        parent[root(i)] = root(j)
+            fans = {}
+            for i in range(len(at)):
+                fans.setdefault(root(i), []).append(at[i])
+            if len(fans) < 2:
+                continue
+            best = max(fans.values(), key=lambda fs: weight[fs].sum())
+            for fs in fans.values():
+                if fs is not best:
+                    drop[fs] = True
+        if not drop.any():                   # a bowtie of one fan with itself: give it up
+            F = F[~np.isin(F, bad).any(axis=1)]
+        else:
+            F = F[~drop]
+    if not len(F):
+        return []
+    _, _, inv, _ = _edges(F)
+    fid = np.tile(np.arange(len(F)), 3)
+    order = np.argsort(inv, kind="stable")
+    si, sf = inv[order], fid[order]
+    same = si[1:] == si[:-1]
+    G = coo_matrix((np.ones(int(same.sum())), (sf[:-1][same], sf[1:][same])), shape=(len(F), len(F)))
+    _, lab = connected_components(G, directed=False)
+    return [F[lab == k] for k in range(int(lab.max()) + 1)]
+
+
+def pad_prism(V, F, thickness, bed):
+    """The closed solid under a patch: its top is the patch's own faces turned
+    over (the same vertices, so pad and blob share faces exactly), its bottom
+    the patch lowered by the thickness but never below the bed, and vertical
+    walls along the patch's boundary."""
+    used, Fl = np.unique(F, return_inverse=True)
+    Fl = Fl.reshape(-1, 3)
+    top = np.asarray(V, dtype=np.float64)[used]
+    bottom = top.copy()
+    bottom[:, 2] = np.maximum(top[:, 2] - thickness, bed)
+    n = len(used)
+    e, _, inv, cnt = _edges(Fl)
+    b = e[cnt[inv] == 1]                    # boundary edges, in the faces' own direction
+    u, v = b[:, 0], b[:, 1]
+    tris = np.vstack([Fl[:, [0, 2, 1]], Fl + n, np.stack([u, v, v + n], 1), np.stack([u, v + n, u + n], 1)])
+    return np.vstack([top, bottom]), tris
+
+
+def _dot(a, b):
+    return np.einsum("ij,ij->i", a, b)
+
+
+def point_triangle_distance(P, A, B, C):
+    """Exact distance from each point P[i] to the triangle (A[i], B[i], C[i])
+    (Ericson, Real-Time Collision Detection 5.1.5), vectorised."""
+    ab, ac, ap = B - A, C - A, P - A
+    d1, d2 = _dot(ab, ap), _dot(ac, ap)
+    bp = P - B
+    d3, d4 = _dot(ab, bp), _dot(ac, bp)
+    cp = P - C
+    d5, d6 = _dot(ab, cp), _dot(ac, cp)
+    va, vb, vc = d3 * d6 - d5 * d4, d5 * d2 - d1 * d6, d1 * d4 - d3 * d2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        s = va + vb + vc
+        v, w = vb / s, vc / s
+        Q = A + ab * v[:, None] + ac * w[:, None]                    # inside the face
+        t = (d4 - d3) / ((d4 - d3) + (d5 - d6))
+        Q = np.where(((va <= 0) & (d4 - d3 >= 0) & (d5 - d6 >= 0))[:, None], B + (C - B) * t[:, None], Q)
+        t = d2 / (d2 - d6)
+        Q = np.where(((vb <= 0) & (d2 >= 0) & (d6 <= 0))[:, None], A + ac * t[:, None], Q)
+        Q = np.where(((d6 >= 0) & (d5 <= d6))[:, None], C, Q)
+        t = d1 / (d1 - d3)
+        Q = np.where(((vc <= 0) & (d1 >= 0) & (d3 <= 0))[:, None], A + ab * t[:, None], Q)
+        Q = np.where(((d3 >= 0) & (d4 <= d3))[:, None], B, Q)
+        Q = np.where(((d1 <= 0) & (d2 <= 0))[:, None], A, Q)
+    d = np.linalg.norm(P - Q, axis=1)
+    bad = ~np.isfinite(d)                       # a zero-area face: its nearest corner
+    if bad.any():
+        d[bad] = np.min([np.linalg.norm(P[bad] - X[bad], axis=1) for X in (A, B, C)], axis=0)
+    return d
+
+
+def nearest_face_distance(P, tree, TA, TB, TC, reach, kq=96, chunk=20000):
+    """Exact distance from each point to the nearest of the faces (TA, TB, TC)
+    whose centroids `tree` holds, for faces within `reach` of the point in
+    centroid distance (np.inf where none): k nearest centroids, then the full
+    ball for points with more than kq within reach."""
+    dist = np.full(len(P), np.inf)
+    for a0 in range(0, len(P), chunk):
+        Pc = P[a0:a0 + chunk]
+        dd, ii = tree.query(Pc, k=kq, distance_upper_bound=reach)
+        ok = np.isfinite(dd)
+        rows, cols = np.nonzero(ok)
+        best = np.full(len(Pc), np.inf)
+        if len(rows):
+            fi = ii[rows, cols]
+            np.minimum.at(best, rows, point_triangle_distance(Pc[rows], TA[fi], TB[fi], TC[fi]))
+        short = np.flatnonzero(ok[:, -1])          # more than kq faces within reach
+        if len(short):
+            lists = tree.query_ball_point(Pc[short], reach)
+            lens = np.array([len(x) for x in lists])
+            if lens.sum():
+                fi = np.concatenate([np.asarray(x, dtype=np.int64) for x in lists])
+                rows = np.repeat(short, lens)
+                np.minimum.at(best, rows, point_triangle_distance(Pc[rows], TA[fi], TB[fi], TC[fi]))
+        dist[a0:a0 + len(Pc)] = best
+    return dist
+
+
+def face_bodies(F):
+    """Each face's body: faces joined through shared vertices."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    F = np.asarray(F, dtype=np.int64)
+    if not len(F):
+        return np.zeros(0, np.int64)
+    n = int(F.max()) + 1
+    G = coo_matrix((np.ones(2 * len(F)), (np.concatenate([F[:, 0], F[:, 1]]), np.concatenate([F[:, 1], F[:, 2]]))),
+                   shape=(n, n))
+    _, lab = connected_components(G, directed=False)
+    return lab[F[:, 0]]
+
+
+def solid_bodies(V, F):
+    """Each face's solid: face_bodies(), with every cavity shell (negative
+    volume) joined to the solid around it -- the nearest outer shell, since
+    from inside a solid its own surface comes first."""
+    from scipy.spatial import cKDTree
+    lab = face_bodies(F)
+    if not len(lab):
+        return lab
+    V = np.asarray(V, dtype=np.float64)
+    t = V[np.asarray(F, dtype=np.int64)]
+    vol = np.bincount(lab, weights=np.einsum("ij,ij->i", t[:, 0], np.cross(t[:, 1], t[:, 2])) / 6.0)
+    inner = np.flatnonzero(vol < 0)
+    outer = np.flatnonzero(vol > 0)
+    if not len(inner) or not len(outer):
+        return lab
+    is_outer = np.isin(lab, outer)
+    ov = np.asarray(F)[is_outer].ravel()
+    ol = np.repeat(lab[is_outer], 3)
+    tree = cKDTree(V[ov])
+    for c in inner:
+        cv = np.unique(np.asarray(F)[lab == c].ravel())
+        _, nearest = tree.query(V[cv])
+        lab[lab == c] = np.bincount(ol[nearest]).argmax()
+    return lab
+
+
+def make_pads(meshes, whole, n_blobs, angle, thickness, gap, bed, min_height, min_area, layer=0.2,
+              unit=1.0, log=None):
+    """Pads under the blob parts' faces that the slicer will support.
+
+    meshes: every part's exported (V, F), the blobs first and the last part
+    last; whole: the exported whole (V, F); all in the printed frame (+Z up,
+    the bed at z = bed).  unit: output units per A (--scale).
+
+    A blob face needs support when it is one of the whole's faces (the same
+    three float32 corners), faces down at a slope from horizontal below the
+    slicer's support threshold angle -- Bambu Studio adds 1 degree, so
+    n_z < -cos(angle + 1), with the normal averaged over 1 A of the blob's
+    surface and the face's own normal pointing down too -- and stands more
+    than min_height above the bed.  Under each such face the pad fills the
+    vertical column `thickness` deep (stopping at the bed).  A face is left
+    bare when its column meets its own blob below or comes within `gap` of
+    anything but its own blob -- the other parts and the other bodies of its
+    own part -- measured exactly to every face nearby from samples of the
+    column (corners, edge points and centre every 0.1 A deep), with a margin
+    of 5 % of the gap.  Each edge-connected patch of faces becomes one prism
+    (its top the blob's own faces turned over, so pad and blob share faces
+    exactly; at a bowtie vertex only the largest fan is kept); pads with less
+    than `min_area` of top are dropped; manifold3d's min_gap on each finished
+    pad is the gate: a pad that comes within the gap is rebuilt alone with its
+    faces' margin widened (to 15, 30, 60 %), the pads that passed staying as
+    they are, and one still too close at 60 % is dropped.  A blob's cavity
+    counts as the blob itself.  Returns (V, F, info): all pads as one mesh, and per
+    blob part the area and bodies that need support, the area and bodies
+    padded, the pads' count, volume and smallest gap, plus the pads' overlap
+    with the whole and with their blobs and the layers they are in."""
+    import trimesh
+    from scipy.sparse import coo_matrix
+    from scipy.spatial import cKDTree
+    say = log or (lambda *_: None)
+    cos_a = math.cos(math.radians(min(angle + 1.0, 89.0)))
+    margins = (0.05, 0.15, 0.3, 0.6)
+    wV = np.asarray(whole[0], dtype=np.float32)
+    wF = np.asarray(whole[1], dtype=np.int64)
+    # the whole's faces as sorted vertex-id triples, to find a blob's exposed faces
+    wv = np.ascontiguousarray(wV).view(np.dtype((np.void, 12))).ravel()
+    w_order = np.argsort(wv)
+    w_sorted = wv[w_order]
+    nid = len(wV) + 1
+    big = nid ** 3 >= 2 ** 62
+
+    def keys(ids):
+        ids = np.sort(ids, axis=1)
+        if big:
+            return np.array([hash(tuple(r)) for r in ids.tolist()], dtype=np.int64)
+        return (ids[:, 0] * nid + ids[:, 1]) * nid + ids[:, 2]
+
+    w_keys = keys(wF)
+    Vs = [np.asarray(V, dtype=np.float64) for V, _ in meshes]
+    Fs = [np.asarray(F, dtype=np.int64) for _, F in meshes]
+    bodies = [solid_bodies(V, F) for V, F in zip(Vs[:n_blobs], Fs[:n_blobs])]
+    manifolds = [to_manifold(np.asarray(V, dtype=np.float32), F, f"P{i + 1}") for i, (V, F) in enumerate(meshes)]
+    w = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [.5, .5, 0], [0, .5, .5], [.5, 0, .5],
+                  [1 / 3, 1 / 3, 1 / 3], [.75, .25, 0], [.25, .75, 0], [0, .75, .25], [0, .25, .75],
+                  [.25, 0, .75], [.75, 0, .25]])
+    depths = np.linspace(0.0, thickness, int(math.ceil(thickness / (0.1 * unit))) + 1)
+    per, keep_all, zspans, overlap_blob = [], [], [], 0.0
+    for k in range(n_blobs):
+        V, F, lab = Vs[k], Fs[k], bodies[k]
+        row = dict(part=k + 1, support_area=0.0, padded_area=0.0, pads=0, volume=0.0, min_gap=None,
+                   bodies_support=0, bodies_padded=0, dropped_small=0, dropped_close=0, invalid=0)
+        per.append(row)
+        if not len(F):
+            continue
+        t = V[F]
+        nrm = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0])
+        area = 0.5 * np.linalg.norm(nrm, axis=1)
+        unit_n = nrm / np.maximum(2 * area, 1e-30)[:, None]
+        # exposed: the whole's own faces
+        vv = np.ascontiguousarray(np.asarray(V, dtype=np.float32)).view(np.dtype((np.void, 12))).ravel()
+        pos = np.clip(np.searchsorted(w_sorted, vv), 0, len(w_sorted) - 1)
+        vid = np.where(w_sorted[pos] == vv, w_order[pos], -1)
+        fid = vid[F]
+        exposed = (fid >= 0).all(axis=1)
+        exposed[exposed] = np.isin(keys(fid[exposed]), w_keys)
+        E = np.flatnonzero(exposed)
+        if not len(E):
+            continue
+        # the slope, from the normal averaged over 1 A of the exposed surface
+        cE = t[E].mean(axis=1)
+        pairs = cKDTree(cE).query_pairs(1.0 * unit, output_type="ndarray")
+        n = len(E)
+        Wm = coo_matrix((np.ones(2 * len(pairs) + n),
+                         (np.concatenate([pairs[:, 0], pairs[:, 1], np.arange(n)]),
+                          np.concatenate([pairs[:, 1], pairs[:, 0], np.arange(n)]))), shape=(n, n)).tocsr()
+        sm = Wm @ (area[E][:, None] * unit_n[E])
+        sm /= np.maximum(np.linalg.norm(sm, axis=1), 1e-30)[:, None]
+        cand = E[(sm[:, 2] < -cos_a) & (unit_n[E, 2] < -min(0.05, cos_a)) & (area[E] > 1e-9 * unit * unit) &
+                 (t[E][:, :, 2].min(axis=1) > bed + min_height)]
+        row["support_area"] = float(area[cand].sum())
+        row["bodies_support"] = int(len(np.unique(lab[cand])))
+        if not len(cand):
+            continue
+        # each face's column, sampled; the nearest distance to anything but its own blob
+        pts = np.einsum("pk,ckd->cpd", w, t[cand])
+        col = np.repeat(pts[:, :, None, :], len(depths), axis=2)
+        col[..., 2] = np.maximum(col[..., 2] - depths[None, None, :], bed)
+        P = col.reshape(-1, 3)
+        per_face = pts.shape[1] * len(depths)
+        thr = gap * (1 + margins[-1])
+        dist = np.full(len(P), np.inf)
+        # the other parts: points provably farther than thr (nearest vertex minus
+        # the longest edge) need no exact distance
+        oth = [j for j in range(len(meshes)) if j != k and len(Fs[j])]
+        if oth:
+            OA = np.concatenate([Vs[j][Fs[j][:, 0]] for j in oth])
+            OB = np.concatenate([Vs[j][Fs[j][:, 1]] for j in oth])
+            OC = np.concatenate([Vs[j][Fs[j][:, 2]] for j in oth])
+            emax = float(max(np.linalg.norm(OB - OA, axis=1).max(), np.linalg.norm(OC - OB, axis=1).max(),
+                             np.linalg.norm(OA - OC, axis=1).max()))
+            OV = np.concatenate([Vs[j] for j in oth])
+            dv, _ = cKDTree(OV).query(P, distance_upper_bound=thr + emax)
+            near = np.flatnonzero(dv < thr + emax)
+            if len(near):
+                cen = (OA + OB + OC) / 3.0
+                rmax = float(max(np.linalg.norm(X - cen, axis=1).max() for X in (OA, OB, OC)))
+                dist[near] = nearest_face_distance(P[near], cKDTree(cen), OA, OB, OC, thr + rmax)
+        # the other bodies of this part, where their boxes come near
+        nb = int(lab.max()) + 1
+        blo = np.full((nb, 3), np.inf)
+        bhi = np.full((nb, 3), -np.inf)
+        np.minimum.at(blo, lab, t.min(axis=1))
+        np.maximum.at(bhi, lab, t.max(axis=1))
+        cand_body = lab[cand]
+        for b in np.unique(cand_body):
+            sel = np.flatnonzero(cand_body == b)
+            rows = (sel[:, None] * per_face + np.arange(per_face)[None, :]).ravel()
+            lo, hi = P[rows].min(axis=0) - thr, P[rows].max(axis=0) + thr
+            nbs = np.flatnonzero((blo <= hi).all(axis=1) & (bhi >= lo).all(axis=1))
+            nbs = nbs[nbs != b]
+            if not len(nbs):
+                continue
+            fsel = np.flatnonzero(np.isin(lab, nbs))
+            BA, BB, BC = V[F[fsel, 0]], V[F[fsel, 1]], V[F[fsel, 2]]
+            cen = (BA + BB + BC) / 3.0
+            rmax = float(max(np.linalg.norm(X - cen, axis=1).max() for X in (BA, BB, BC)))
+            dist[rows] = np.minimum(dist[rows], nearest_face_distance(P[rows], cKDTree(cen), BA, BB, BC,
+                                                                      thr + rmax))
+        dmin = dist.reshape(len(cand), -1).min(axis=1)
+        # its own blob must not lie below, within the column
+        blob = trimesh.Trimesh(V, F, process=False)
+        org = pts.reshape(-1, 3) - np.array([0.0, 0.0, 1e-4 * unit])
+        loc, ray, _ = blob.ray.intersects_location(org, np.tile([0.0, 0.0, -1.0], (len(org), 1)),
+                                                   multiple_hits=False)
+        below = np.full(len(org), np.inf)
+        if len(ray):
+            below[ray] = org[ray, 2] - loc[:, 2]
+        free = ~(below.reshape(len(cand), -1) < thickness).any(axis=1)
+        # the gate: manifold3d's exact min_gap to the other parts and to the
+        # other bodies of this part
+        others = [manifolds[j] for j in range(len(meshes)) if j != k and len(Fs[j])]
+        others_m = mf.Manifold.batch_boolean(others, mf.OpType.Add) if others else None
+        vbody = np.zeros(len(V), np.int64)
+        vbody[F.ravel()] = np.repeat(lab, 3)
+        vtree = cKDTree(V)
+
+        def top_area(bV, bF):               # the pad's faces that are its blob's faces
+            on = vtree.query(bV, distance_upper_bound=1e-3 * unit)[0] <= 1e-4 * unit
+            return float(tri_areas(bV, bF)[on[bF].all(axis=1)].sum())
+
+        body_m = {}
+
+        def body_manifold(b):
+            if b not in body_m:
+                body_m[b] = to_manifold_or_none(V, F[lab == b])
+            return body_m[b]
+
+        def gap_to_own_part(comp):
+            x0, y0, z0, x1, y1, z1 = comp.bounding_box()
+            cV, _ = arrays(comp)
+            dv, vi = vtree.query(cV)
+            top = dv <= 1e-6 * unit            # the pad's top: its own blob's vertices
+            mine = np.bincount(vbody[vi[top] if top.any() else vi]).argmax()
+            near = np.flatnonzero((blo[:, 0] <= x1 + gap) & (bhi[:, 0] >= x0 - gap) &
+                                  (blo[:, 1] <= y1 + gap) & (bhi[:, 1] >= y0 - gap) &
+                                  (blo[:, 2] <= z1 + gap) & (bhi[:, 2] >= z0 - gap))
+            g = 2 * gap
+            for b in near:
+                if b != mine and body_manifold(b) is not None:
+                    g = min(g, float(comp.min_gap(body_manifold(b), 2 * gap)))
+            return g, mine
+
+        # build, gate and keep pad by pad: a pad that comes within the gap has
+        # its faces' margin widened and is rebuilt; the pads that passed stay
+        cap = 2 * gap                        # min_gap's search length: a gap this big means "at least"
+        row_of = {tuple(sorted(f)): r for r, f in enumerate(F[cand].tolist())}
+        level = np.zeros(len(cand), np.int64)
+        done = np.zeros(len(cand), bool)
+        mgrid = np.asarray(margins)
+        accepted, acc_mine, small, close, invalid = [], [], 0, 0, 0
+        for _round in range(4 * len(margins) + 4):     # each round settles faces or widens margins
+            live = ~done & free & (dmin >= gap * (1 + mgrid[level]))
+            if not live.any():
+                break
+            solids, rows_in = [], []
+            for patch in pad_patches(F[cand[live]], V):
+                rows = np.array([row_of[tuple(sorted(f))] for f in patch.tolist()], dtype=np.int64)
+                M = to_manifold_or_none(*pad_prism(V, patch, thickness, bed))
+                if M is None:
+                    invalid += 1
+                    done[rows] = True
+                else:
+                    solids.append(M)
+                    rows_in.append(rows)
+            built = np.zeros(len(cand), bool)
+            if rows_in:
+                built[np.concatenate(rows_in)] = True
+            done[live & ~built] = True        # dropped at a bowtie
+            if not solids:
+                break
+            comps, comp_rows = [], []
+            for b in mf.Manifold.batch_boolean(solids, mf.OpType.Add).decompose():
+                if b.volume() <= 0:
+                    continue
+                bV, bF = arrays(b)
+                dv, vi = vtree.query(bV, distance_upper_bound=1e-3 * unit)
+                topv = set(vi[dv <= 1e-4 * unit].tolist())
+                rows = np.flatnonzero(built & np.isin(F[cand], list(topv)).all(axis=1)) if topv else \
+                    np.zeros(0, np.int64)
+                if top_area(bV, bF) >= min_area:
+                    comps.append(b)
+                    comp_rows.append(rows)
+                else:
+                    small += 1
+                    done[rows] = True
+            assigned = np.zeros(len(cand), bool)
+            for rows in comp_rows:
+                assigned[rows] = True
+            done[built & ~assigned] = True    # (a face no pad accounts for is settled bare)
+            if not comps:
+                break
+            # the other parts: all this round's pads at once, one by one only if needed
+            Mr = mf.Manifold.batch_boolean(comps, mf.OpType.Add)
+            all_clear = others_m is None or float(Mr.min_gap(others_m, cap)) >= gap
+            for c, rows in zip(comps, comp_rows):
+                g_own, mine = gap_to_own_part(c)
+                ok = g_own >= gap and (all_clear or float(c.min_gap(others_m, cap)) >= gap)
+                if ok:
+                    accepted.append(c)
+                    acc_mine.append(mine)
+                    done[rows] = True
+                elif not len(rows) or (level[rows] >= len(margins) - 1).any():
+                    close += 1                # still too close at the widest margin: dropped
+                    done[rows] = True
+                else:
+                    level[rows] += 1
+        row["invalid"], row["dropped_small"], row["dropped_close"] = invalid, small, close
+        comps = accepted
+        if comps:
+            Mk = mf.Manifold.batch_boolean(comps, mf.OpType.Add)
+            g_other = float(Mk.min_gap(others_m, cap)) if others_m is not None else cap
+            g_own = min(gap_to_own_part(c)[0] for c in comps)
+            row["padded_area"] = top_area(*arrays(Mk))
+            row["pads"] = len(comps)
+            row["volume"] = float(Mk.volume())
+            row["min_gap"] = min(g_other, g_own)
+            row["bodies_padded"] = int(len(set(acc_mine)))
+            keep_all.append(Mk)
+            zspans += [(c.bounding_box()[2], c.bounding_box()[5]) for c in comps]
+            # (each pad against the blob it sits on: one boolean of all the pads
+            # against the whole part leaves slivers where the faces coincide)
+            overlap_blob += sum(max(0.0, float((c ^ body_manifold(b)).volume()))
+                                for c, b in zip(comps, acc_mine) if body_manifold(b) is not None)
+        say(f"    pads under P{k + 1}: {row['pads']} pad(s) under {row['bodies_padded']} of the "
+            f"{row['bodies_support']} blob(s) the support would touch; "
+            f"{row['padded_area'] / unit ** 2:,.1f} of {row['support_area'] / unit ** 2:,.1f} A^2")
+    gaps = [r["min_gap"] for r in per if r["min_gap"] is not None]
+    height = float(wV[:, 2].max()) - bed
+    in_layers = set()
+    for z0, z1 in zspans:
+        in_layers.update(range(int(math.floor((z0 - bed) / layer)), int(math.ceil((z1 - bed) / layer))))
+    info = dict(parts=per, count=sum(r["pads"] for r in per), volume=sum(r["volume"] for r in per),
+                min_gap=min(gaps) if gaps else None,
+                min_gap_is_bound=bool(gaps) and min(gaps) >= 2 * gap * (1 - 1e-9),
+                overlap_whole=0.0, overlap_blob=overlap_blob,
+                layers=len(in_layers), layers_total=int(math.ceil(height / layer)))
+    if not keep_all:
+        return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64), info
+    allpads = mf.Manifold.batch_boolean(keep_all, mf.OpType.Add)
+    whole_m = to_manifold(wV, wF, "the whole")
+    info["overlap_whole"] = max(0.0, float((allpads ^ whole_m).volume()))
+    pV, pF = arrays(allpads)
+    return pV, pF, info
+
+
+def pads_in_angstrom(info, scale):
+    """make_pads() works in printed units (mm at --scale); the JSON, like the
+    text report, gives A, A^2 and A^3."""
+    if not info:
+        return {}
+    s = float(scale)
+    out = dict(info)
+    for key, power in (("min_gap", 1), ("volume", 3), ("overlap_whole", 3), ("overlap_blob", 3)):
+        if out.get(key) is not None:
+            out[key] = out[key] / s ** power
+    out["parts"] = []
+    for r in info.get("parts", []):
+        r = dict(r)
+        for key, power in (("support_area", 2), ("padded_area", 2), ("volume", 3), ("min_gap", 1)):
+            if r.get(key) is not None:
+                r[key] = r[key] / s ** power
+        out["parts"].append(r)
+    return out
 
 
 def export_stl(V, F, path):
@@ -2029,15 +2578,18 @@ def splat_views(meshes, colors, views, width=760, height=520):
     return images
 
 
-def render_preview(meshes, labels, colors, path, title):
+def render_preview(meshes, labels, colors, path, title, below=False):
+    """Top and oblique views; with below=True (pads), also the view from under
+    the bed, where the pads are."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.patches import Patch
-    views = [(90, -90), (25, -60)]
+    views = [(90, -90), (25, -60)] + ([(-90, -90)] if below else [])
+    names = ("top (print bed = page)", "oblique", "from below the bed")
     imgs = splat_views(meshes, colors, views)
-    fig, axs = plt.subplots(1, 2, figsize=(13, 5.2), dpi=110)
-    for ax, img, lab in zip(axs, imgs, ("top (print bed = page)", "oblique")):
+    fig, axs = plt.subplots(1, len(views), figsize=(6.5 * len(views), 5.2), dpi=110)
+    for ax, img, lab in zip(axs, imgs, names):
         ax.imshow(img)
         ax.set_title(lab, fontsize=10)
         ax.axis("off")
@@ -2190,7 +2742,7 @@ def previous_outputs(out, tag, pdb, names=()):
         except Exception:
             listed = set()
     listed |= set(names)
-    pat = re.compile(rf"^{re.escape(tag)}_(p\d+_chains?[^_/]+\.stl|whole\.stl|"
+    pat = re.compile(rf"^{re.escape(tag)}_(p\d+_chains?[^_/]+\.stl|whole\.stl|pads\.stl|"
                      rf"preview\.(png|glb)|report\.(txt|json))$")
     items = [p for p in sorted(out.iterdir()) if p.is_file() and (p.name in listed or pat.match(p.name))]
     items += [out / d for d in (f"{tag}_work", f"{tag}_work_failed") if _tool_logdir(out / d)]
@@ -2277,10 +2829,22 @@ def pipeline(a):
         if left:
             notes.append(f"chain(s) {' '.join(left)} are in no part and are LEFT OUT of the print")
     N = len(parts)
-    if N > AMS_SLOTS:
-        notes.append(f"{N} parts need {N} filaments -- more than one {AMS_SLOTS}-slot AMS")
+    pads = bool(getattr(a, "pads", False))
+    if pads and not getattr(a, "blobs", False):
+        raise SplitError("--pads goes with --blobs: the pads go under blob parts")
+    n_fil = N + (1 if pads else 0)
+    if n_fil > AMS_SLOTS:
+        notes.append(f"{N} parts" + (" and the pads (if any are written)" if pads else "") +
+                     f" need {'up to ' if pads else ''}{n_fil} filaments -- more than one {AMS_SLOTS}-slot AMS")
     tag = safe_tag(a.tag) if a.tag else default_tag(given, a.resolution)
     out = Path(a.out).expanduser().resolve() if a.out else Path.cwd() / tag
+    try:                                    # a set made before 1.7.0 kept the PDB frame by default
+        prev_rep = json.loads((out / f"{tag}_report.json").read_text())
+        if a.lay_flat and prev_rep.get("lay_flat") is False:
+            notes.append(f"the earlier {tag} set here is in the PDB frame; this one is laid flat "
+                         f"(the default since 1.7.0) -- add --no-lay-flat to rebuild it as it was")
+    except (OSError, ValueError, AttributeError):
+        pass
     if out.exists() and not out.is_dir():
         raise SplitError(f"output path {out} exists and is not a folder")
     exe = find_chimerax(a.chimerax)
@@ -2304,6 +2868,17 @@ def pipeline(a):
     if getattr(a, "blob_skin", None) is not None and not blobs:
         notes.append("--blob-skin is used only with --blobs")
     a.blob_skin = DEFAULT_BLOB_SKIN if getattr(a, "blob_skin", None) is None else float(a.blob_skin)
+    if pads and a.blob_skin == 0:
+        notes.append("--pads with --blob-skin 0: the last part's film covers most of the blobs' outward "
+                     "faces, so few blob faces count as touching the support and few pads are made -- keep "
+                     "the default skin for pads")
+    if not pads and (getattr(a, "support_angle", None) is not None or
+                     getattr(a, "pad_thickness", None) is not None):
+        notes.append("--support-angle and --pad-thickness are used only with --pads")
+    a.support_angle = DEFAULT_SUPPORT_ANGLE if getattr(a, "support_angle", None) is None \
+        else float(a.support_angle)
+    a.pad_thickness = DEFAULT_PAD_THICKNESS if getattr(a, "pad_thickness", None) is None \
+        else float(a.pad_thickness)
     if blobs:                               # blob parts are their own molmaps: no K
         k_mode, ks = "none", []
         if a.k is not None or a.k_scan or k_list:
@@ -2500,6 +3075,7 @@ def _pipeline(a, c):
 
     # ---- phase 1 (only when K has to be found): fields at the guess level only
     blobs = c.get("blobs")
+    pads = bool(blobs) and bool(getattr(a, "pads", False))   # (checked in pipeline())
     if blobs:
         K = None
         log(f"\n[1] blob parts: {blob_names(N)} the whole minus "
@@ -2651,6 +3227,14 @@ def _pipeline(a, c):
     labels = [f"P{i}_{lab}" for i, lab in enumerate(plabels, 1)]
     colors = [pal[i % len(pal)][1] for i in range(N)]
     A = placement(refV, a.lay_flat, float(a.scale))
+    try:                                    # 1.7.0 fixed the axes' signs of a laid-flat set
+        prev_rep = json.loads((out / f"{tag}_report.json").read_text())
+        R0 = np.asarray(prev_rep.get("transform"), dtype=np.float64)[:3, :3] / float(prev_rep.get("scale", 1.0))
+        if a.lay_flat and prev_rep.get("lay_flat") and not np.allclose(R0, A[:3, :3] / float(a.scale), atol=1e-6):
+            notes.append(f"the earlier {tag} set here was laid flat facing another way (1.7.0 fixed the "
+                         f"axes' signs): this one is turned against it")
+    except (OSError, ValueError, TypeError, IndexError, AttributeError):
+        pass
     names = [f"{tag}_p{i}_{lab}.stl" for i, lab in enumerate(plabels, 1)]
     whole_name = f"{tag}_whole.stl"
     stage = out / f".{tag}_incoming"
@@ -2680,6 +3264,24 @@ def _pipeline(a, c):
             written.append(nm)
     Wx, WFx, wd = weld(apply(A, refV), refF)
     export_stl(Wx, WFx, stage / whole_name)
+    # pads under the blob faces the slicer will support, in this (the printed) orientation
+    pads_name = f"{tag}_pads.stl"
+    pad_mesh, pad_info, pad_stats, pad_moved = None, None, None, (0, 0.0)
+    if pads:
+        log(f"    pads: under blob faces sloping less than {min(a.support_angle + 1, 89):g} deg from "
+            f"horizontal over 1 A (support threshold {a.support_angle:g}, +1 as Bambu Studio), "
+            f"{a.pad_thickness:g} A thick, at least {PAD_GAP:g} A from the other parts and blobs")
+        pV, pF, pad_info = make_pads(ex_meshes, (Wx, WFx), N - 1, a.support_angle,
+                                     a.pad_thickness * a.scale, PAD_GAP * a.scale, float(Wx[:, 2].min()),
+                                     LAYER_H, PAD_MIN_AREA, layer=LAYER_H, unit=float(a.scale), log=log)
+        if len(pF):
+            if not getattr(a, "keep_pinch_edges", False):
+                pV, moved_p, step_p, _ = unpinch(pV, pF)
+                pad_moved = (moved_p, step_p)
+            pVx, pFx, _ = weld(pV, pF)
+            export_stl(pVx, pFx, stage / pads_name)
+            pad_mesh = (pVx, pFx)
+            pad_stats = mesh_stats(*read_stl(stage / pads_name))
 
     # re-read what was written: the files, not the objects, are what gets printed
     reread = [mesh_stats(*read_stl(stage / nm)) if not e else mesh_stats(np.zeros((0, 3)), np.zeros((0, 3), int))
@@ -2724,14 +3326,18 @@ def _pipeline(a, c):
 
     preview_png, glb = f"{tag}_preview.png", f"{tag}_preview.glb"
     if not a.no_preview:
+        pmeshes, plabels_, pcolors = ex_meshes, labels, colors
+        if pad_mesh is not None:
+            pmeshes, plabels_, pcolors = ex_meshes + [pad_mesh], labels + ["pads"], colors + [PAD_COLOR]
         try:
-            render_preview(ex_meshes, labels, colors, stage / preview_png,
+            render_preview(pmeshes, plabels_, pcolors, stage / preview_png,
                            f"{tag}  --  molmap {res:g} A, level {L:.4f}, "
-                           + ("blob parts" if K is None else f"K {K:g}"))
+                           + ("blob parts" if K is None else f"K {K:g}")
+                           + (", pads" if pad_mesh is not None else ""), below=pad_mesh is not None)
         except Exception as e:
             log(f"    (preview PNG skipped: {e})")
         try:
-            export_glb(ex_meshes, labels, colors, stage / glb)
+            export_glb(pmeshes, plabels_, pcolors, stage / glb)
         except Exception as e:
             log(f"    (preview GLB skipped: {e})")
 
@@ -2783,6 +3389,34 @@ def _pipeline(a, c):
           f"{reread_whole['outer']} piece(s)" + (f", {reread_whole['cavities']} cavity(ies)"
                                                   if reread_whole["cavities"] else "")
           + f", {reread_whole['pinch_edges']} NM edges, {ref_deg + wd} zero-area triangle(s) dropped")
+    sc3 = float(a.scale) ** 3
+    if pads and pad_mesh is None:
+        need = sum(r["bodies_support"] for r in pad_info["parts"])
+        if need:
+            check("pads", False, f"{need} blob(s) touch the support but no pad fits (within {PAD_GAP:g} A of "
+                  f"a neighbour, over its own blob, or under {PAD_MIN_AREA:g} mm^2) -- no pads written", soft=True)
+        else:
+            check("pads", True, "no blob face needs the support here -- no pads written")
+    elif pads:
+        check("pads file: closed", pad_stats["open_edges"] == 0 and pad_stats["pinch_edges"] == 0,
+              f"{pad_stats['outer']} pad(s), {pad_stats['open_edges']} open edges, "
+              f"{pad_stats['pinch_edges']} NM edges after welding")
+        check(f"pads keep {PAD_GAP:g} A from other parts/blobs",
+              pad_info["min_gap"] is not None and pad_info["min_gap"] >= PAD_GAP * a.scale * (1 - 1e-6),
+              ("at least " if pad_info["min_gap_is_bound"] else "")
+              + f"{pad_info['min_gap'] / a.scale:.3f} A to another part or another blob")
+        check("pads lie outside the model",
+              pad_info["overlap_whole"] / sc3 <= TOL_REL * Vw and pad_info["overlap_blob"] / sc3 <= TOL_REL * Vw,
+              f"{pad_info['overlap_whole'] / sc3:.2g} A^3 inside the whole, "
+              f"{pad_info['overlap_blob'] / sc3:.2g} A^3 inside their blobs (they only touch them)")
+        t_mm, g_mm = a.pad_thickness * a.scale, PAD_GAP * a.scale
+        if t_mm < 2 * LAYER_H - 1e-9:
+            check("pads are two layers thick", False,
+                  f"{t_mm:.2f} mm is under two {LAYER_H:g} mm layers -- raise --pad-thickness to at least "
+                  f"{2 * LAYER_H / a.scale:.2g} A at this --scale", soft=True)
+        if g_mm < 0.4 - 1e-9:
+            check("pads clear their neighbours by a line", False,
+                  f"{g_mm:.2f} mm is narrower than a 0.4 mm line: a pad may fuse to its neighbour", soft=True)
     if len(pieces) > 1:
         check("the whole is one piece", False,
               f"{len(pieces)} separate pieces: they print as {len(pieces)} loose (or "
@@ -2832,9 +3466,15 @@ def _pipeline(a, c):
              f"--chimerax={exe}"]
     if a.scale != 1.0:
         repro.append(f"--scale={a.scale:.12g}")
-    for flag in ("lay_flat", "allow_multi_shell", "keep_solvent", "no_hydrogens", "keep_pinch_edges"):
+    if pads:
+        repro += ["--pads", f"--support-angle={a.support_angle:.12g}",
+                  f"--pad-thickness={a.pad_thickness:.12g}"]
+    for flag in ("allow_multi_shell", "keep_solvent", "keep_pinch_edges"):
         if getattr(a, flag):
             repro.append("--" + flag.replace("_", "-"))
+    # spelled out either way, so a change of default can never change a rebuild
+    repro.append("--lay-flat" if a.lay_flat else "--no-lay-flat")
+    repro.append("--no-hydrogens" if a.no_hydrogens else "--keep-hydrogens")
     if palette != "default":                    # a default run's report stays as it was
         repro.append(palette_option(palette))
     R = []
@@ -2884,6 +3524,10 @@ def _pipeline(a, c):
                                              f"exceeds the other atoms' together" if a.blob_skin > 0 else
                                              "blob skin 0: each blob is exactly its own molmap "
                                              "surface"))
+        if pads:
+            P_(f"  pads                under blob faces sloping less than {min(a.support_angle + 1, 89):g} deg "
+               f"from horizontal over 1 A (support threshold {a.support_angle:g}, +1 as Bambu Studio), "
+               f"{a.pad_thickness:g} A thick, at least {PAD_GAP:g} A from the other parts and blobs")
     else:
         P_(f"  K (penalty slope)   {K:g}          ({k_mode}"
            + (f"; K0 = {k0:.3g}" if k_mode == 'scanned' else "") + ")")
@@ -2957,6 +3601,32 @@ def _pipeline(a, c):
             P_(f"  -> the complement fills it; the colour boundaries sit on average ~{gap_t / 2:.2f} A "
                f"(estimate; typically 0.1-0.2 A = {gap_t / 2 * a.scale:.2f} mm printed) off the "
                f"mid-surface, into the earlier part")
+    if pads:
+        P_("")
+        P_("PADS  (under the blob faces the slicer will support, in this orientation and size)")
+        t_mm, g_mm = a.pad_thickness * a.scale, PAD_GAP * a.scale
+        P_(f"  rule                    faces whose surface, averaged over 1 A, slopes less than "
+           f"{a.support_angle:g} deg from horizontal (Bambu adds 1: < {min(a.support_angle + 1, 89):g}), "
+           f"more than {LAYER_H:g} mm above the bed")
+        P_(f"  pads                    {a.pad_thickness:g} A deep = {t_mm:.2f} mm = {t_mm / LAYER_H:.1f} layers "
+           f"of {LAYER_H:g} mm (to the bed at most); at least {PAD_GAP:g} A = {g_mm:.2f} mm from the other "
+           f"parts and blobs; under {PAD_MIN_AREA:g} mm^2 dropped")
+        sc2 = float(a.scale) ** 2
+        for r in pad_info["parts"]:
+            sa, pa = r["support_area"] / sc2, r["padded_area"] / sc2
+            P_(f"  {labels[r['part'] - 1]:23s} {r['bodies_support']} blob(s) touch the support ({sa:,.1f} A^2); "
+               f"{r['bodies_padded']} padded by {r['pads']} pad(s), {pa:,.1f} A^2"
+               + (f" ({100 * pa / sa:.0f} %)" if sa > 0 else "")
+               + (f"; {r['bodies_support'] - r['bodies_padded']} left bare (too close to a neighbour, or "
+                  f"the pad too small)" if r["bodies_support"] > r["bodies_padded"] else ""))
+        if pad_mesh is not None:
+            P_(f"  closest approach        " + ("at least " if pad_info["min_gap_is_bound"] else "")
+               + f"{pad_info['min_gap'] / a.scale:.3f} A to another part or another blob")
+            P_(f"  layers                  pads in {pad_info['layers']} of {pad_info['layers_total']} layers "
+               f"(a filament change in each, if the pads get their own filament)")
+        P_(f"  -> the support meets the pads, not the blobs, wherever a pad fits; where a face that needs "
+           f"support is within {PAD_GAP:g} A of a neighbour, over its own blob, or its pad would be under "
+           f"{PAD_MIN_AREA:g} mm^2, the support still meets the blob")
     P_("")
     P_("PRINTING")
     P_(f"  model size (PDB frame)  {ext_pdb[0]:.1f} x {ext_pdb[1]:.1f} x {ext_pdb[2]:.1f} A")
@@ -2964,11 +3634,22 @@ def _pipeline(a, c):
        f"height {ext_out[2]:.1f} mm = ~{int(math.ceil(ext_out[2] / LAYER_H))} layers at {LAYER_H} mm")
     if not a.lay_flat and flat_h < 0.8 * ext_out[2]:
         P_(f"  laid flat it would be   {flat_h:.1f} mm tall (~{int(math.ceil(flat_h / LAYER_H))} layers) "
-           f"-- purge scales with layer count: re-run with --lay-flat or rotate the WHOLE object")
-    P_(f"  filaments               {N}" + (f"  (more than one {AMS_SLOTS}-slot AMS)" if N > AMS_SLOTS else ""))
+           f"-- purge scales with layer count: re-run without --no-lay-flat"
+           + (" (rotating the object in the slicer would misplace the pads)" if pad_mesh is not None
+              else " or rotate the WHOLE object"))
+    n_fil = N + (1 if pad_mesh is not None else 0)
+    P_(f"  filaments               {n_fil}" + (" (the parts, and the pads' own)" if pad_mesh is not None else "")
+       + (f"  (more than one {AMS_SLOTS}-slot AMS)" if n_fil > AMS_SLOTS else ""))
     P_("  slicer: import all part STLs at once (one object, one sub-model per part, already")
     P_("  registered -- never move them apart); assign one filament per part; check 'First")
     P_("  layer filament sequence'; enable flush into infill/support.")
+    if pad_mesh is not None:
+        P_(f"  pads: {pads_name} is one more part, all pads in one: import it with the parts")
+        P_("  and give it a filament that does not bond to the parts' -- PVA or BVOH (they dissolve)")
+        P_("  or PETG with PLA parts (it breaks away); in the parts' own filament a pad fuses to its")
+        P_("  blob. Keep the size and the up direction: turning the object about Z or moving it is")
+        P_("  fine; tilting, flipping or scaling it in the slicer misplaces the pads (give the print")
+        P_("  scale with --scale instead).")
     if len(pieces) > 1:
         P_(f"  The whole is {len(pieces)} separate pieces: they come off the bed as "
            f"{len(pieces)} loose (or interlocked) objects.")
@@ -2981,6 +3662,8 @@ def _pipeline(a, c):
                                                   f"when this one was published" if prev else "") + ")")
     for nm, e in zip(names, empty):
         P_(f"  {nm}" + ("   (EMPTY -- not written)" if e else ""))
+    if pad_mesh is not None:
+        P_(f"  {pads_name}   (pads under the blobs: print with the parts)")
     P_(f"  {whole_name}   (reference -- do not print together with the parts)")
     if not a.no_preview:
         P_(f"  {preview_png}, {glb}   (local previews)")
@@ -3010,7 +3693,12 @@ def _pipeline(a, c):
                blob_skin=float(a.blob_skin) if blobs else None, part_surface_shown=shown,
                level_mode="pinned" if pinned else "scanned", auto_level=auto_level,
                guess=guess, dust=dust, dust_protected=protected, scale=a.scale,
-               lay_flat=bool(a.lay_flat), transform=A.tolist(), whole_volume=Vw,
+               lay_flat=bool(a.lay_flat), no_hydrogens=bool(a.no_hydrogens), transform=A.tolist(),
+               whole_volume=Vw,
+               pads=dict(support_angle=a.support_angle, thickness=a.pad_thickness, gap=PAD_GAP,
+                         min_area_mm2=PAD_MIN_AREA, file=str(out / pads_name) if pad_mesh is not None
+                         else None, file_stats_mm=pad_stats, vertices_separated=pad_moved[0],
+                         **pads_in_angstrom(pad_info, a.scale)) if pads else None,
                whole_pieces=len(pieces), expected_pieces=n_whole, expected_basis=basis,
                molecules=n_mol, molecules_all=mol["n_all"] if mol else None,
                molecules_removed=mol["removed"] if mol else None, part_clusters=clusters,
@@ -3022,7 +3710,8 @@ def _pipeline(a, c):
                field_gap_thickness=gap_t if S is not None else None,
                boundary_offset=gap_t / 2 if S is not None else None,
                checks=checks, verdict=verdict, scan=records, kscan=k_records,
-               files=[str(out / nm) for nm in written] + [str(out / whole_name)],
+               files=[str(out / nm) for nm in written] + ([str(out / pads_name)] if pad_mesh is not None else [])
+               + [str(out / whole_name)],
                zero_area_dropped=dict(whole=ref_deg + wd, parts=ex_deg),
                pinch_vertices_separated=[m for m, _step in separated],
                keep_pinch_edges=bool(getattr(a, "keep_pinch_edges", False)),
@@ -3672,6 +4361,7 @@ HELP = {
         "report's PRINTING section gives the exported size in mm and the layer "
         "count.\n\n"
         "Command line: --scale 2.",
+        "with Lay flat unticked:\n"
         "1    24.9 x 67.2 x 24.7 Å  ->  24.9 x 67.2 x 24.7 mm\n"
         "2    24.9 x 67.2 x 24.7 Å  ->  49.8 x 134.5 x 49.3 mm",
     ),
@@ -3682,14 +4372,16 @@ HELP = {
         "along Y and the shortest one is vertical, then centres it in X and Y "
         "and puts its lowest point at Z = 0. The axes come from a principal "
         "component analysis of the whole's surface vertices. "
-        "Off (the default) keeps the PDB frame.\n\n"
+        "On by default; untick it to keep the PDB frame.\n\n"
         "A lower model needs fewer layers, and on a multi-material printer the "
         "purge scales with the layer count. When the model is not laid flat "
         "and lying flat would make it less than 80 % as tall, the report's "
         "PRINTING section says so, with the layer counts at 0.2 mm layers. The "
         "parts stay registered either way; the alternative is to rotate the "
-        "whole object in the slicer, never the parts on their own.\n\n"
-        "Command line: --lay-flat.",
+        "whole object in the slicer, never the parts on their own. With Pads "
+        "ticked, do not tilt or flip the object: the pads are placed for the "
+        "exported up direction (turning it about Z or moving it is fine).\n\n"
+        "Command line: on by default; --no-lay-flat keeps the PDB frame.",
         "a triplex, from the report:\n"
         "off   67.1 mm tall, ~336 layers at 0.2 mm\n"
         "on    27.4 mm tall, ~138 layers",
@@ -3755,7 +4447,8 @@ HELP = {
         "Each level it checks gets the same checks, except that the last part "
         "has no field of its own, and the report leaves out the density-share "
         "warning, which a blob is not meant to meet. Blob skin sets what happens "
-        "where a blob would lie a hair beneath the surface.\n\n"
+        "where a blob would lie a hair beneath the surface, and Pads keep the "
+        "slicer's support off the blobs where a pad fits.\n\n"
         "Command line: --blobs.",
         "Parts by atom selections, Blob parts ticked:\n"
         "  `phosA = /A@P,OP1,OP2,OP3,O5',O3'`\n"
@@ -3796,6 +4489,66 @@ HELP = {
         "        film, which covers the rest of each blob and\n"
         "        seals one blob in",
     ),
+    "pads": (
+        "Pads under blobs that touch the support",
+        "Used only with Blob parts. A blob is small and held only by the faces "
+        "it shares with its neighbours, so where the slicer's support touches a "
+        "blob, pulling the support off can take the blob with it. Ticked, the "
+        "tool also writes <tag>_pads.stl: a pad under every blob face the "
+        "support would touch, so the support touches the pad instead.\n\n"
+        "A blob face is taken to touch the support when it is on the model's "
+        "surface, faces down at a slope from horizontal below the Support angle "
+        "(the slicer's support threshold angle) and stands more than 0.2 mm "
+        "above the bed. Under each such face the pad fills the space straight "
+        "below it, Pad thickness deep (to the bed at most), and shares the "
+        "blob's faces exactly, so the two touch. A face whose pad would come "
+        f"within {PAD_GAP:g} Å of any other part (the last part or another blob) "
+        "is left bare, so a pad touches only its own blob, and pads smaller than "
+        f"{PAD_MIN_AREA:g} mm² are dropped. The report's PADS section gives, per "
+        "blob part, the area that needs support and the area padded, and checks "
+        f"that the pads are closed, keep {PAD_GAP:g} Å from the other parts and "
+        "lie outside the model. The preview adds a view from below.\n\n"
+        "All the pads are one part: import <tag>_pads.stl with the part STLs and "
+        "give it a filament that does not bond to the parts' filament: PVA or "
+        "BVOH, which dissolve, or PETG with PLA parts, which breaks away. A pad "
+        "printed in the parts' own filament fuses to its blob and helps nothing. "
+        "The pads are built for the exported orientation and size (laid flat by "
+        "default), so do not tilt, flip or scale the object in the slicer; "
+        "turning it about Z or moving it is fine. To print smaller, give the "
+        "scale here with Scale: the report warns when a pad is under two 0.2 mm "
+        "layers or its gap is narrower than a 0.4 mm line.\n\n"
+        "Command line: --pads (with --blobs).",
+        "210 bp supercoil at 3.7 Å, phosphate blobs, laid flat:\n"
+        "P1  170 blobs, 911 Å², would touch the support;\n"
+        "    120 of them padded, 580 Å², by 123 pads\n"
+        "P2  167 blobs, 876 Å²; 122 padded, 586 Å²\n"
+        "closest approach to another part or blob 0.52 Å",
+    ),
+    "support_angle": (
+        "Support angle (°)",
+        "Used only with Pads. The slicer's support threshold angle: the slicer "
+        "supports a face that slopes less than this from horizontal, so those "
+        "are the blob faces that get pads. Give the number set in the slicer "
+        "(in Bambu Studio, Support > Threshold angle). Bambu Studio adds 1° to "
+        "it, and so does the tool. A face's slope is taken from the blob's "
+        "surface averaged over 1 Å, so the pads are not speckled by the mesh. "
+        "A larger angle pads steeper faces too. Blank means 35°.\n\n"
+        "Command line: --support-angle 35.",
+        "`35`   faces sloping less than 36° from horizontal\n"
+        "       get pads\n"
+        "`45`   steeper faces too, up to 46°",
+    ),
+    "pad_thickness": (
+        "Pad thickness (Å)",
+        "Used only with Pads. How far each pad reaches below its blob face, in "
+        "Å, so in mm times Scale: at the default 1 mm per Å, 0.8 Å is 0.8 mm, "
+        "four 0.2 mm layers. A pad near the bed stops at the bed. Blank means "
+        "0.8 Å; allowed above 0 and up to 5 Å.\n\n"
+        "Command line: --pad-thickness 0.8.",
+        "`0.8`   at Scale 1: 0.8 mm, four 0.2 mm layers\n"
+        "`0.8`   at Scale 0.5: 0.4 mm, two layers\n"
+        "`1.6`   at Scale 0.5: 0.8 mm again",
+    ),
     "no_widen": (
         "Do not widen a failed level scan",
         "Stops after the first level scan when no level in it is accepted. "
@@ -3831,16 +4584,16 @@ HELP = {
     ),
     "no_hydrogens": (
         "Exclude hydrogens",
-        "Leaves hydrogen atoms out of the maps. Off (the default), hydrogens "
-        "in the file go into the maps like any other atom. "
-        "Tick it for a map of the heavy atoms only, e.g. to match a model that "
-        "has no hydrogens.\n\n"
+        "Leaves hydrogen atoms out of the maps, so the maps are of the heavy "
+        "atoms only, as for a model that has no hydrogens. On by default; "
+        "untick it to put the file's hydrogens into the maps like any other "
+        "atom.\n\n"
         "It does not change which atoms form a molecule or a cluster "
         "(hydrogens never count there) or the chain table's atom counts; the "
         "atom counts on the report's parts line are the atoms in the maps, so "
         "they drop by the hydrogens. The report's \"solvent / H\" line says "
         "which was used.\n\n"
-        "Command line: --no-hydrogens.",
+        "Command line: on by default; --keep-hydrogens puts them in.",
         None,
     ),
     "keep_scan": (
@@ -3970,23 +4723,31 @@ GUI_NUMBERS = [
     ("step", "Level scan step", f"{DEFAULT_STEP:g}", "contour increment -- NOT the voxel step"),
     ("scale", "Scale (mm per Å)", "1", "1 = 1 Å → 1 mm"),
     ("blob_skin", "Blob skin (Å)", "", f"blank = {DEFAULT_BLOB_SKIN:g}; Blob parts: thinner skins go to the blob"),
+    ("support_angle", "Support angle (°)", "",
+     f"blank = {DEFAULT_SUPPORT_ANGLE:g}; Pads: the slicer's support threshold angle"),
+    ("pad_thickness", "Pad thickness (Å)", "", f"blank = {DEFAULT_PAD_THICKNESS:g}; Pads"),
 ]
+# A number field used only when this checkbox is ticked
+GUI_NUMBER_NEEDS = {"blob_skin": "blobs", "support_angle": "pads", "pad_thickness": "pads"}
 # The CLI flag of a GUI_NUMBERS key when listed here; otherwise it is
 # "--" + key.replace("_", "-").
 GUI_FLAG_NAMES = {"span": "--level-span", "step": "--level-step", "level_guess": "--level-guess",
                   "k_list": "--k-list"}
-# The checkboxes: key, label, default.  The CLI flag is "--" + key.replace("_", "-").
+# The checkboxes: key, label, default.  The CLI flag is "--" + key.replace("_", "-");
+# a box ticked by default writes its GUI_OFF_FLAGS flag when unticked.
 GUI_OPTIONS = [
-    ("lay_flat", "Lay flat for printing (fewer layers → less purge)", False),
+    ("lay_flat", "Lay flat for printing (fewer layers → less purge)", True),
     ("k_scan", "Force a K scan", False),
     ("allow_multi_shell", "Allow parts with several shells", False),
     ("blobs", "Blob parts (each but the last is its own molmap)", False),
+    ("pads", "Pads under blobs that touch the support", False),
     ("no_widen", "Do not widen a failed level scan", False),
     ("keep_solvent", "Keep solvent (waters)", False),
-    ("no_hydrogens", "Exclude hydrogens", False),
+    ("no_hydrogens", "Exclude hydrogens", True),
     ("keep_scan", "Keep scan STLs (<tag>_work/)", False),
     ("no_preview", "Skip preview PNG/GLB", False),
 ]
+GUI_OFF_FLAGS = {"lay_flat": "--no-lay-flat", "no_hydrogens": "--keep-hydrogens"}
 
 
 def run_gui(initial_file=None, prefill=None, selftest=None):
@@ -4558,12 +5319,16 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             for key, flag in (("out", "--out"), ("tag", "--tag"), ("chimerax", "--chimerax")):
                 if g[key]:
                     args.append(f"{flag}={g[key]}")
+            if g["pads"] and not g["blobs"]:
+                raise ValueError("Pads go under blob parts: tick Blob parts too")
             for key, _, _, _ in GUI_NUMBERS:
-                if g[key] != "" and (key != "blob_skin" or g["blobs"]):
+                if g[key] != "" and (key not in GUI_NUMBER_NEEDS or g[GUI_NUMBER_NEEDS[key]]):
                     args.append(f"{GUI_FLAG_NAMES.get(key, '--' + key.replace('_', '-'))}={g[key]}")
-            for key, _, _ in GUI_OPTIONS:
-                if g[key]:
+            for key, _, default in GUI_OPTIONS:
+                if g[key] and not default:
                     args.append("--" + key.replace("_", "-"))
+                elif not g[key] and default:
+                    args.append(GUI_OFF_FLAGS[key])
             if check_palette(g["palette"]) != "default":     # a menu, not a number field
                 args.append(palette_option(g["palette"]))
             return args
@@ -4876,7 +5641,10 @@ def build_parser():
                    help="atoms two --part selections share: first gives each to the earlier part "
                         "and says so in the log and report; error refuses the run")
     g.add_argument("--keep-solvent", action="store_true", help="include waters in the maps")
-    g.add_argument("--no-hydrogens", action="store_true", help="leave hydrogens out of the maps")
+    g.add_argument("--no-hydrogens", dest="no_hydrogens", action="store_true", default=True,
+                   help="leave hydrogens out of the maps (the default)")
+    g.add_argument("--keep-hydrogens", dest="no_hydrogens", action="store_false", default=argparse.SUPPRESS,
+                   help="put the file's hydrogens into the maps")
     g = ap.add_argument_group("molmap")
     g.add_argument("--resolution", type=float, default=DOC_RESOLUTION, help="molmap resolution, A")
     g.add_argument("--grid", type=float, default=DOC_GRID, help="molmap gridSpacing, A")
@@ -4915,14 +5683,31 @@ def build_parser():
                         "the blob takes the skin, so it reaches the surface instead of lying a hair beneath it; 0 "
                         "keeps each blob exactly its own molmap surface (0 to 1; default "
                         f"{DEFAULT_BLOB_SKIN:g})")
+    g.add_argument("--pads", action="store_true",
+                   help="with --blobs: write <tag>_pads.stl, one part holding a pad under each "
+                        "blob face the slicer will support (its surface, over 1 A, sloping less than "
+                        "--support-angle + 1 from horizontal, above the bed) where a pad fits "
+                        f"--pad-thickness deep and at least {PAD_GAP:g} A from the other parts and "
+                        "blobs (other faces stay bare), so the support touches the pads, not the "
+                        "blobs; made for the exported orientation and scale")
+    g.add_argument("--support-angle", type=float, default=None,
+                   help="with --pads: the slicer's support threshold angle, degrees, as set in "
+                        "the slicer; Bambu Studio supports a face sloping less than this + 1 from "
+                        f"horizontal, and so does the tool (default {DEFAULT_SUPPORT_ANGLE:g})")
+    g.add_argument("--pad-thickness", type=float, default=None,
+                   help=f"with --pads: pad thickness, A (default {DEFAULT_PAD_THICKNESS:g}; "
+                        "x --scale in mm)")
     g = ap.add_argument_group("output")
     g.add_argument("-o", "--out", default=None,
                    help="output folder (default ./<tag>, i.e. ./<stem>_molmap<res>_split)")
     g.add_argument("--tag", default=None,
                    help="file prefix (default <structure stem>_molmap<resolution>_split)")
     g.add_argument("--scale", type=float, default=1.0, help="mm per Angstrom in the STLs")
-    g.add_argument("--lay-flat", action="store_true",
-                   help="rotate everything so the shortest principal axis is vertical")
+    g.add_argument("--lay-flat", dest="lay_flat", action="store_true", default=True,
+                   help="rotate everything so the shortest principal axis is vertical, lowest "
+                        "point at Z = 0 (the default)")
+    g.add_argument("--no-lay-flat", dest="lay_flat", action="store_false", default=argparse.SUPPRESS,
+                   help="keep the PDB frame")
     g.add_argument("--keep-scan", action="store_true",
                    help="keep every candidate STL in <tag>_work/ (or <tag>_work_failed/)")
     g.add_argument("--no-preview", action="store_true", help="skip the preview PNG / GLB")
@@ -4985,7 +5770,8 @@ def main(argv=None):
         if not a.parts:
             a.parts = None
     nums = {k: getattr(a, k) for k in ("resolution", "grid", "dust", "k", "level",
-                                       "level_guess", "span", "step", "scale", "blob_skin")}
+                                       "level_guess", "span", "step", "scale", "blob_skin",
+                                       "support_angle", "pad_thickness")}
     errs = check_numbers(nums)
     if a.k_list:
         try:
@@ -5001,7 +5787,7 @@ def main(argv=None):
                                           "allow_multi_shell", "no_widen", "keep_solvent",
                                           "no_hydrogens", "keep_scan", "no_preview", "palette",
                                           "selection_syntax", "overlap", "chimera", "blobs",
-                                          "blob_skin")}
+                                          "blob_skin", "pads", "support_angle", "pad_thickness")}
         if a.part:
             pre["part"] = "\n".join(a.part)
             pre["parts_by"] = "selections"
@@ -5012,6 +5798,8 @@ def main(argv=None):
         return run_gui(prefill=pre, selftest=a.gui_selftest)
     if not a.structure:
         ap.error("a structure file is required (or run with no arguments for the GUI)")
+    if a.pads and not a.blobs:
+        ap.error("--pads goes with --blobs: the pads go under blob parts")
     return run_cli(a)
 
 
