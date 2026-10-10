@@ -182,27 +182,28 @@ METHOD  (the two-colour BR strand-split procedure, generalised to N parts)
    Under each such face the pad fills the vertical column --pad-thickness
    deep (default 0.8 A), below the model's lowest point if need be, so the
    print may stand up to that much taller, and down to the pads' lowest point
-   when it would end less than two layers (0.4 mm) above it; its top is the
-   blob's own faces turned over, so pad and blob share faces exactly.  A face
-   is left bare when its column comes within 0.5 A of anything but its
-   own blob -- the other parts and the other bodies of its own part (exact
-   point-to-triangle distances at samples of the column, with a margin of 5 %;
-   manifold3d's min_gap on each finished pad is the gate, and a pad that fails
-   it is rebuilt alone with its margin widened to 15, 30 and 60 %, then
-   dropped) -- or meets its own blob below; each edge-connected patch (at a
-   bowtie vertex only its largest fan) becomes one prism with vertical walls,
-   pads under 0.5 mm^2 are dropped, and all pads go into <tag>_pads.stl, one
-   part.  The report checks that the pads are
-   closed, keep 0.5 A from every part but their own blob, and lie outside the
-   model.
+   when it would end less than two layers (0.4 mm at the exported size)
+   above it; its top is the blob's own faces turned over, so pad and blob
+   share faces exactly.  A face is left bare when its column comes within
+   0.5 A of anything but its own blob -- the other parts and the other bodies
+   of its own part (exact point-to-triangle distances at samples of the
+   column, with a margin of 5 %; manifold3d's min_gap on each finished pad is
+   the gate, and a pad that fails it is rebuilt alone with its margin widened
+   to 15, 30 and 60 %, then dropped) -- or meets its own blob below; each
+   edge-connected patch (at a bowtie vertex only its largest fan) becomes one
+   prism with vertical walls, pads under 0.5 mm^2 at the exported size are
+   dropped, and all pads go into <tag>_pads.stl, one part.  The report checks
+   that the pads are closed, keep 0.5 A from every part but their own blob,
+   and lie outside the model.
 
 Slicing (Bambu Studio): import all part STLs AT ONCE -> one object with one
 sub-model per part, already registered; give each part a filament; check
 "First layer filament sequence".  Models are laid flat by default
 (--no-lay-flat keeps the PDB frame): purge scales with layer count.  With
---pads, <tag>_pads.stl is one more sub-model, in a filament that does not bond
-to the parts' (PVA / BVOH, or PETG with PLA), and the object keeps its exported
-orientation and size (give the print scale with --scale).  Enable flush
+--pads, <tag>_pads.stl is one more sub-model, in a filament the parts can be
+freed from (PVA / BVOH, which dissolve, or PETG with PLA parts), and the object
+keeps its exported up direction: scaling the whole object uniformly scales the
+pads with it, but tilting or flipping it misplaces them.  Enable flush
 into infill / support.  When the whole is one piece the colours fuse into one
 solid -- nothing comes apart.
 """
@@ -3679,11 +3680,14 @@ def _pipeline(a, c):
     P_("  layer filament sequence'; enable flush into infill/support.")
     if pad_mesh is not None:
         P_(f"  pads: {pads_name} is one more part, all pads in one: import it with the parts")
-        P_("  and give it a filament that does not bond to the parts' -- PVA or BVOH (they dissolve)")
-        P_("  or PETG with PLA parts (it breaks away); in the parts' own filament a pad fuses to its")
-        P_("  blob. Keep the size and the up direction: turning the object about Z or moving it is")
-        P_("  fine; tilting, flipping or scaling it in the slicer misplaces the pads (give the print")
-        P_("  scale with --scale instead).")
+        P_("  and give it a filament the parts can be freed from -- PVA or BVOH, which dissolve")
+        P_("  in water, or, with PLA parts, PETG, which breaks away; in the parts' own filament")
+        P_("  a pad fuses to its blob. Keep the up direction: turning the object about Z,")
+        P_("  moving it or scaling it uniformly is fine, but tilting or flipping it misplaces")
+        P_("  the pads. Scaled in the slicer, every size of the pads scales with it, the")
+        P_(f"  {PAD_MIN_AREA:g} mm^2 smallest pad and the {2 * LAYER_H:g} mm reach to the lowest pad included: the mm,")
+        P_("  layers and warnings above are for the exported size (--scale makes them the")
+        P_("  print's).")
     if len(pieces) > 1:
         P_(f"  The whole is {len(pieces)} separate pieces: they come off the bed as "
            f"{len(pieces)} loose (or interlocked) objects.")
@@ -4391,6 +4395,10 @@ HELP = {
         "It is applied only when the files are written. The split itself, "
         "the maps, the level and K, and the shapes of the parts, is computed "
         "in Å and does not depend on it, and the report's volumes stay in Å³. "
+        f"Pads are the exception: their smallest size, {PAD_MIN_AREA:g} mm², and "
+        f"their reach down to the lowest pad, {2 * LAYER_H:g} mm, are in mm at the "
+        "exported size, so the pads differ between scales (scaled in the slicer, "
+        "those sizes shrink with the print). "
         "The part STLs, the whole STL and the GLB preview are scaled, and the "
         "report's PRINTING section gives the exported size in mm and the layer "
         "count.\n\n"
@@ -4414,7 +4422,8 @@ HELP = {
         "parts stay registered either way; the alternative is to rotate the "
         "whole object in the slicer, never the parts on their own. With Pads "
         "ticked, do not tilt or flip the object: the pads are placed for the "
-        "exported up direction (turning it about Z or moving it is fine).\n\n"
+        "exported up direction (turning it about Z, moving it or scaling the "
+        "whole object uniformly is fine).\n\n"
         "Command line: on by default; --no-lay-flat keeps the PDB frame.",
         "a triplex, from the report:\n"
         "off   67.1 mm tall, ~336 layers at 0.2 mm\n"
@@ -4546,14 +4555,21 @@ HELP = {
         f"that the pads are closed, keep {PAD_GAP:g} Å from the other parts and "
         "lie outside the model. The preview adds a view from below.\n\n"
         "All the pads are one part: import <tag>_pads.stl with the part STLs and "
-        "give it a filament that does not bond to the parts' filament: PVA or "
-        "BVOH, which dissolve, or PETG with PLA parts, which breaks away. A pad "
-        "printed in the parts' own filament fuses to its blob and helps nothing. "
-        "The pads are built for the exported orientation and size (laid flat by "
-        "default), so do not tilt, flip or scale the object in the slicer; "
-        "turning it about Z or moving it is fine. To print smaller, give the "
-        "scale here with Scale: the report warns when a pad is under two 0.2 mm "
-        "layers or its gap is narrower than a 0.4 mm line.\n\n"
+        "give it a filament the parts can be freed from: PVA or BVOH, which "
+        "dissolve in water, or, with PLA parts, PETG, which breaks away. A pad "
+        "printed in the parts' own filament fuses to its blob, so pulling the "
+        "support off still pulls on the blob. "
+        "The pads are built for the exported up direction (laid flat by "
+        "default), so do not tilt or flip the object in the slicer; turning it "
+        "about Z, moving it or scaling the whole object uniformly is fine, and "
+        f"the pads scale with it: scaled to 50 %, {DEFAULT_PAD_THICKNESS:g} Å pads "
+        f"made at Scale 1 print {DEFAULT_PAD_THICKNESS / 2:g} mm thick and keep "
+        f"{PAD_GAP / 2:g} mm from their neighbours. The tool's two rules in mm, "
+        f"pads under {PAD_MIN_AREA:g} mm² dropped and a pad ending less than "
+        f"{2 * LAYER_H:g} mm above the lowest pad taken down to it, apply at the "
+        "exported size, like the report's figures and its warnings when a pad is "
+        "under two 0.2 mm layers or its gap is narrower than a 0.4 mm line; give "
+        "the print scale with Scale for them to apply to the print.\n\n"
         "Command line: --pads (with --blobs).",
         "210 bp supercoil at 3.7 Å, phosphate blobs, laid flat:\n"
         "P1  192 blobs, 1,522 Å², would touch the support;\n"
@@ -4580,14 +4596,16 @@ HELP = {
     "pad_thickness": (
         "Pad thickness (Å)",
         "Used only with Pads. How far each pad reaches below its blob face, in "
-        "Å, so in mm times Scale: at the default 1 mm per Å, 0.8 Å is 0.8 mm, "
-        "four 0.2 mm layers. Under a blob near the bed the pad reaches below the "
+        "Å, so in mm times Scale, and times any scaling in the slicer: at the "
+        "default 1 mm per Å, 0.8 Å is 0.8 mm, four 0.2 mm layers. Under a blob "
+        "near the bed the pad reaches below the "
         "model, so the print can stand up to this much taller. Blank means "
         "0.8 Å; allowed above 0 and up to 5 Å.\n\n"
         "Command line: --pad-thickness 0.8.",
         "`0.8`   at Scale 1: 0.8 mm, four 0.2 mm layers\n"
-        "`0.8`   at Scale 0.5: 0.4 mm, two layers\n"
-        "`1.6`   at Scale 0.5: 0.8 mm again",
+        "`0.8`   at Scale 0.5, or at Scale 1 printed at 50 %:\n"
+        "        0.4 mm, two layers\n"
+        "`1.6`   either way at half size: 0.8 mm again",
     ),
     "no_widen": (
         "Do not widen a failed level scan",
@@ -5730,7 +5748,9 @@ def build_parser():
                         f"--pad-thickness deep and at least {PAD_GAP:g} A from the other parts and "
                         "blobs (other faces stay bare), so the support touches the pads, not the "
                         "blobs; a pad may reach below the model, so the print stands up to "
-                        "--pad-thickness taller; made for the exported orientation and scale")
+                        "--pad-thickness taller; made for the exported up direction: do not tilt "
+                        "or flip the object in the slicer (turning it about Z, moving it or scaling it "
+                        "uniformly is fine)")
     g.add_argument("--support-angle", type=float, default=None,
                    help="with --pads: the slicer's support threshold angle, degrees, as set in "
                         "the slicer or larger, which pads steeper faces too; Bambu Studio supports "
