@@ -20,6 +20,8 @@ solids that tile the whole molmap surface EXACTLY, for multicolour printing
         --part "phosB=/B@P,OP1,OP2,O5',O3'" --part rest   # blobs, each its own molmap
     python3 multicolor_split.py MODEL.pdb --blobs --pads ...  # + pads under the blobs
                                                              # where the support touches
+    python3 multicolor_split.py MODEL.pdb --blobs --sticks ...  # + sticks of the last part
+                                                               # into the blobs, along bonds
 
 This is Curve It's "Multicolor Split..." tool; it also runs on its own.  In the
 GUI every field, checkbox and group of buttons has a light-blue ? that opens an
@@ -196,6 +198,32 @@ METHOD  (the two-colour BR strand-split procedure, generalised to N parts)
    that the pads are closed, keep 0.5 A from every part but their own blob,
    and lie outside the model.
 
+7. Sticks (--sticks, with --blobs and --part).  Before the parts are written,
+   the ChimeraX selection job lists every bond (ChimeraX's own connectivity,
+   hydrogens left out) between an atom of a blob part and an atom of the last
+   part: with the phosphate groups taken as P, OP1, OP2, O5' and O3' these are
+   O5'-C5' and O3'-C3'; without O5' and O3', P-O5' and P-O3'.  The last
+   part's atom usually lies inside the blob, so for each bond the tool finds
+   E, where the line from the blob's atom back along the bond first leaves its
+   blob, and keeps the bond only if at least half of a stick's cross-section
+   just behind E is the last part and the line does not leave the blob into
+   one of its cavities (last-part atoms the blob encloses: a stick there would
+   key nothing).  The stick, --stick-diameter across (1.5 A),
+   runs from half its diameter behind E to the blob's atom, where a ball of
+   --stick-ball (1.8 A; 0 for none) caps it.  It is accepted if the part of it
+   inside the blob keeps --stick-wall (0.6 A) from the blob-coloured surface
+   (blob faces on the whole's surface: by the last part's own surface a root
+   meets its own colour) and its blob body stays one piece; a stick that fails
+   with its ball is tried without it, then left out, and sticks that split a
+   body only together are dropped from the last.  Each blob solid (an outer
+   shell with its cavities) loses its own sticks only (solids do not touch,
+   so the part is reassembled without a boolean), the last part is rebuilt as
+   the whole minus the blob parts, and the parts are finished again, so the
+   tiling stays exact; the checks, the files, the previews and the pads all
+   see the sticks.  The report checks, on the finished parts, the wall (from
+   the faces of the sticks' holes), that no blob was split and that the
+   blob-coloured surface is unchanged.
+
 Slicing (Bambu Studio): import all part STLs AT ONCE -> one object with one
 sub-model per part, already registered; give each part a filament; check
 "First layer filament sequence".  Models are laid flat by default
@@ -224,7 +252,7 @@ import tempfile
 import time
 from pathlib import Path
 
-__version__ = "1.7.1"
+__version__ = "1.8.0"
 TOOL_NAME = "Multicolor Split"
 
 try:
@@ -265,6 +293,18 @@ MAX_PAD_THICKNESS = 5.0
 PAD_GAP = 0.5                  # A (x --scale mm): a pad keeps this far from every part but its own blob
 PAD_MIN_AREA = 0.5             # mm^2 of top: smaller pads are dropped (narrower than a few lines)
 PAD_COLOR = (0.35, 0.35, 0.35)  # the pads in the previews
+# Sticks (--sticks): pegs of the last part pushed into the blobs along the bonds between them
+DEFAULT_STICK_DIAMETER = 1.5   # A (x --scale mm)
+DEFAULT_STICK_BALL = 1.8       # A: diameter of the ball capping a stick, on the blob's atom; 0 = none
+MAX_STICK_DIAMETER = 4.0
+MAX_STICK_BALL = 6.0
+DEFAULT_STICK_WALL = 0.6       # A of its blob a stick keeps between it and the blob-coloured
+                               # surface (at least MIN_STICK_WALL, so no pad is lost to a stick)
+STICK_SEGMENTS = 16            # facets around a stick or a ball
+STICK_EDGE = 0.8               # A: longest edge along a stick, about the parts' own mesh
+STICK_SAMPLE = 0.2             # A: spacing of the points a stick's wall is measured from
+MIN_STICK_WALL = 0.55          # A: above the 0.525 A the pads keep from the last part, sampling included
+MAX_STICK_WALL = 2.0
 
 SLIVER_VOXELS = 4.0  # a boolean body under this many voxels (0.5 A^3 at grid 0.5) is a fragment
 TOL_REL = 1e-5      # sum / overlap / void tolerance as a fraction of the whole (0.001 %)
@@ -411,6 +451,20 @@ def check_numbers(v):
             errs.append(f"support angle must be between 0 and 90 degrees (got {x:g})")
         elif name == "pad_thickness" and not 0 < x <= MAX_PAD_THICKNESS:
             errs.append(f"pad thickness must be above 0 and at most {MAX_PAD_THICKNESS:g} A (got {x:g})")
+        elif name == "stick_diameter" and not 0 < x <= MAX_STICK_DIAMETER:
+            errs.append(f"stick diameter must be above 0 and at most {MAX_STICK_DIAMETER:g} A (got {x:g})")
+        elif name == "stick_ball" and not 0 <= x <= MAX_STICK_BALL:
+            errs.append(f"stick ball diameter must be from 0 to {MAX_STICK_BALL:g} A (got {x:g})")
+        elif name == "stick_wall" and not MIN_STICK_WALL <= x <= MAX_STICK_WALL:
+            errs.append(f"stick wall must be from {MIN_STICK_WALL:g} to {MAX_STICK_WALL:g} A (got {x:g})")
+    d, b = v.get("stick_diameter"), v.get("stick_ball")
+    if d is not None or b is not None:      # (a blank one is its default)
+        dd = DEFAULT_STICK_DIAMETER if d is None else d
+        bb = DEFAULT_STICK_BALL if b is None else b
+        if math.isfinite(bb) and math.isfinite(dd) and 0 < bb <= dd:
+            errs.append(f"stick ball diameter {bb:g} A{' (the default)' if b is None else ''} must be "
+                        f"larger than the stick's, {dd:g} A{' (the default)' if d is None else ''}, or 0 "
+                        f"for no ball")
     s, st = v.get("span"), v.get("step")
     if s and st and math.isfinite(s) and math.isfinite(st) and 0 < s < st:
         errs.append(f"level scan step {st:g} is larger than the span {s:g}: only the guess "
@@ -1063,6 +1117,29 @@ def select_job(P, man):
     left = np.nonzero(considered & (owner < 0))[0]
     part_idx = np.nonzero(owner >= 0)[0]
     elements = atoms.element_names
+    bonds = None
+    if P.get("bonds"):                      # --sticks: the bonds from a blob part to the last part
+        last = len(sels) - 1
+        a1, a2 = s0.bonds.atoms
+        i1, i2 = atoms.indices(a1), atoms.indices(a2)
+        ok = (i1 >= 0) & (i2 >= 0)
+        i1, i2 = i1[ok], i2[ok]
+        hyd = np.array([str(e) in ("H", "D") for e in elements], dtype=bool)
+        ok = ~hyd[i1] & ~hyd[i2]            # never along a bond to a hydrogen, kept or not
+        i1, i2 = i1[ok], i2[ok]
+        o1, o2 = owner[i1], owner[i2]       # solvent left out is in no part (-1)
+        fwd = (o1 >= 0) & (o1 < last) & (o2 == last)
+        rev = (o2 >= 0) & (o2 < last) & (o1 == last)
+        bi = np.concatenate([i1[fwd], i2[rev]])
+        ri = np.concatenate([i2[fwd], i1[rev]])
+        order = np.lexsort((ri, bi))
+        bi, ri = bi[order], ri[order]
+        xyz = np.asarray(atoms.coords, dtype=float)
+        bonds = dict(part=owner[bi].tolist(), blob_atom=[keys[i] for i in bi],
+                     rest_atom=[keys[i] for i in ri], blob_xyz=xyz[bi].round(4).tolist(),
+                     rest_xyz=xyz[ri].round(4).tolist(),
+                     between_blobs=int(((o1 >= 0) & (o1 < last) & (o2 >= 0) & (o2 < last)
+                                        & (o1 != o2)).sum()))
     man["selection"] = dict(
         n_considered=int(considered.sum()), unassigned=int(len(left)),
         unassigned_examples=[keys[i] for i in left[:5]], shared=shared, parts=out,
@@ -1071,6 +1148,8 @@ def select_job(P, man):
                    coords=np.asarray(atoms.coords, dtype=float)[part_idx].round(4).tolist(),
                    is_h=[str(elements[i]) in ("H", "D") for i in part_idx],
                    chain=[keys[i].split(":", 1)[0] for i in part_idx]))
+    if bonds is not None:
+        man["selection"]["bonds"] = bonds
     say("parts selected: " + ", ".join("P%d %d atoms" % (k + 1, o["n_atoms"])
                                        for k, o in enumerate(out)))
 
@@ -2525,6 +2604,307 @@ def pads_in_angstrom(info, scale):
     return out
 
 
+# ------------------------------------------------- sticks from the last part into the blobs
+def stick_shape(E, b, u, diameter, ball, anchor):
+    """One stick: a cylinder of `diameter` on the bond's axis u, from `anchor`
+    behind the entry point E (mostly in the last part) to the blob's atom b,
+    and a ball of diameter `ball` centred on b (0: none), every edge cut to at
+    most STICK_EDGE like the parts' own mesh."""
+    E, b, u = (np.asarray(x, dtype=np.float64) for x in (E, b, u))
+    h = float(np.linalg.norm(b - E)) + anchor
+    cyl = mf.Manifold.extrude(mf.CrossSection.circle(diameter / 2.0, STICK_SEGMENTS), h,
+                              max(0, int(math.ceil(h / STICK_EDGE)) - 1))
+    a = np.array([1.0, 0.0, 0.0]) if abs(u[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    x = np.cross(a, u)
+    x /= np.linalg.norm(x)
+    M = np.zeros((3, 4))
+    M[:, 0], M[:, 1], M[:, 2], M[:, 3] = x, np.cross(u, x), u, E - anchor * u
+    S = cyl.transform(M)
+    if ball > 0:
+        S = S + mf.Manifold.sphere(ball / 2.0, STICK_SEGMENTS).translate(tuple(float(c) for c in b))
+    # the end caps too: one long triangle widens every later distance search (pads)
+    return S.refine_to_length(STICK_EDGE)
+
+
+def _solids(M, sliver):
+    """A part's solids: each outer shell (at least `sliver`) with the cavity
+    shells it encloses (as whole_solids does), and the cavities no solid
+    takes.  Shells under `sliver` either way (fragments, the zero-volume
+    shells a boolean leaves) are dropped: they hold no volume."""
+    pieces = M.decompose()
+    outer = [x for x in pieces if x.volume() >= sliver]
+    holes = [x for x in pieces if x.volume() <= -sliver]
+    groups, loose = [[x] for x in outer], []
+    for h in holes:
+        hb = h.bounding_box()
+        inside = [n for n, x in enumerate(outer) if x.volume() > -h.volume() and _bbox_contains(x.bounding_box(), hb)]
+        if inside:
+            groups[min(inside, key=lambda n: outer[n].volume())].append(h)
+        else:
+            loose.append(h)
+    return [concat_manifolds(g) for g in groups], loose
+
+
+def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=None):
+    """Sticks of the last part pushed into the blob parts along the bonds
+    between them.
+
+    parts: the built parts (blob parts first, the last part last) and ref the
+    whole, all in the PDB frame (A); bonds: from the ChimeraX selection job
+    (each bond's blob part, blob atom and last-part atom, names and
+    coordinates).  For each bond, u runs from the last part's atom r to the
+    blob's atom b, and E is where the line, followed from b back along -u,
+    first leaves b's blob part.  The stick is a cylinder of `diameter` from
+    diameter/2 behind E (mostly in the last part) to b, and a ball of `ball`
+    (0: none) centred on b.  A bond is skipped when b is not inside its blob,
+    when the line leaves the blob into one of its cavities (a stick there
+    would key nothing), or when less than half of the stick's cross-section
+    just behind E is the last part (the bond leaves the blob through the
+    surface or into another blob); a stick is accepted only if the part of it
+    inside the blob keeps `wall` from the blob-coloured surface (the blob
+    parts' faces on the whole's surface) and its blob body stays one piece; a
+    stick that fails with its ball is tried without it, then dropped.  Each
+    blob solid (an outer shell with its cavities) loses its own sticks only;
+    the last part is rebuilt as the whole minus the blob parts, so the tiling
+    stays exact, and the parts are finished again (fragments handed on).
+    When no stick is accepted the parts are returned as they were.
+
+    The wall and the pieces are then measured again on the finished parts:
+    info["final_min_wall"] from the new blob faces (where a stick now is) to
+    the blob-coloured surface, and parts[k]["bodies_after"] from the second
+    finishing.
+
+    Returns (new parts, finish infos of the new pass or None, info)."""
+    from scipy.spatial import cKDTree
+    t0 = time.time()
+    say = log or (lambda msg: None)
+    N = len(parts)
+    part = np.asarray(bonds["part"], dtype=np.int64)
+    B = np.asarray(bonds["blob_xyz"], dtype=np.float64).reshape(-1, 3)
+    Rr = np.asarray(bonds["rest_xyz"], dtype=np.float64).reshape(-1, 3)
+    nb = len(part)
+    vec = B - Rr
+    length = np.linalg.norm(vec, axis=1) if nb else np.zeros(0)
+    u = vec / np.maximum(length, 1e-12)[:, None] if nb else np.zeros((0, 3))
+    E = np.full((nb, 3), np.nan)
+    status, reason = ["skipped"] * nb, [""] * nb
+    anchor = diameter / 2.0
+    rest_mesh = trimesh.Trimesh(*arrays(parts[N - 1]), process=False)
+    search = 2.0 * wall
+    # the blob-coloured surface: blob faces on the whole's surface.  The wall is
+    # measured to these only: near its root a stick lies by the last part's own
+    # surface, where its colour meets its own colour
+    refV = arrays(ref)[0]
+
+    def coloured(P):
+        V, F = arrays(P)
+        if not len(F):
+            return np.zeros((0, 3, 3))
+        return np.asarray(V, dtype=np.float64)[F[surface_is_on(V, refV)[F].all(axis=1)]]
+
+    def face_tree(tri):
+        cen = tri.mean(axis=1)
+        return (cKDTree(cen), tri[:, 0], tri[:, 1], tri[:, 2],
+                float(np.linalg.norm(tri - cen[:, None], axis=2).max())) if len(tri) else None
+
+    surf = face_tree(np.concatenate([coloured(parts[k]) for k in range(n_blobs)] or [np.zeros((0, 3, 3))]))
+
+    def wall_from(P, tree):
+        """Distance from the points P to the blob-coloured surface `tree`."""
+        if tree is None or not len(P):
+            return np.inf
+        return float(nearest_face_distance(P, tree[0], tree[1], tree[2], tree[3], search + tree[4]).min())
+
+    def shell(T):
+        """Distance from the solid T (inside a blob) to the blob-coloured surface."""
+        if T.is_empty():
+            return np.inf
+        return wall_from(arrays(T.refine_to_length(STICK_SAMPLE))[0].astype(np.float64), surf)
+    new_blobs, by_part, walls, cut_any = [], [], {}, False
+    for k in range(n_blobs):
+        idx = np.nonzero(part == k)[0]
+        blob = parts[k]
+        solids, loose = _solids(blob, sliver) if not blob.is_empty() else ([], [])
+        rec = dict(part=k + 1, bonds=int(len(idx)), with_ball=0, without_ball=0, skipped=int(len(idx)),
+                   moved_volume=0.0, bodies_before=len(solids), bodies_after=len(solids))
+        if not len(idx) or blob.is_empty():
+            for i in idx:
+                reason[i] = "its blob part is empty"
+            new_blobs.append(blob)
+            by_part.append(rec)
+            continue
+        mesh = trimesh.Trimesh(*arrays(blob), process=False)
+        # which faces belong to a cavity shell (a shell of negative volume)
+        lab = face_bodies(mesh.faces)
+        t = mesh.vertices[mesh.faces]
+        vol = np.bincount(lab, np.einsum("ij,ij->i", t[:, 0], np.cross(t[:, 1], t[:, 2])) / 6.0)
+        in_cavity = vol[lab] < 0
+        inside = mesh.contains(B[idx])
+        for i in idx[~inside]:
+            reason[i] = "its atom is not inside its blob"
+        cand = idx[inside]
+        if len(cand):
+            loc, ray, tri_i = mesh.ray.intersects_location(B[cand], -u[cand], multiple_hits=False)
+            hit = np.full(len(cand), np.nan)
+            hit[ray] = np.linalg.norm(loc - B[cand[ray]], axis=1)
+            cav = np.zeros(len(cand), bool)
+            cav[ray] = in_cavity[tri_i]
+            for j in np.nonzero(np.isnan(hit))[0]:
+                reason[cand[j]] = "no blob surface along the bond"
+            for j in np.nonzero(cav)[0]:
+                reason[cand[j]] = "the bond leaves the blob into a cavity of it"
+            ok = ~np.isnan(hit) & ~cav
+            cand, hit = cand[ok], hit[ok]
+            E[cand] = B[cand] - hit[:, None] * u[cand]
+            # just behind E, at least half of the stick's cross-section must be the
+            # last part, so a stick never hangs on a film of it
+            if len(cand):
+                uu = u[cand]
+                xa = np.cross(np.where(np.abs(uu[:, :1]) < 0.9, [[1.0, 0.0, 0.0]], [[0.0, 1.0, 0.0]]), uu)
+                xa /= np.linalg.norm(xa, axis=1)[:, None]
+                ya = np.cross(uu, xa)
+                ang = np.linspace(0.0, 2 * np.pi, 8, endpoint=False)
+                off = np.concatenate([np.zeros((1, len(cand), 3)), 0.8 * (diameter / 2.0) * (
+                    np.cos(ang)[:, None, None] * xa[None] + np.sin(ang)[:, None, None] * ya[None])])
+                pts = (E[cand] - 0.05 * uu)[None] + off          # (9, n, 3)
+                frac = rest_mesh.contains(pts.reshape(-1, 3)).reshape(len(off), -1).mean(axis=0)
+                behind = frac >= 0.5
+            else:
+                behind = np.zeros(0, bool)
+            for i in cand[~behind]:
+                reason[i] = "the bond does not leave the blob into the last part"
+            cand = cand[behind]
+        smeshes = [trimesh.Trimesh(*arrays(x), process=False) for x in solids]
+        home = np.full(nb, -1)
+        for i in cand:
+            for j, (x, sm) in enumerate(zip(solids, smeshes)):
+                bb = x.bounding_box()
+                if all(bb[d] - 1e-6 <= B[i, d] <= bb[d + 3] + 1e-6 for d in range(3)) and \
+                        sm.contains(B[i:i + 1])[0]:
+                    home[i] = j
+                    break
+            if home[i] < 0:
+                reason[i] = "its atom is not inside its blob"
+        cand = [i for i in cand if home[i] >= 0]
+        shapes = {}
+        for i in cand:
+            for with_ball in ((True, False) if ball > 0 else (False,)):
+                S = stick_shape(E[i], B[i], u[i], diameter, ball if with_ball else 0.0, anchor)
+                # only the blob solid that holds the atom is cut: where the stick's
+                # root passes another blob, that blob keeps its own
+                T, rem = solids[home[i]].split(S)
+                sh = shell(T)
+                if sh < wall * (1 - 1e-6):
+                    reason[i] = f"closer than {wall:g} A to the blob-coloured surface"
+                    continue
+                if len(_solids(rem, sliver)[0]) != 1:
+                    reason[i] = "it would cut its blob in two"
+                    continue
+                shapes[i] = (S, with_ball)
+                walls[i] = min(search, sh)
+                status[i], reason[i] = ("stick+ball" if with_ball else "stick"), ""
+                break
+        # sticks that pass one by one can still split a solid together: drop the later ones
+        cut = {}
+        for j in range(len(solids)):
+            mine = [i for i in cand if home[i] == j and i in shapes]
+            while mine:
+                rem = solids[j] - mf.Manifold.batch_boolean([shapes[i][0] for i in mine], mf.OpType.Add)
+                if len(_solids(rem, sliver)[0]) == 1:
+                    cut[j] = rem
+                    break
+                i = mine.pop()
+                del shapes[i]
+                status[i], reason[i] = "skipped", "it would cut its blob in two, with its neighbours"
+        acc = [i for i in idx if i in shapes]
+        if acc:
+            # each solid loses its own sticks only; the solids do not touch, so
+            # the part is put back together without a boolean
+            new = concat_manifolds([cut.get(j, x) for j, x in enumerate(solids)] + loose)
+            rec["moved_volume"] = float(blob.volume() - new.volume())
+            cut_any = True
+        else:
+            new = blob
+        rec["with_ball"] = sum(1 for i in acc if shapes[i][1])
+        rec["without_ball"] = sum(1 for i in acc if not shapes[i][1])
+        rec["skipped"] = int(len(idx)) - len(acc)
+        new_blobs.append(new)
+        by_part.append(rec)
+    infos, final_wall = None, None
+    if cut_any:
+        new_blobs += [parts[j] for j in range(n_blobs, N - 1)]
+        last = ref - mf.Manifold.batch_boolean([x for x in new_blobs if not x.is_empty()], mf.OpType.Add)
+        new_parts, infos = finish_parts(new_blobs + [last], sliver)
+        # measured again on the finished parts: the blob faces that are new (the
+        # walls of the sticks' holes), sampled densely, to the blob-coloured surface
+        walls_final = []
+        made_k = {k: [i for i in range(nb) if part[i] == k and status[i] != "skipped"] for k in range(n_blobs)}
+        for k in range(n_blobs):
+            if not by_part[k]["with_ball"] + by_part[k]["without_ball"]:
+                continue
+            by_part[k]["bodies_after"] = infos[k]["bodies"]
+            V0 = arrays(parts[k])[0]
+            V, F = arrays(new_parts[k])
+            old = {v.tobytes() for v in np.ascontiguousarray(V0, dtype=np.float32)}
+            fresh = ~np.array([v.tobytes() in old for v in np.ascontiguousarray(V, dtype=np.float32)])
+            hole = np.asarray(V, dtype=np.float64)[F[fresh[F].any(axis=1)]]
+            if len(hole):
+                w = np.array([[4, 1, 1], [1, 4, 1], [1, 1, 4], [1, 1, 1], [1, 0, 0], [0, 1, 0], [0, 0, 1],
+                              [1, 1, 0], [0, 1, 1], [1, 0, 1]], dtype=np.float64)
+                w /= w.sum(axis=1)[:, None]
+                P = np.einsum("pk,fkd->fpd", w, hole).reshape(-1, 3)
+                # keep the points on a stick or ball: the faces the cut re-triangulated
+                # around a hole are mostly the old blob/last-part boundary, which
+                # runs out to the colour line on the surface
+                on = np.zeros(len(P), bool)
+                ptree = cKDTree(P)
+                eps = 0.02
+                for i in made_k[k]:
+                    a0, b0 = E[i] - anchor * u[i], B[i]    # the cylinder's flat ends
+                    R = ball / 2.0 if status[i] == "stick+ball" else 0.0
+                    L = float(np.linalg.norm(b0 - a0))
+                    sel = np.asarray(ptree.query_ball_point((a0 + b0) / 2.0, L / 2.0 + max(anchor, R) + 0.1),
+                                     dtype=np.int64)
+                    if not len(sel):
+                        continue
+                    X = P[sel]
+                    ax = (X - a0) @ u[i]
+                    rho = np.linalg.norm(X - a0 - ax[:, None] * u[i], axis=1)
+                    hit = (ax >= -eps) & (ax <= L + eps) & (rho <= anchor + eps)
+                    if R > 0:
+                        hit |= np.linalg.norm(X - b0, axis=1) <= R + eps
+                    on[sel[hit]] = True
+                walls_final.append(wall_from(P[on], face_tree(coloured(new_parts[k]))))
+        final_wall = min(walls_final) if walls_final else None
+    else:
+        new_parts = parts
+    depth = np.linalg.norm(B - E, axis=1) if nb else np.zeros(0)
+    made = [i for i in range(nb) if status[i] != "skipped"]
+    pairs = collections.Counter("%s-%s" % (bonds["blob_atom"][i].split("@")[-1],
+                                           bonds["rest_atom"][i].split("@")[-1]) for i in range(nb))
+    why = collections.Counter(reason[i] for i in range(nb) if status[i] == "skipped")
+    info = dict(diameter=float(diameter), ball=float(ball), wall=float(wall), segments=STICK_SEGMENTS,
+                bonds=nb, pairs=dict(sorted(pairs.items())),
+                bond_length=[float(length.min()), float(length.max())] if nb else None,
+                made=len(made), with_ball=sum(1 for i in made if status[i] == "stick+ball"),
+                without_ball=sum(1 for i in made if status[i] == "stick"), skipped=nb - len(made),
+                skip_reasons=dict(why), between_blobs=int(bonds.get("between_blobs", 0)),
+                depth=[float(np.min(depth[made])), float(np.median(depth[made])),
+                       float(np.max(depth[made]))] if made else None,
+                min_wall=float(min(walls[i] for i in made)) if made else None,
+                min_wall_is_bound=bool(made) and min(walls[i] for i in made) >= search,
+                final_min_wall=None if final_wall is None or not np.isfinite(final_wall) else float(final_wall),
+                parts=by_part, seconds=time.time() - t0,
+                records=[dict(blob_atom=bonds["blob_atom"][i], rest_atom=bonds["rest_atom"][i],
+                              part=int(part[i]) + 1, length=float(length[i]),
+                              depth=None if np.isnan(depth[i]) else float(depth[i]),
+                              status=status[i], reason=reason[i]) for i in range(nb)])
+    say(f"    sticks: {len(made)} of {nb} bond(s) "
+        f"({info['with_ball']} with a ball, {info['without_ball']} without), {nb - len(made)} skipped, "
+        f"in {info['seconds']:.0f} s")
+    return new_parts, infos, info
+
+
 def export_stl(V, F, path):
     trimesh.Trimesh(vertices=np.asarray(V, dtype=np.float64), faces=F,
                     process=False).export(str(path))
@@ -2861,6 +3241,12 @@ def pipeline(a):
     pads = bool(getattr(a, "pads", False))
     if pads and not getattr(a, "blobs", False):
         raise SplitError("--pads goes with --blobs: the pads go under blob parts")
+    sticks = bool(getattr(a, "sticks", False))
+    if sticks and not getattr(a, "blobs", False):
+        raise SplitError("--sticks goes with --blobs: the sticks go into blob parts")
+    if sticks and selections is None:
+        raise SplitError("--sticks follows the bonds between atom-selection parts: give the parts "
+                         "with --part")
     n_fil = N + (1 if pads else 0)
     if n_fil > AMS_SLOTS:
         notes.append(f"{N} parts" + (" and the pads (if any are written)" if pads else "") +
@@ -2908,6 +3294,16 @@ def pipeline(a):
         else float(a.support_angle)
     a.pad_thickness = DEFAULT_PAD_THICKNESS if getattr(a, "pad_thickness", None) is None \
         else float(a.pad_thickness)
+    if not sticks and any(getattr(a, x, None) is not None
+                          for x in ("stick_diameter", "stick_ball", "stick_wall")):
+        notes.append("--stick-diameter, --stick-ball and --stick-wall are used only with --sticks")
+    a.stick_diameter = DEFAULT_STICK_DIAMETER if getattr(a, "stick_diameter", None) is None \
+        else float(a.stick_diameter)
+    a.stick_ball = DEFAULT_STICK_BALL if getattr(a, "stick_ball", None) is None else float(a.stick_ball)
+    a.stick_wall = DEFAULT_STICK_WALL if getattr(a, "stick_wall", None) is None else float(a.stick_wall)
+    if sticks and 0 < a.stick_ball <= a.stick_diameter:
+        raise SplitError(f"--stick-ball {a.stick_ball:g} must be larger than --stick-diameter "
+                         f"{a.stick_diameter:g}, or 0 for sticks without balls")
     if blobs:                               # blob parts are their own molmaps: no K
         k_mode, ks = "none", []
         if a.k is not None or a.k_scan or k_list:
@@ -2995,7 +3391,7 @@ def pipeline(a):
                k_mode=k_mode, ks=ks, k0=k0, notes=notes, t_start=t_start, state=state,
                n_mol=n_mol, mol=mol, clusters=clusters, closest=closest, sliver=sliver,
                dusted_chains=dusted_chains, palette=palette, pal=pal,
-               selections=selections, chimera_exe=chimera_exe, blobs=blobs)
+               selections=selections, chimera_exe=chimera_exe, blobs=blobs, sticks=sticks)
     try:
         return _pipeline(a, ctx)
     finally:
@@ -3033,8 +3429,12 @@ def resolve_selections(a, c):
                 p["keys"] = next(found)
         c["chimera_version"] = cman.get("chimera_version")
     man = run_chimerax(c["exe"], dict(c["base"], mode="select", selections=payload,
-                                      overlap=getattr(a, "overlap", "first")), work, "select")
+                                      overlap=getattr(a, "overlap", "first"),
+                                      **({"bonds": True} if c.get("sticks") else {})), work, "select")
     sel = man["selection"]
+    if c.get("sticks"):
+        c["bonds"] = sel.get("bonds") or dict(part=[], blob_atom=[], rest_atom=[], blob_xyz=[],
+                                              rest_xyz=[], between_blobs=0)
     for k, (s, r) in enumerate(zip(sels, sel["parts"]), 1):
         s.update(n_selected=r["selected"], n_atoms=r["n_atoms"], lost=r["lost"],
                  not_found=r["not_found"])
@@ -3105,6 +3505,7 @@ def _pipeline(a, c):
     # ---- phase 1 (only when K has to be found): fields at the guess level only
     blobs = c.get("blobs")
     pads = bool(blobs) and bool(getattr(a, "pads", False))   # (checked in pipeline())
+    sticks = bool(blobs) and bool(getattr(a, "sticks", False))
     if blobs:
         K = None
         log(f"\n[1] blob parts: {blob_names(N)} the whole minus "
@@ -3251,6 +3652,25 @@ def _pipeline(a, c):
     held.clear()
     Vw = ref.volume()
     pieces = whole_solids(ref)
+    stick_info, shown_before = None, None
+    if sticks:
+        bonds = c.get("bonds") or {}
+        nb_ = len(bonds.get("part", []))
+        log(f"    sticks: {nb_} bond(s) from the blobs to P{N}" + (": " + ", ".join(
+            f"{n_} {pair}" for pair, n_ in sorted(collections.Counter(
+                "%s-%s" % (x.split("@")[-1], y.split("@")[-1])
+                for x, y in zip(bonds["blob_atom"], bonds["rest_atom"])).items())) if nb_ else ""))
+        shown_before = []
+        for P in parts_m[:N - 1]:
+            V, F = arrays(P)
+            shown_before.append(float(tri_areas(V, F)[surface_is_on(V, refV)[F].all(axis=1)].sum())
+                                if len(F) else 0.0)
+        parts_m, new_infos, stick_info = make_sticks(parts_m, ref, bonds, N - 1, a.stick_diameter,
+                                                     a.stick_ball, a.stick_wall, sliver, log=log)
+        for old, new_ in zip(pinfo, new_infos or []):   # the second pass's fragments add to the first's
+            old.update(bodies=new_["bodies"], cavities=new_["cavities"])
+            for key in ("slivers", "sliver_volume", "received", "received_volume", "dropped_volume"):
+                old[key] += new_[key]
     sels = c.get("selections")
     plabels = [x["label"] for x in sels] if sels else [part_label(p) for p in parts]
     labels = [f"P{i}_{lab}" for i, lab in enumerate(plabels, 1)]
@@ -3446,6 +3866,34 @@ def _pipeline(a, c):
         if g_mm < 0.4 - 1e-9:
             check("pads clear their neighbours by a line", False,
                   f"{g_mm:.2f} mm is narrower than a 0.4 mm line: a pad may fuse to its neighbour", soft=True)
+    if sticks:
+        si = stick_info
+        if not si["bonds"]:
+            check("sticks", False, f"no bond joins a blob part to P{N}: no sticks made", soft=True)
+        else:
+            check("sticks made", si["made"] > 0,
+                  f"{si['made']} of {si['bonds']} bond(s), {si['with_ball']} with a ball"
+                  + (f"; {si['skipped']} skipped (" + "; ".join(f"{n_}: {w_}" for w_, n_ in
+                                                             si["skip_reasons"].items()) + ")"
+                     if si["skipped"] else ""), soft=True)
+            fw = si["final_min_wall"]
+            if si["made"]:              # measured again on the finished parts, from the sticks' holes
+                check(f"sticks keep {a.stick_wall:g} A of blob",
+                      fw is None or fw >= a.stick_wall - STICK_SAMPLE / 4,
+                      ("more than " + f"{2 * a.stick_wall:g}" if fw is None else f"{fw:.3f}")
+                      + " A of blob between a stick and the blob-coloured surface, in the finished parts")
+            check("sticks split no blob", all(r["bodies_after"] == r["bodies_before"] for r in si["parts"]),
+                  ", ".join(f"P{r['part']} {r['bodies_before']} -> {r['bodies_after']} piece(s)"
+                            for r in si["parts"]))
+            check("sticks leave the surface as it was",
+                  all(abs(x - y) <= 1e-6 * max(1.0, y) for x, y in zip(shown[:N - 1], shown_before)),
+                  "blob area on the whole's surface " + ", ".join(
+                      f"P{i} {y:,.1f} -> {x:,.1f} A^2" for i, (x, y) in enumerate(zip(shown, shown_before), 1)))
+            d_mm = a.stick_diameter * a.scale
+            if d_mm < 0.4 - 1e-9:
+                check("sticks are a line across", False,
+                      f"{d_mm:.2f} mm at this --scale is narrower than a 0.4 mm line: the slicer may "
+                      f"leave them out", soft=True)
     if len(pieces) > 1:
         check("the whole is one piece", False,
               f"{len(pieces)} separate pieces: they print as {len(pieces)} loose (or "
@@ -3498,6 +3946,9 @@ def _pipeline(a, c):
     if pads:
         repro += ["--pads", f"--support-angle={a.support_angle:.12g}",
                   f"--pad-thickness={a.pad_thickness:.12g}"]
+    if sticks:
+        repro += ["--sticks", f"--stick-diameter={a.stick_diameter:.12g}",
+                  f"--stick-ball={a.stick_ball:.12g}", f"--stick-wall={a.stick_wall:.12g}"]
     for flag in ("allow_multi_shell", "keep_solvent", "keep_pinch_edges"):
         if getattr(a, flag):
             repro.append("--" + flag.replace("_", "-"))
@@ -3557,6 +4008,11 @@ def _pipeline(a, c):
             P_(f"  pads                under blob faces sloping less than {min(a.support_angle + 1, 89):g} deg "
                f"from horizontal over 1 A (support threshold {a.support_angle:g}, +1 as Bambu Studio), "
                f"{a.pad_thickness:g} A thick, at least {PAD_GAP:g} A from the other parts and blobs")
+        if sticks:
+            P_(f"  sticks              {a.stick_diameter:g} A across, along every bond from a blob atom to a P{N} "
+               f"atom, from where its line leaves the blob to the atom"
+               + (f", capped there with a ball {a.stick_ball:g} A across" if a.stick_ball > 0 else "")
+               + f"; at least {a.stick_wall:g} A of blob between them and the blob-coloured surface")
     else:
         P_(f"  K (penalty slope)   {K:g}          ({k_mode}"
            + (f"; K0 = {k0:.3g}" if k_mode == 'scanned' else "") + ")")
@@ -3630,6 +4086,41 @@ def _pipeline(a, c):
             P_(f"  -> the complement fills it; the colour boundaries sit on average ~{gap_t / 2:.2f} A "
                f"(estimate; typically 0.1-0.2 A = {gap_t / 2 * a.scale:.2f} mm printed) off the "
                f"mid-surface, into the earlier part")
+    if sticks:
+        si = stick_info
+        P_("")
+        P_(f"STICKS  (pegs of P{N} pushed into the blobs along the bonds between them)")
+        P_(f"  rule                    along each bond from a blob atom to a P{N} atom, from where the bond's "
+           f"line, followed back past the P{N} atom, leaves the blob, to the blob's atom: a stick "
+           f"{a.stick_diameter:g} A across"
+           + (f", capped on the atom with a ball {a.stick_ball:g} A across" if a.stick_ball > 0 else "")
+           + f"; at least {a.stick_wall:g} A of blob between them and the blob-coloured surface (else the stick "
+             f"is tried without its ball, then left out); a stick may not cut its blob in two; only the "
+             f"blob that holds the atom is cut")
+        P_(f"  bonds                   {si['bonds']}" + (": " + ", ".join(
+            f"{n_} {pair}" for pair, n_ in si["pairs"].items()) + (
+            f" ({si['bond_length'][0]:.2f}-{si['bond_length'][1]:.2f} A)" if si["bond_length"] else "")
+            if si["bonds"] else f" -- no bond joins a blob part to P{N}")
+           + (f"; {si['between_blobs']} bond(s) join two blob parts (no sticks there)"
+              if si["between_blobs"] else ""))
+        for r in si["parts"]:
+            if not r["bonds"]:
+                continue
+            made_ = r["with_ball"] + r["without_ball"]
+            P_(f"  {labels[r['part'] - 1]:23s} {made_} of {r['bonds']} stick(s) made"
+               + (f" ({r['with_ball']} with a ball)" if a.stick_ball > 0 else "")
+               + f"; {r['moved_volume']:,.1f} A^3 of the blob is now P{N}'s")
+        if si["skipped"]:
+            P_("  skipped                 " + "; ".join(f"{n_}: {w_}" for w_, n_ in si["skip_reasons"].items()))
+        if si["made"]:
+            P_(f"  depth                   {si['depth'][0]:.2f}-{si['depth'][2]:.2f} A into the blob (median "
+               f"{si['depth'][1]:.2f}), from where the bond's line leaves the blob to the atom")
+            P_(f"  thinnest blob over one  " + ("at least " if si["min_wall_is_bound"] else "")
+               + f"{si['min_wall']:.3f} A (between a stick or ball and the blob-coloured surface)"
+               + (f"; {si['final_min_wall']:.3f} A measured again in the finished parts"
+                  if si["final_min_wall"] is not None else ""))
+        P_(f"  -> each blob is keyed into P{N}: the sticks are part of P{N}'s STL, inside the blobs, and do "
+           f"not show in the files' outside or the previews")
     if pads:
         P_("")
         P_("PADS  (under the blob faces the slicer will support, in this orientation and size)")
@@ -3688,6 +4179,12 @@ def _pipeline(a, c):
         P_(f"  {PAD_MIN_AREA:g} mm^2 smallest pad and the {2 * LAYER_H:g} mm reach to the lowest pad included: the mm,")
         P_("  layers and warnings above are for the exported size (--scale makes them the")
         P_("  print's).")
+    if sticks and stick_info["made"]:
+        d_mm = a.stick_diameter * a.scale
+        P_(f"  sticks: inside the blobs, part of P{N} and printed in its filament: {d_mm:.2f} mm")
+        P_("  across" + (f", {a.stick_ball * a.scale:.2f} mm balls," if a.stick_ball > 0 else "")
+           + " at this size (half that at 50 % in the slicer); the slicer's sliced")
+        P_("  preview shows them as dots of that colour inside the blobs.")
     if len(pieces) > 1:
         P_(f"  The whole is {len(pieces)} separate pieces: they come off the bed as "
            f"{len(pieces)} loose (or interlocked) objects.")
@@ -3737,6 +4234,7 @@ def _pipeline(a, c):
                          min_area_mm2=PAD_MIN_AREA, file=str(out / pads_name) if pad_mesh is not None
                          else None, file_stats_mm=pad_stats, vertices_separated=pad_moved[0],
                          **pads_in_angstrom(pad_info, a.scale)) if pads else None,
+               sticks=dict(stick_info, surface_before=shown_before) if sticks else None,
                whole_pieces=len(pieces), expected_pieces=n_whole, expected_basis=basis,
                molecules=n_mol, molecules_all=mol["n_all"] if mol else None,
                molecules_removed=mol["removed"] if mol else None, part_clusters=clusters,
@@ -4607,6 +5105,79 @@ HELP = {
         "        0.4 mm, two layers\n"
         "`1.6`   either way at half size: 0.8 mm again",
     ),
+    "sticks": (
+        "Sticks from the rest into the blobs",
+        "Used only with Blob parts and parts given as atom selections. A blob is "
+        "held only by the faces it shares with the last part; ticked, the tool "
+        "pushes a stick of the last part into the blobs along every bond "
+        "between a blob atom and a last-part atom, so each blob is keyed into "
+        "the rest.\n\n"
+        "The bonds are ChimeraX's own, so they follow the selections: when the "
+        "phosphate parts take O5\u2032 and O3\u2032, the bonds into the rest are O5\u2032-C5\u2032 "
+        "and O3\u2032-C3\u2032; when they take only P, OP1 and OP2, they are P-O5\u2032 and "
+        "P-O3\u2032; with the bases as blob parts, N9-C1\u2032 and N1-C1\u2032. Hydrogens "
+        "are left out.\n\n"
+        "Each stick runs along the line of its bond, from where that line, "
+        "followed back from the blob's atom past the last part's atom, leaves "
+        "the blob, to the blob's atom (the last part's own atom often lies "
+        "inside the blob, so a stick between the two atoms would float in it), "
+        "and is "
+        "capped on that atom with a ball a little wider than the stick. Only "
+        "the blob that holds the atom is cut. A stick or ball that would come "
+        "closer than Stick wall to the blob-coloured surface (the blob's faces "
+        "on the outside), or that would cut its blob in two, is tried without "
+        "its ball, then left out. A bond is left out at once when its line "
+        "leaves the blob into a pocket of the last part that the blob encloses, "
+        "or when less than half of the stick's cross-section just past the blob "
+        "is the last part. The report's STICKS section counts them all. The "
+        "sticks are "
+        "part of the last part's STL and print in its filament; nothing else "
+        "is imported. They do not show outside the model, in the files or the "
+        "previews; the slicer's sliced preview shows them as dots inside the "
+        "blobs.\n\n"
+        "Command line: --sticks (with --blobs and --part).",
+        "210 bp supercoil at 4.1 Å, phosphate blobs:\n"
+        "840 bonds, 420 O5\u2032-C5\u2032 and 420 O3\u2032-C3\u2032\n"
+        "837 sticks made, each with its ball; 3 would\n"
+        "cut their blob in two",
+    ),
+    "stick_diameter": (
+        "Stick diameter (Å)",
+        "Used only with Sticks. How thick each stick is, in Å, so in mm times "
+        "Scale, and times any scaling in the slicer. Blank means "
+        f"{DEFAULT_STICK_DIAMETER:g} Å; allowed above 0 and up to {MAX_STICK_DIAMETER:g} Å. "
+        "A stick narrower than one extruded line (about 0.4 mm) may be left "
+        "out by the slicer, and the report warns.\n\n"
+        "Command line: --stick-diameter 1.5.",
+        "`1.5`   at Scale 1: 1.5 mm; printed at 50 %: 0.75 mm\n"
+        "`1.2`   thinner, for blobs with little room",
+    ),
+    "stick_ball": (
+        "Stick ball (Å)",
+        "Used only with Sticks. The diameter of the ball capping each stick, "
+        "centred on the blob's atom, in Å. It must be larger than the stick; 0 "
+        "leaves the balls off. Blank means "
+        f"{DEFAULT_STICK_BALL:g} Å. At 4.1 Å an O atom's room in its phosphate blob "
+        "is a ball about 3.4 Å across, so a larger ball leaves a thinner shell "
+        "of blob over it.\n\n"
+        "Command line: --stick-ball 1.8.",
+        "`1.8`   a ball 0.15 Å wider than a 1.5 Å stick\n"
+        "        all round\n"
+        "`0`     sticks without balls",
+    ),
+    "stick_wall": (
+        "Stick wall (Å)",
+        "Used only with Sticks. The least blob kept between a stick or its "
+        "ball and the blob's surface, in Å: a stick that would come closer is "
+        "tried without its ball, then left out. Only the blob-coloured surface "
+        "counts: where a stick's root lies by the last part's own surface, "
+        "its colour meets its own. Blank means "
+        f"{DEFAULT_STICK_WALL:g} Å; allowed from {MIN_STICK_WALL:g} (above the pads' gap, so no "
+        f"pad is lost to a stick) to {MAX_STICK_WALL:g} Å.\n\n"
+        "Command line: --stick-wall 0.6.",
+        "`0.6`   0.3 mm of blob over a stick at 50 %\n"
+        "`1.0`   one 0.5 mm line at 50 %: fewer balls fit",
+    ),
     "no_widen": (
         "Do not widen a failed level scan",
         "Stops after the first level scan when no level in it is accepted. "
@@ -4784,9 +5355,13 @@ GUI_NUMBERS = [
     ("support_angle", "Support angle (°)", "",
      f"blank = {DEFAULT_SUPPORT_ANGLE:g}; Pads: the slicer's support threshold angle"),
     ("pad_thickness", "Pad thickness (Å)", "", f"blank = {DEFAULT_PAD_THICKNESS:g}; Pads"),
+    ("stick_diameter", "Stick diameter (Å)", "", f"blank = {DEFAULT_STICK_DIAMETER:g}; Sticks"),
+    ("stick_ball", "Stick ball (Å)", "", f"blank = {DEFAULT_STICK_BALL:g}; Sticks: 0 = no ball"),
+    ("stick_wall", "Stick wall (Å)", "", f"blank = {DEFAULT_STICK_WALL:g}; Sticks: blob kept over them"),
 ]
 # A number field used only when this checkbox is ticked
-GUI_NUMBER_NEEDS = {"blob_skin": "blobs", "support_angle": "pads", "pad_thickness": "pads"}
+GUI_NUMBER_NEEDS = {"blob_skin": "blobs", "support_angle": "pads", "pad_thickness": "pads",
+                    "stick_diameter": "sticks", "stick_ball": "sticks", "stick_wall": "sticks"}
 # The CLI flag of a GUI_NUMBERS key when listed here; otherwise it is
 # "--" + key.replace("_", "-").
 GUI_FLAG_NAMES = {"span": "--level-span", "step": "--level-step", "level_guess": "--level-guess",
@@ -4799,6 +5374,7 @@ GUI_OPTIONS = [
     ("allow_multi_shell", "Allow parts with several shells", False),
     ("blobs", "Blob parts (each but the last is its own molmap)", False),
     ("pads", "Pads under blobs that touch the support", False),
+    ("sticks", "Sticks from the rest into the blobs", False),
     ("no_widen", "Do not widen a failed level scan", False),
     ("keep_solvent", "Keep solvent (waters)", False),
     ("no_hydrogens", "Exclude hydrogens", True),
@@ -5379,6 +5955,11 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
                     args.append(f"{flag}={g[key]}")
             if g["pads"] and not g["blobs"]:
                 raise ValueError("Pads go under blob parts: tick Blob parts too")
+            if g["sticks"] and not g["blobs"]:
+                raise ValueError("Sticks go into blob parts: tick Blob parts too")
+            if g["sticks"] and g["parts_by"] != "selections":
+                raise ValueError("Sticks follow the bonds between atom selections: give the parts "
+                                 "as atom selections")
             for key, _, _, _ in GUI_NUMBERS:
                 if g[key] != "" and (key not in GUI_NUMBER_NEEDS or g[GUI_NUMBER_NEEDS[key]]):
                     args.append(f"{GUI_FLAG_NAMES.get(key, '--' + key.replace('_', '-'))}={g[key]}")
@@ -5759,6 +6340,27 @@ def build_parser():
     g.add_argument("--pad-thickness", type=float, default=None,
                    help=f"with --pads: pad thickness, A (default {DEFAULT_PAD_THICKNESS:g}; "
                         "x --scale in mm)")
+    g.add_argument("--sticks", action="store_true",
+                   help="with --blobs and --part: push a stick of the last part into the blobs along "
+                        "every bond between a blob atom and a last-part atom (the bonds as ChimeraX "
+                        "reads them, so they follow the selections: O5'-C5' and O3'-C3' when the "
+                        "phosphate parts take O5' and O3', P-O5' and P-O3' when they do not), from "
+                        "where the bond's line, followed back past the last-part atom, leaves the blob, "
+                        "to the blob's atom, capped there with a "
+                        "ball, and keeping --stick-wall of the blob between it and the blob-coloured "
+                        "surface (the blob's faces on the outside of the model); the blobs are keyed into "
+                        "the last part")
+    g.add_argument("--stick-diameter", type=float, default=None,
+                   help=f"with --sticks: stick diameter, A (default {DEFAULT_STICK_DIAMETER:g}; "
+                        "x --scale in mm)")
+    g.add_argument("--stick-ball", type=float, default=None,
+                   help=f"with --sticks: diameter of the ball capping each stick on the blob's atom, A "
+                        f"(default {DEFAULT_STICK_BALL:g}; larger than the stick's; 0 for no ball)")
+    g.add_argument("--stick-wall", type=float, default=None,
+                   help=f"with --sticks: the least blob, A, between a stick or its ball and the "
+                        f"blob-coloured surface (the blob's faces on the outside of the model); a stick "
+                        f"that would come closer is tried without its ball, then left out (default "
+                        f"{DEFAULT_STICK_WALL:g}; {MIN_STICK_WALL:g} to {MAX_STICK_WALL:g})")
     g = ap.add_argument_group("output")
     g.add_argument("-o", "--out", default=None,
                    help="output folder (default ./<tag>, i.e. ./<stem>_molmap<res>_split)")
@@ -5833,7 +6435,8 @@ def main(argv=None):
             a.parts = None
     nums = {k: getattr(a, k) for k in ("resolution", "grid", "dust", "k", "level",
                                        "level_guess", "span", "step", "scale", "blob_skin",
-                                       "support_angle", "pad_thickness")}
+                                       "support_angle", "pad_thickness", "stick_diameter",
+                                       "stick_ball", "stick_wall")}
     errs = check_numbers(nums)
     if a.k_list:
         try:
@@ -5849,7 +6452,8 @@ def main(argv=None):
                                           "allow_multi_shell", "no_widen", "keep_solvent",
                                           "no_hydrogens", "keep_scan", "no_preview", "palette",
                                           "selection_syntax", "overlap", "chimera", "blobs",
-                                          "blob_skin", "pads", "support_angle", "pad_thickness")}
+                                          "blob_skin", "pads", "support_angle", "pad_thickness",
+                                          "sticks", "stick_diameter", "stick_ball", "stick_wall")}
         if a.part:
             pre["part"] = "\n".join(a.part)
             pre["parts_by"] = "selections"
@@ -5862,6 +6466,10 @@ def main(argv=None):
         ap.error("a structure file is required (or run with no arguments for the GUI)")
     if a.pads and not a.blobs:
         ap.error("--pads goes with --blobs: the pads go under blob parts")
+    if a.sticks and not a.blobs:
+        ap.error("--sticks goes with --blobs: the sticks go into blob parts")
+    if a.sticks and not a.part:
+        ap.error("--sticks follows the bonds between atom-selection parts: give the parts with --part")
     return run_cli(a)
 
 
