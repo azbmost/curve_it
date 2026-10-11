@@ -1769,14 +1769,19 @@ FINISH_KEYS = ("bodies", "cavities", "slivers", "sliver_volume", "received", "re
                "dropped_volume")
 
 
-def finish_parts(raw, sliver):
+def finish_parts(raw, sliver, keep_own=False):
     """Clean the peeled parts.  Bodies below `sliver` (SLIVER_VOXELS voxels,
     0.5 A^3 at gridSpacing 0.5) are boolean fragments (they form where three parts meet):
     each positive fragment goes to the neighbouring part it shares the most
     surface with -- preferring one it merges into without a new pinch edge --
     so the tiling stays exact; a fragment touching nothing is dropped (counted);
     a fragment-sized cavity is filled.  Every other body is kept, cavities
-    included (a real ion or ligand piece is far larger than a few voxels)."""
+    included (a real ion or ligand piece is far larger than a few voxels).
+    keep_own: for the sticks' second pass, where the last part is rebuilt
+    and its numerical slivers must not change the other parts' surfaces: a
+    fragment that touches its own part goes back to it, and one of no real
+    volume (under 1e-5 A^3, a film along a face) that does not is dropped
+    rather than handed to another part."""
     parts, infos, loose = [], [], []
     for idx, P in enumerate(raw):
         info = dict(bodies=0, cavities=0, slivers=0, sliver_volume=0.0,
@@ -1799,7 +1804,7 @@ def finish_parts(raw, sliver):
         ab = b.surface_area()
         cands = []
         for j, Pj in enumerate(parts):
-            if j == own or Pj.is_empty() or not _bbox_touch(b, Pj):
+            if (j == own and not keep_own) or Pj.is_empty() or not _bbox_touch(b, Pj):
                 continue
             U = Pj + b
             contact = (ab + Pj.surface_area() - U.surface_area()) / 2.0
@@ -1809,6 +1814,16 @@ def finish_parts(raw, sliver):
             infos[own]["dropped_volume"] += v
             continue
         cands.sort(key=lambda t: -t[0])
+        mine = [cand for cand in cands if cand[1] == own]
+        if keep_own and mine:
+            j, U = mine[0][1], mine[0][2]
+            parts[j] = U
+            infos[j]["slivers"] -= 1               # it stayed: not handed on after all
+            infos[j]["sliver_volume"] -= v
+            continue
+        if keep_own and v < 1e-5:
+            infos[own]["dropped_volume"] += v
+            continue
         choice = cands[0]
         if len(cands) > 1:
             for cand in cands:
@@ -1837,6 +1852,23 @@ def surface_is_on(V, refV, tol=1e-4):
 def tri_areas(V, F):
     t = np.asarray(V, dtype=np.float64)[F]
     return 0.5 * np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1)
+
+
+def area_on_surface(V, F, ref, tol=1e-4):
+    """Area of the faces (V, F) that lie on the surface of ref = (refV, refF):
+    each face's centroid within `tol` of one of ref's triangles (exact
+    point-to-triangle distance).  Geometric, so a face that a boolean cut
+    into smaller triangles still counts (surface_is_on matches vertices)."""
+    from scipy.spatial import cKDTree
+    if not len(F):
+        return 0.0
+    rV, rF = ref
+    T = np.asarray(rV, dtype=np.float64)[rF]
+    cen = T.mean(axis=1)
+    rmax = float(np.linalg.norm(T - cen[:, None], axis=2).max())
+    X = np.asarray(V, dtype=np.float64)[F]
+    d = nearest_face_distance(X.mean(axis=1), cKDTree(cen), T[:, 0], T[:, 1], T[:, 2], tol + rmax, kq=16)
+    return float(tri_areas(V, F)[d <= tol].sum())
 
 
 # ============================================================== construction
@@ -2628,13 +2660,15 @@ def stick_shape(E, b, u, diameter, ball, anchor):
 
 def _solids(M, sliver):
     """A part's solids: each outer shell (at least `sliver`) with the cavity
-    shells it encloses (as whole_solids does), and the cavities no solid
-    takes.  Shells under `sliver` either way (fragments, the zero-volume
-    shells a boolean leaves) are dropped: they hold no volume."""
+    shells it encloses (as whole_solids does), and the rest, left as they are:
+    the cavities no solid takes and the small fragments the part was handed
+    when it was finished (one on the surface carries a little of its colour).
+    Only shells of no volume, which a boolean can leave, are dropped."""
     pieces = M.decompose()
     outer = [x for x in pieces if x.volume() >= sliver]
     holes = [x for x in pieces if x.volume() <= -sliver]
-    groups, loose = [[x] for x in outer], []
+    groups = [[x] for x in outer]
+    loose = [x for x in pieces if 1e-9 <= abs(x.volume()) < sliver]
     for h in holes:
         hb = h.bounding_box()
         inside = [n for n, x in enumerate(outer) if x.volume() > -h.volume() and _bbox_contains(x.bounding_box(), hb)]
@@ -2694,13 +2728,21 @@ def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=No
     # the blob-coloured surface: blob faces on the whole's surface.  The wall is
     # measured to these only: near its root a stick lies by the last part's own
     # surface, where its colour meets its own colour
-    refV = arrays(ref)[0]
+    # found geometrically (each face's centroid on one of the whole's
+    # triangles): the faces along the colour line were cut by the split, so
+    # their corners are not the whole's and matching vertices would miss them
+    rV, rF = arrays(ref)
+    rT = np.asarray(rV, dtype=np.float64)[rF]
+    rcen = rT.mean(axis=1)
+    rtree, rr = cKDTree(rcen), float(np.linalg.norm(rT - rcen[:, None], axis=2).max())
 
     def coloured(P):
         V, F = arrays(P)
         if not len(F):
             return np.zeros((0, 3, 3))
-        return np.asarray(V, dtype=np.float64)[F[surface_is_on(V, refV)[F].all(axis=1)]]
+        X = np.asarray(V, dtype=np.float64)[F]
+        d = nearest_face_distance(X.mean(axis=1), rtree, rT[:, 0], rT[:, 1], rT[:, 2], 1e-4 + rr, kq=16)
+        return X[d <= 1e-4]
 
     def face_tree(tri):
         cen = tri.mean(axis=1)
@@ -2834,7 +2876,7 @@ def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=No
     if cut_any:
         new_blobs += [parts[j] for j in range(n_blobs, N - 1)]
         last = ref - mf.Manifold.batch_boolean([x for x in new_blobs if not x.is_empty()], mf.OpType.Add)
-        new_parts, infos = finish_parts(new_blobs + [last], sliver)
+        new_parts, infos = finish_parts(new_blobs + [last], sliver, keep_own=True)
         # measured again on the finished parts: the blob faces that are new (the
         # walls of the sticks' holes), sampled densely, to the blob-coloured surface
         walls_final = []
@@ -3652,7 +3694,7 @@ def _pipeline(a, c):
     held.clear()
     Vw = ref.volume()
     pieces = whole_solids(ref)
-    stick_info, shown_before = None, None
+    stick_info, shown_before, shown_after = None, None, None
     if sticks:
         bonds = c.get("bonds") or {}
         nb_ = len(bonds.get("part", []))
@@ -3660,13 +3702,10 @@ def _pipeline(a, c):
             f"{n_} {pair}" for pair, n_ in sorted(collections.Counter(
                 "%s-%s" % (x.split("@")[-1], y.split("@")[-1])
                 for x, y in zip(bonds["blob_atom"], bonds["rest_atom"])).items())) if nb_ else ""))
-        shown_before = []
-        for P in parts_m[:N - 1]:
-            V, F = arrays(P)
-            shown_before.append(float(tri_areas(V, F)[surface_is_on(V, refV)[F].all(axis=1)].sum())
-                                if len(F) else 0.0)
+        shown_before = [area_on_surface(*arrays(P), (refV, refF)) for P in parts_m[:N - 1]]
         parts_m, new_infos, stick_info = make_sticks(parts_m, ref, bonds, N - 1, a.stick_diameter,
                                                      a.stick_ball, a.stick_wall, sliver, log=log)
+        shown_after = [area_on_surface(*arrays(P), (refV, refF)) for P in parts_m[:N - 1]]
         for old, new_ in zip(pinfo, new_infos or []):   # the second pass's fragments add to the first's
             old.update(bodies=new_["bodies"], cavities=new_["cavities"])
             for key in ("slivers", "sliver_volume", "received", "received_volume", "dropped_volume"):
@@ -3816,7 +3855,8 @@ def _pipeline(a, c):
         if fi["slivers"]:
             frag.append(f"{fi['slivers']} of its own handed on")
         if fi["dropped_volume"]:
-            frag.append(f"{fi['dropped_volume']:.2g} A^3 dropped (touched nothing)")
+            frag.append(f"{fi['dropped_volume']:.2g} A^3 dropped (touched nothing" +
+                        (", or a film of no volume after the sticks)" if sticks else ")"))
         if not strict and fi["bodies"] != exp:  # the count is only reported, not required
             detail += (f"; its atoms form {exp} cluster(s), and --allow-multi-shell allows "
                        f"any number of pieces")
@@ -3886,9 +3926,9 @@ def _pipeline(a, c):
                   ", ".join(f"P{r['part']} {r['bodies_before']} -> {r['bodies_after']} piece(s)"
                             for r in si["parts"]))
             check("sticks leave the surface as it was",
-                  all(abs(x - y) <= 1e-6 * max(1.0, y) for x, y in zip(shown[:N - 1], shown_before)),
+                  all(abs(x - y) <= 1e-6 * max(1.0, y) for x, y in zip(shown_after, shown_before)),
                   "blob area on the whole's surface " + ", ".join(
-                      f"P{i} {y:,.1f} -> {x:,.1f} A^2" for i, (x, y) in enumerate(zip(shown, shown_before), 1)))
+                      f"P{i} {y:,.1f} -> {x:,.1f} A^2" for i, (x, y) in enumerate(zip(shown_after, shown_before), 1)))
             d_mm = a.stick_diameter * a.scale
             if d_mm < 0.4 - 1e-9:
                 check("sticks are a line across", False,
@@ -4234,7 +4274,7 @@ def _pipeline(a, c):
                          min_area_mm2=PAD_MIN_AREA, file=str(out / pads_name) if pad_mesh is not None
                          else None, file_stats_mm=pad_stats, vertices_separated=pad_moved[0],
                          **pads_in_angstrom(pad_info, a.scale)) if pads else None,
-               sticks=dict(stick_info, surface_before=shown_before) if sticks else None,
+               sticks=dict(stick_info, surface_before=shown_before, surface_after=shown_after) if sticks else None,
                whole_pieces=len(pieces), expected_pieces=n_whole, expected_basis=basis,
                molecules=n_mol, molecules_all=mol["n_all"] if mol else None,
                molecules_removed=mol["removed"] if mol else None, part_clusters=clusters,
