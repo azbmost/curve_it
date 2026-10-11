@@ -4247,7 +4247,8 @@ def _pipeline(a, c):
     P_("REPRODUCE (everything pinned)")
     P_("  " + " ".join(shlex.quote(x) for x in repro))
     P_("  (paste into a terminal to rebuild this set: the same STLs with the same ChimeraX and "
-       "libraries; the files now here move into _previous_<timestamp>/ first)")
+       "libraries; the files now here move into _previous_<timestamp>/ once the new set is "
+       "complete)")
     P_("")
     verdict = "ALL CHECKS PASS" if not n_fail and not n_warn else \
         (f"{n_fail} FAIL, {n_warn} WARN" if n_fail else f"PASS with {n_warn} warning(s)")
