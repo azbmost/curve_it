@@ -181,15 +181,17 @@ METHOD  (the two-colour BR strand-split procedure, generalised to N parts)
    slope from horizontal below --support-angle (the slicer's support threshold
    angle or more, default 45, plus the 1 degree Bambu Studio adds:
    n_z < -cos(46), with the normal averaged over 1 A of the blob's surface).
-   Under each such face the pad fills the vertical column --pad-thickness
-   deep (default 0.8 A), below the model's lowest point if need be, so the
-   print may stand up to that much taller, and down to the pads' lowest point
-   when it would end less than two layers (0.4 mm at the exported size)
-   above it; its top is the blob's own faces turned over, so pad and blob
-   share faces exactly.  A face is left bare when its column comes within
-   0.5 A of anything but its own blob -- the other parts and the other bodies
-   of its own part (exact point-to-triangle distances at samples of the
-   column, with a margin of 5 %; manifold3d's min_gap on each finished pad is
+   Each patch of such faces gets one pad, which fills the space straight
+   below the faces down to one flat bottom, --pad-thickness (default 0.8 A)
+   below the patch's lowest point, so that thickness is the least distance
+   from the blob to the pad's bottom; below the model's lowest point if need
+   be, so the print may stand up to that much taller, and down to the pads'
+   lowest point when it would end less than two layers (0.4 mm at the
+   exported size) above it; its top is the blob's own faces turned over, so
+   pad and blob share faces exactly.  A face is left bare when its column
+   comes within 0.5 A of anything but its own blob -- the other parts and the
+   other bodies of its own part (exact point-to-triangle distances at samples
+   of the column, with a margin of 5 %; manifold3d's min_gap on each finished pad is
    the gate, and a pad that fails it is rebuilt alone with its margin widened
    to 15, 30 and 60 %, then dropped) -- or meets its own blob below; each
    edge-connected patch (at a bowtie vertex only its largest fan) becomes one
@@ -217,12 +219,16 @@ METHOD  (the two-colour BR strand-split procedure, generalised to N parts)
    with its ball is tried without it, then left out, and sticks that split a
    body only together are dropped from the last.  Each blob solid (an outer
    shell with its cavities) loses its own sticks only (solids do not touch,
-   so the part is reassembled without a boolean), the last part is rebuilt as
-   the whole minus the blob parts, and the parts are finished again, so the
-   tiling stays exact; the checks, the files, the previews and the pads all
-   see the sticks.  The report checks, on the finished parts, the wall (from
-   the faces of the sticks' holes), that no blob was split and that the
-   blob-coloured surface is unchanged.
+   so the part is reassembled without a boolean), the last part gains
+   exactly what they take, and the parts are finished again, so the tiling
+   stays exact and no part's outer faces change; the checks, the files and
+   the previews see the sticks.  The pads do not: they are made on the parts
+   as they are without sticks, so a set with sticks has the pads of the same
+   set without them, byte for byte (the sticks are an add-on inside the
+   blobs), and the report measures them against the last part with its
+   sticks too.  The report checks, on the finished parts, the wall (from the
+   faces of the sticks' holes), that no blob was split and that every part's
+   area on the whole's surface is unchanged.
 
 Slicing (Bambu Studio): import all part STLs AT ONCE -> one object with one
 sub-model per part, already registered; give each part a filament; check
@@ -252,7 +258,7 @@ import tempfile
 import time
 from pathlib import Path
 
-__version__ = "1.8.0"
+__version__ = "1.9.0"
 TOOL_NAME = "Multicolor Split"
 
 try:
@@ -1777,8 +1783,9 @@ def finish_parts(raw, sliver, keep_own=False):
     so the tiling stays exact; a fragment touching nothing is dropped (counted);
     a fragment-sized cavity is filled.  Every other body is kept, cavities
     included (a real ion or ligand piece is far larger than a few voxels).
-    keep_own: for the sticks' second pass, where the last part is rebuilt
-    and its numerical slivers must not change the other parts' surfaces: a
+    keep_own: for the sticks' second pass, where the last part has gained
+    what the sticks take and its numerical slivers must not change the other
+    parts' surfaces: a
     fragment that touches its own part goes back to it, and one of no real
     volume (under 1e-5 A^3, a film along a face) that does not is dropped
     rather than handed to another part."""
@@ -2189,16 +2196,23 @@ def pad_bottom(z, thickness, low, snap):
     return np.where(b < low + snap, low, b)
 
 
+def pad_floor(z, thickness, low, snap):
+    """The flat bottom of a pad whose top's lowest point is at z: the thickness
+    lower, so the thickness is the least distance from the blob to the bottom,
+    or the pads' lowest point `low` when it would end less than `snap` above it."""
+    return float(pad_bottom(float(np.min(z)), thickness, low, snap))
+
+
 def pad_prism(V, F, thickness, low, snap):
     """The closed solid under a patch: its top is the patch's own faces turned
     over (the same vertices, so pad and blob share faces exactly), its bottom
-    the patch lowered by the thickness (see pad_bottom), and vertical walls
-    along the patch's boundary."""
+    flat, at pad_floor() of the patch's lowest corner, and vertical walls along
+    the patch's boundary."""
     used, Fl = np.unique(F, return_inverse=True)
     Fl = Fl.reshape(-1, 3)
     top = np.asarray(V, dtype=np.float64)[used]
     bottom = top.copy()
-    bottom[:, 2] = pad_bottom(top[:, 2], thickness, low, snap)
+    bottom[:, 2] = pad_floor(top[:, 2], thickness, low, snap)
     n = len(used)
     e, _, inv, cnt = _edges(Fl)
     b = e[cnt[inv] == 1]                    # boundary edges, in the faces' own direction
@@ -2320,8 +2334,9 @@ def make_pads(meshes, whole, n_blobs, angle, thickness, gap, bed, snap, min_area
     three float32 corners), faces down at a slope from horizontal below the
     slicer's support threshold angle -- Bambu Studio adds 1 degree, so
     n_z < -cos(angle + 1), with the normal averaged over 1 A of the blob's
-    surface and the face's own normal pointing down too.  Under each such face
-    the pad fills the vertical column `thickness` deep, below the model's
+    surface and the face's own normal pointing down too.  Each patch of such
+    faces gets a pad that fills the space below them down to one flat bottom
+    (pad_floor), `thickness` below the patch's lowest point, below the model's
     lowest point if need be (the print then stands that much taller), and
     down to the pads' lowest point when it would end less than `snap` above
     it, so no pad hangs over a gap too thin for support.  A face is left
@@ -2342,6 +2357,7 @@ def make_pads(meshes, whole, n_blobs, angle, thickness, gap, bed, snap, min_area
     with the whole and with their blobs and the layers they are in."""
     import trimesh
     from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
     from scipy.spatial import cKDTree
     say = log or (lambda *_: None)
     cos_a = math.cos(math.radians(min(angle + 1.0, 89.0)))
@@ -2404,8 +2420,6 @@ def make_pads(meshes, whole, n_blobs, angle, thickness, gap, bed, snap, min_area
         pre.append(dict(t=t, area=area, cand=cand))
     low = min([bed] + [float(p["t"][p["cand"]][:, :, 2].min()) - thickness
                        for p in pre if p is not None and len(p["cand"])])
-    nsteps = int(math.ceil((thickness + snap) / (0.1 * unit))) + 1
-    frac = np.linspace(0.0, 1.0, nsteps)
     per, keep_all, zspans, overlap_blob = [], [], [], 0.0
     for k in range(n_blobs):
         V, F, lab = Vs[k], Fs[k], bodies[k]
@@ -2417,15 +2431,37 @@ def make_pads(meshes, whole, n_blobs, angle, thickness, gap, bed, snap, min_area
         t, area, cand = pre[k]["t"], pre[k]["area"], pre[k]["cand"]
         row["support_area"] = float(area[cand].sum())
         row["bodies_support"] = int(len(np.unique(lab[cand])))
-        # each face's column, sampled down to its bottom; the nearest distance to
-        # anything but its own blob
+        # each face's column, sampled every 0.1 A down to the flat bottom of the
+        # deepest pad it can be part of (the edge-connected faces around it that
+        # need support); a pad of fewer faces ends no lower, so a face whose
+        # column clears its neighbours here clears them in any pad.  Then the
+        # nearest distance to anything but its own blob
+        cf = F[cand]
+        _, _, einv, _ = _edges(cf)
+        efid = np.tile(np.arange(len(cf)), 3)
+        eord = np.argsort(einv, kind="stable")
+        esame = einv[eord][1:] == einv[eord][:-1]
+        _, comp = connected_components(coo_matrix(
+            (np.ones(int(esame.sum())), (efid[eord][:-1][esame], efid[eord][1:][esame])),
+            shape=(len(cf), len(cf))), directed=False)
+        zlow = np.full(int(comp.max()) + 1, np.inf)
+        np.minimum.at(zlow, comp, t[cand][:, :, 2].min(axis=1))
+        floor = pad_bottom(zlow, thickness, low, snap)[comp]
         pts = np.einsum("pk,ckd->cpd", w, t[cand])
         zt = pts[..., 2]
-        depth = zt - pad_bottom(zt, thickness, low, snap)
-        col = np.repeat(pts[:, :, None, :], nsteps, axis=2)
-        col[..., 2] = zt[..., None] - frac[None, None, :] * depth[..., None]
-        P = col.reshape(-1, 3)
-        per_face = pts.shape[1] * nsteps
+        depth = zt - floor[:, None]
+        npts = pts.shape[1]
+        nst = np.ceil(depth.max(axis=1) / (0.1 * unit) - 1e-9).astype(np.int64) + 1
+        counts = npts * nst
+        offs = np.concatenate([[0], np.cumsum(counts)])
+        P = np.empty((int(offs[-1]), 3))
+        for n_ in np.unique(nst):
+            sel_ = np.flatnonzero(nst == n_)
+            fr = np.linspace(0.0, 1.0, int(n_))
+            col = np.repeat(pts[sel_][:, :, None, :], int(n_), axis=2)
+            col[..., 2] = zt[sel_][..., None] - fr[None, None, :] * depth[sel_][..., None]
+            P[(offs[sel_][:, None] + np.arange(npts * int(n_))[None, :]).ravel()] = col.reshape(-1, 3)
+        face_of = np.repeat(np.arange(len(cand)), counts)
         thr = gap * (1 + margins[-1])
         dist = np.full(len(P), np.inf)
         # the other parts: points provably farther than thr (nearest vertex minus
@@ -2453,7 +2489,7 @@ def make_pads(meshes, whole, n_blobs, angle, thickness, gap, bed, snap, min_area
         cand_body = lab[cand]
         for b in np.unique(cand_body):
             sel = np.flatnonzero(cand_body == b)
-            rows = (sel[:, None] * per_face + np.arange(per_face)[None, :]).ravel()
+            rows = np.flatnonzero(np.isin(face_of, sel))
             lo, hi = P[rows].min(axis=0) - thr, P[rows].max(axis=0) + thr
             nbs = np.flatnonzero((blo <= hi).all(axis=1) & (bhi >= lo).all(axis=1))
             nbs = nbs[nbs != b]
@@ -2465,7 +2501,7 @@ def make_pads(meshes, whole, n_blobs, angle, thickness, gap, bed, snap, min_area
             rmax = float(max(np.linalg.norm(X - cen, axis=1).max() for X in (BA, BB, BC)))
             dist[rows] = np.minimum(dist[rows], nearest_face_distance(P[rows], cKDTree(cen), BA, BB, BC,
                                                                       thr + rmax))
-        dmin = dist.reshape(len(cand), -1).min(axis=1)
+        dmin = np.minimum.reduceat(dist, offs[:-1])
         # its own blob must not lie below, within the column
         blob = trimesh.Trimesh(V, F, process=False)
         org = pts.reshape(-1, 3) - np.array([0.0, 0.0, 1e-4 * unit])
@@ -2698,9 +2734,10 @@ def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=No
     inside the blob keeps `wall` from the blob-coloured surface (the blob
     parts' faces on the whole's surface) and its blob body stays one piece; a
     stick that fails with its ball is tried without it, then dropped.  Each
-    blob solid (an outer shell with its cavities) loses its own sticks only;
-    the last part is rebuilt as the whole minus the blob parts, so the tiling
-    stays exact, and the parts are finished again (fragments handed on).
+    blob solid (an outer shell with its cavities) loses its own sticks only,
+    and the last part gains exactly what they take from it (the solid's
+    intersection with its sticks), so the tiling stays exact and no part's
+    outer faces change; the parts are finished again (fragments handed on).
     When no stick is accepted the parts are returned as they were.
 
     The wall and the pieces are then measured again on the finished parts:
@@ -2762,7 +2799,7 @@ def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=No
         if T.is_empty():
             return np.inf
         return wall_from(arrays(T.refine_to_length(STICK_SAMPLE))[0].astype(np.float64), surf)
-    new_blobs, by_part, walls, cut_any = [], [], {}, False
+    new_blobs, by_part, walls, cut_any, taken = [], [], {}, False, []
     for k in range(n_blobs):
         idx = np.nonzero(part == k)[0]
         blob = parts[k]
@@ -2851,9 +2888,12 @@ def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=No
         for j in range(len(solids)):
             mine = [i for i in cand if home[i] == j and i in shapes]
             while mine:
-                rem = solids[j] - mf.Manifold.batch_boolean([shapes[i][0] for i in mine], mf.OpType.Add)
+                Su = mf.Manifold.batch_boolean([shapes[i][0] for i in mine], mf.OpType.Add)
+                rem = solids[j] - Su
                 if len(_solids(rem, sliver)[0]) == 1:
                     cut[j] = rem
+                    # what the sticks take from this solid, and nothing else, goes to the last part
+                    taken.append(solids[j] ^ Su)
                     break
                 i = mine.pop()
                 del shapes[i]
@@ -2875,7 +2915,10 @@ def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=No
     infos, final_wall = None, None
     if cut_any:
         new_blobs += [parts[j] for j in range(n_blobs, N - 1)]
-        last = ref - mf.Manifold.batch_boolean([x for x in new_blobs if not x.is_empty()], mf.OpType.Add)
+        # the last part keeps its own mesh and gains what the sticks took: rebuilt
+        # as the whole minus the cut blobs, it came out with zero-volume slivers
+        # lying on the blobs' outer faces, which the pads took for the last part
+        last = parts[N - 1] + mf.Manifold.batch_boolean(taken, mf.OpType.Add)
         new_parts, infos = finish_parts(new_blobs + [last], sliver, keep_own=True)
         # measured again on the finished parts: the blob faces that are new (the
         # walls of the sticks' holes), sampled densely, to the blob-coloured surface
@@ -3694,7 +3737,7 @@ def _pipeline(a, c):
     held.clear()
     Vw = ref.volume()
     pieces = whole_solids(ref)
-    stick_info, shown_before, shown_after = None, None, None
+    stick_info, shown_before, shown_after, parts_plain = None, None, None, None
     if sticks:
         bonds = c.get("bonds") or {}
         nb_ = len(bonds.get("part", []))
@@ -3702,10 +3745,11 @@ def _pipeline(a, c):
             f"{n_} {pair}" for pair, n_ in sorted(collections.Counter(
                 "%s-%s" % (x.split("@")[-1], y.split("@")[-1])
                 for x, y in zip(bonds["blob_atom"], bonds["rest_atom"])).items())) if nb_ else ""))
-        shown_before = [area_on_surface(*arrays(P), (refV, refF)) for P in parts_m[:N - 1]]
+        shown_before = [area_on_surface(*arrays(P), (refV, refF)) for P in parts_m]
+        parts_plain = parts_m                   # the pads are made on these: sticks are an add-on
         parts_m, new_infos, stick_info = make_sticks(parts_m, ref, bonds, N - 1, a.stick_diameter,
                                                      a.stick_ball, a.stick_wall, sliver, log=log)
-        shown_after = [area_on_surface(*arrays(P), (refV, refF)) for P in parts_m[:N - 1]]
+        shown_after = [area_on_surface(*arrays(P), (refV, refF)) for P in parts_m]
         for old, new_ in zip(pinfo, new_infos or []):   # the second pass's fragments add to the first's
             old.update(bodies=new_["bodies"], cavities=new_["cavities"])
             for key in ("slivers", "sliver_volume", "received", "received_volume", "dropped_volume"):
@@ -3754,15 +3798,27 @@ def _pipeline(a, c):
     export_stl(Wx, WFx, stage / whole_name)
     # pads under the blob faces the slicer will support, in this (the printed) orientation
     pads_name = f"{tag}_pads.stl"
-    pad_mesh, pad_info, pad_stats, pad_moved = None, None, None, (0, 0.0)
+    pad_mesh, pad_info, pad_stats, pad_moved, pad_gap_sticks = None, None, None, (0, 0.0), None
+    pad_gap_unmeasured = False
     if pads:
         log(f"    pads: under blob faces sloping less than {min(a.support_angle + 1, 89):g} deg from "
             f"horizontal over 1 A (support threshold {a.support_angle:g}, +1 as Bambu Studio), "
-            f"{a.pad_thickness:g} A thick, at least {PAD_GAP:g} A from the other parts and blobs")
-        pV, pF, pad_info = make_pads(ex_meshes, (Wx, WFx), N - 1, a.support_angle,
+            f"flat-bottomed, at least {a.pad_thickness:g} A thick, at least {PAD_GAP:g} A from the other parts and blobs")
+        pad_src = ex_meshes
+        if parts_plain is not None and parts_plain is not parts_m:
+            # the sticks are an add-on inside the blobs: the pads are those of the
+            # same set without sticks, made on its parts exported the same way
+            pad_src = []
+            for V, F in (arrays(P) for P in parts_plain):
+                Vt = apply(A, V)
+                if not getattr(a, "keep_pinch_edges", False):
+                    Vt = unpinch(Vt, F)[0]
+                pad_src.append(weld(Vt, F)[:2])
+        pV, pF, pad_info = make_pads(pad_src, (Wx, WFx), N - 1, a.support_angle,
                                      a.pad_thickness * a.scale, PAD_GAP * a.scale, float(Wx[:, 2].min()),
                                      2 * LAYER_H, PAD_MIN_AREA, layer=LAYER_H, unit=float(a.scale), log=log)
         if len(pF):
+            pV0 = pV
             if not getattr(a, "keep_pinch_edges", False):
                 pV, moved_p, step_p, _ = unpinch(pV, pF)
                 pad_moved = (moved_p, step_p)
@@ -3770,6 +3826,20 @@ def _pipeline(a, c):
             export_stl(pVx, pFx, stage / pads_name)
             pad_mesh = (pVx, pFx)
             pad_stats = mesh_stats(*read_stl(stage / pads_name))
+            if pad_src is not ex_meshes:        # and against the last part as written, with its sticks
+                Mp, Mr = to_manifold_or_none(*pad_mesh), to_manifold_or_none(*ex_meshes[N - 1])
+                # should manifold3d reject a file as written (pinch edges, say),
+                # measure the meshes as made, before welding
+                if Mp is None:
+                    Mp = to_manifold_or_none(pV0, pF)
+                if Mr is None:
+                    Mr = parts_m[N - 1].transform(A[:3, :])
+                    Mr = Mr if Mr.status() == mf.Error.NoError else None
+                if Mp is not None and Mr is not None:
+                    pad_gap_sticks = float(Mp.min_gap(Mr, 2 * PAD_GAP * a.scale))
+                else:
+                    pad_gap_unmeasured = True
+                    log(f"    pads: their gap to P{N} with its sticks could not be measured (no manifold)")
 
     # re-read what was written: the files, not the objects, are what gets printed
     reread = [mesh_stats(*read_stl(stage / nm)) if not e else mesh_stats(np.zeros((0, 3)), np.zeros((0, 3), int))
@@ -3891,9 +3961,15 @@ def _pipeline(a, c):
               f"{pad_stats['outer']} pad(s), {pad_stats['open_edges']} open edges, "
               f"{pad_stats['pinch_edges']} NM edges after welding")
         check(f"pads keep {PAD_GAP:g} A from other parts/blobs",
-              pad_info["min_gap"] is not None and pad_info["min_gap"] >= PAD_GAP * a.scale * (1 - 1e-6),
+              pad_info["min_gap"] is not None and pad_info["min_gap"] >= PAD_GAP * a.scale * (1 - 1e-6)
+              and (pad_gap_sticks is None or pad_gap_sticks >= PAD_GAP * a.scale * (1 - 1e-6)),
               ("at least " if pad_info["min_gap_is_bound"] else "")
-              + f"{pad_info['min_gap'] / a.scale:.3f} A to another part or another blob")
+              + f"{pad_info['min_gap'] / a.scale:.3f} A to another part or another blob"
+              + (f" (made on the parts without sticks); " + (
+                  "at least " if pad_gap_sticks >= 2 * PAD_GAP * a.scale * (1 - 1e-9) else "")
+                 + f"{pad_gap_sticks / a.scale:.3f} A to P{N} with its sticks" if pad_gap_sticks is not None else
+                 f" (made on the parts without sticks); not measured to P{N} with its sticks"
+                 if pad_gap_unmeasured else ""))
         check("pads lie outside the model",
               pad_info["overlap_whole"] / sc3 <= TOL_REL * Vw and pad_info["overlap_blob"] / sc3 <= TOL_REL * Vw,
               f"{pad_info['overlap_whole'] / sc3:.2g} A^3 inside the whole, "
@@ -3927,7 +4003,7 @@ def _pipeline(a, c):
                             for r in si["parts"]))
             check("sticks leave the surface as it was",
                   all(abs(x - y) <= 1e-6 * max(1.0, y) for x, y in zip(shown_after, shown_before)),
-                  "blob area on the whole's surface " + ", ".join(
+                  "area on the whole's surface " + ", ".join(
                       f"P{i} {y:,.1f} -> {x:,.1f} A^2" for i, (x, y) in enumerate(zip(shown_after, shown_before), 1)))
             d_mm = a.stick_diameter * a.scale
             if d_mm < 0.4 - 1e-9:
@@ -4047,7 +4123,8 @@ def _pipeline(a, c):
         if pads:
             P_(f"  pads                under blob faces sloping less than {min(a.support_angle + 1, 89):g} deg "
                f"from horizontal over 1 A (support threshold {a.support_angle:g}, +1 as Bambu Studio), "
-               f"{a.pad_thickness:g} A thick, at least {PAD_GAP:g} A from the other parts and blobs")
+               f"flat-bottomed, at least {a.pad_thickness:g} A thick, at least {PAD_GAP:g} A from the other "
+               f"parts and blobs")
         if sticks:
             P_(f"  sticks              {a.stick_diameter:g} A across, along every bond from a blob atom to a P{N} "
                f"atom, from where its line leaves the blob to the atom"
@@ -4167,8 +4244,9 @@ def _pipeline(a, c):
         t_mm, g_mm = a.pad_thickness * a.scale, PAD_GAP * a.scale
         P_(f"  rule                    faces whose surface, averaged over 1 A, slopes less than "
            f"{a.support_angle:g} deg from horizontal (Bambu adds 1: < {min(a.support_angle + 1, 89):g})")
-        P_(f"  pads                    {a.pad_thickness:g} A deep = {t_mm:.2f} mm = {t_mm / LAYER_H:.1f} layers "
-           f"of {LAYER_H:g} mm, down to the print's lowest point when within {2 * LAYER_H:g} mm of it; at least "
+        P_(f"  pads                    flat-bottomed, {a.pad_thickness:g} A = {t_mm:.2f} mm = {t_mm / LAYER_H:.1f} layers "
+           f"of {LAYER_H:g} mm below their blob faces' lowest point, down to the print's lowest point when within "
+           f"{2 * LAYER_H:g} mm of it; at least "
            f"{PAD_GAP:g} A = {g_mm:.2f} mm from the other parts and blobs; under {PAD_MIN_AREA:g} mm^2 dropped")
         if pad_mesh is not None and pad_info["lift"] > 1e-9:
             P_(f"  below the model         the lowest pads reach {pad_info['lift']:.2f} mm below the parts: imported "
@@ -4184,6 +4262,13 @@ def _pipeline(a, c):
         if pad_mesh is not None:
             P_(f"  closest approach        " + ("at least " if pad_info["min_gap_is_bound"] else "")
                + f"{pad_info['min_gap'] / a.scale:.3f} A to another part or another blob")
+            if pad_gap_sticks is not None or pad_gap_unmeasured:
+                P_(f"  with sticks             made on the parts as they are without sticks, so these are the "
+                   f"pads of the same set without them; " + (
+                       f"their gap to P{N} with its sticks could not be measured (no manifold could be "
+                       f"made of the meshes)" if pad_gap_sticks is None else (
+                           "at least " if pad_gap_sticks >= 2 * PAD_GAP * a.scale * (1 - 1e-9) else "")
+                       + f"{pad_gap_sticks / a.scale:.3f} A to P{N} with its sticks"))
             P_(f"  layers                  pads in {pad_info['layers']} of {pad_info['layers_total']} layers "
                f"(a filament change in each, if the pads get their own filament)")
         P_(f"  -> the support meets the pads, not the blobs, wherever a pad fits; where a face that needs "
@@ -4274,6 +4359,8 @@ def _pipeline(a, c):
                pads=dict(support_angle=a.support_angle, thickness=a.pad_thickness, gap=PAD_GAP,
                          min_area_mm2=PAD_MIN_AREA, file=str(out / pads_name) if pad_mesh is not None
                          else None, file_stats_mm=pad_stats, vertices_separated=pad_moved[0],
+                         made_on_parts_without_sticks=parts_plain is not None and parts_plain is not parts_m,
+                         min_gap_to_last_with_sticks=None if pad_gap_sticks is None else pad_gap_sticks / a.scale,
                          **pads_in_angstrom(pad_info, a.scale)) if pads else None,
                sticks=dict(stick_info, surface_before=shown_before, surface_after=shown_after) if sticks else None,
                whole_pieces=len(pieces), expected_pieces=n_whole, expected_basis=basis,
@@ -5080,8 +5167,9 @@ HELP = {
         "support would touch, so the support touches the pad instead.\n\n"
         "A blob face is taken to touch the support when it is on the model's "
         "surface, faces down at a slope from horizontal below the Support angle "
-        "(the slicer's support threshold angle). Under each such face the pad "
-        "fills the space straight below it, Pad thickness deep, and shares the "
+        "(the slicer's support threshold angle). Each patch of such faces gets "
+        "one pad, which fills the space straight below them down to a flat "
+        "bottom, Pad thickness below the patch's lowest point, and shares the "
         "blob's faces exactly, so the two touch. Under a blob near the bed the "
         "pad reaches below the model, so the print stands up to Pad thickness "
         "taller, and a pad that would end less than two 0.2 mm layers above the "
@@ -5134,7 +5222,8 @@ HELP = {
     ),
     "pad_thickness": (
         "Pad thickness (Å)",
-        "Used only with Pads. How far each pad reaches below its blob face, in "
+        "Used only with Pads. How far each pad's flat bottom lies below the "
+        "lowest point of its blob faces, the pad's least thickness, in "
         "Å, so in mm times Scale, and times any scaling in the slicer: at the "
         "default 1 mm per Å, 0.8 Å is 0.8 mm, four 0.2 mm layers. Under a blob "
         "near the bed the pad reaches below the "
@@ -5175,7 +5264,8 @@ HELP = {
         "part of the last part's STL and print in its filament; nothing else "
         "is imported. They do not show outside the model, in the files or the "
         "previews; the slicer's sliced preview shows them as dots inside the "
-        "blobs.\n\n"
+        "blobs. With Pads, the pads are the ones the same set gets without "
+        "sticks: the sticks are an add-on inside the blobs.\n\n"
         "Command line: --sticks (with --blobs and --part).",
         "210 bp supercoil at 4.1 Å, phosphate blobs:\n"
         "840 bonds, 420 O5\u2032-C5\u2032 and 420 O3\u2032-C3\u2032\n"
@@ -6366,8 +6456,9 @@ def build_parser():
     g.add_argument("--pads", action="store_true",
                    help="with --blobs: write <tag>_pads.stl, one part holding a pad under each "
                         "blob face the slicer will support (its surface, over 1 A, sloping less than "
-                        "--support-angle + 1 from horizontal) where a pad fits "
-                        f"--pad-thickness deep and at least {PAD_GAP:g} A from the other parts and "
+                        "--support-angle + 1 from horizontal) where a pad fits, flat-bottomed, "
+                        f"--pad-thickness below its faces' lowest point and at least {PAD_GAP:g} A "
+                        "from the other parts and "
                         "blobs (other faces stay bare), so the support touches the pads, not the "
                         "blobs; a pad may reach below the model, so the print stands up to "
                         "--pad-thickness taller; made for the exported up direction: do not tilt "
@@ -6379,8 +6470,9 @@ def build_parser():
                         "a face sloping less than this + 1 from horizontal, and so does the tool "
                         f"(default {DEFAULT_SUPPORT_ANGLE:g})")
     g.add_argument("--pad-thickness", type=float, default=None,
-                   help=f"with --pads: pad thickness, A (default {DEFAULT_PAD_THICKNESS:g}; "
-                        "x --scale in mm)")
+                   help=f"with --pads: how far each pad's flat bottom lies below the lowest point "
+                        f"of its blob faces, the pad's least thickness, A (default "
+                        f"{DEFAULT_PAD_THICKNESS:g}; x --scale in mm)")
     g.add_argument("--sticks", action="store_true",
                    help="with --blobs and --part: push a stick of the last part into the blobs along "
                         "every bond between a blob atom and a last-part atom (the bonds as ChimeraX "
