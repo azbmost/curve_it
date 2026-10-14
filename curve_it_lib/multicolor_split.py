@@ -28,8 +28,8 @@ GUI every field, checkbox and group of buttons has a light-blue ? that opens an
 explanation of the setting, with an example for every entry field.  The GUI greys
 out what the ticked boxes leave unused: Pads, Sticks and Blob skin until Blob
 parts is ticked (Sticks also until the parts are atom selections), and the pad
-and stick numbers until their box is ticked; ticking Blob parts ticks Pads and
-Sticks.  A greyed-out field's value is not used.
+and stick settings until their box is ticked; ticking Blob parts ticks Pads and
+Sticks, and Sticks ticks "Sticks may cut necks between unbonded groups".  A greyed-out field's value is not used.
 
 Output (default): ./<structure stem>_molmap<resolution>_split/ holding
     <tag>_p1_chainA.stl, <tag>_p2_chainC.stl, ...   one per part (tag = the folder name;
@@ -219,9 +219,15 @@ METHOD  (the two-colour BR strand-split procedure, generalised to N parts)
    flat, or is capped by a ball of --stick-ball (default 0: none).  It is accepted if the part of it
    inside the blob keeps --stick-wall (0.6 A) from the blob-coloured surface
    (blob faces on the whole's surface: by the last part's own surface a root
-   meets its own colour) and its blob body stays one piece; a stick that fails
-   with its ball is tried without it, then left out, and sticks that split a
-   body only together are dropped from the last.  Each blob solid (an outer
+   meets its own colour) and its blob body stays one piece -- or, by default
+   (--stick-cut-necks), falls into pieces that each hold whole groups of
+   bonded atoms (one phosphate group, one base): the map can merge the blobs
+   of neighbouring groups through a thin neck, and a stick may part them
+   there, as a finer map would, but never cuts one group apart or cuts off a
+   lump with none of the part's atoms (ChimeraX's bonds give the groups; an
+   atom is placed by its winding number); a stick that fails with its ball is
+   tried without it, then left out, and sticks that split a body wrongly only
+   together are dropped from the last.  Each blob solid (an outer
    shell with its cavities) loses its own sticks only (solids do not touch,
    so the part is reassembled without a boolean), the last part gains
    exactly what they take, and the parts are finished again, so the tiling
@@ -262,7 +268,7 @@ import tempfile
 import time
 from pathlib import Path
 
-__version__ = "1.10.0"
+__version__ = "1.11.0"
 TOOL_NAME = "Multicolor Split"
 
 try:
@@ -1145,11 +1151,29 @@ def select_job(P, man):
         order = np.lexsort((ri, bi))
         bi, ri = bi[order], ri[order]
         xyz = np.asarray(atoms.coords, dtype=float)
+        # each blob atom's group: the atoms of its part joined to it by bonds (one
+        # phosphate group, one base, ...), so a stick may part two groups whose
+        # blobs only merged in the map without ever cutting one group apart
+        root = np.arange(len(atoms))
+
+        def find(i):
+            while root[i] != i:
+                root[i] = root[root[i]]
+                i = root[i]
+            return i
+        for x, y in zip(i1[(o1 == o2) & (o1 >= 0) & (o1 < last)], i2[(o1 == o2) & (o1 >= 0) & (o1 < last)]):
+            rx, ry = find(x), find(y)
+            if rx != ry:
+                root[max(rx, ry)] = min(rx, ry)
+        gi = np.nonzero((owner >= 0) & (owner < last) & ~hyd)[0]
+        _, group = np.unique([find(i) for i in gi], return_inverse=True)
         bonds = dict(part=owner[bi].tolist(), blob_atom=[keys[i] for i in bi],
                      rest_atom=[keys[i] for i in ri], blob_xyz=xyz[bi].round(4).tolist(),
                      rest_xyz=xyz[ri].round(4).tolist(),
                      between_blobs=int(((o1 >= 0) & (o1 < last) & (o2 >= 0) & (o2 < last)
-                                        & (o1 != o2)).sum()))
+                                        & (o1 != o2)).sum()),
+                     groups=dict(part=owner[gi].tolist(), group=np.asarray(group).ravel().tolist(),
+                                 xyz=xyz[gi].round(4).tolist()))
     man["selection"] = dict(
         n_considered=int(considered.sum()), unassigned=int(len(left)),
         unassigned_examples=[keys[i] for i in left[:5]], shared=shared, parts=out,
@@ -2719,7 +2743,59 @@ def _solids(M, sliver):
     return [concat_manifolds(g) for g in groups], loose
 
 
-def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=None):
+def winding_numbers(M, P):
+    """The winding number of the closed mesh M about each point of P: 1
+    inside, 0 outside (a cavity counts as outside), about 1/2 on the surface.
+    Exact, where a ray test can miss on an edge."""
+    P = np.asarray(P, dtype=np.float64).reshape(-1, 3)
+    if not len(P) or M.is_empty():
+        return np.zeros(len(P))
+    V, F = arrays(M)
+    T = np.asarray(V, dtype=np.float64)[F]
+    out = np.empty(len(P))
+    for n, p in enumerate(P):
+        a, b, c = T[:, 0] - p, T[:, 1] - p, T[:, 2] - p
+        la, lb, lc = (np.linalg.norm(x, axis=1) for x in (a, b, c))
+        num = np.einsum("ij,ij->i", a, np.cross(b, c))
+        den = (la * lb * lc + np.einsum("ij,ij->i", a, b) * lc + np.einsum("ij,ij->i", b, c) * la
+               + np.einsum("ij,ij->i", c, a) * lb)
+        out[n] = np.arctan2(num, den).sum() / (2 * np.pi)
+    return out
+
+
+def groups_in(pieces, xyz, group):
+    """For each piece (a manifold), the groups with an atom inside it.  An atom
+    on a piece's surface, such as a stick's own atom on the stick's flat end,
+    counts for no piece."""
+    out = []
+    for x in pieces:
+        bb = np.asarray(x.bounding_box(), dtype=np.float64)
+        near = np.nonzero(np.all((xyz >= bb[:3] - 1e-6) & (xyz <= bb[3:] + 1e-6), axis=1))[0]
+        w = winding_numbers(x, xyz[near])
+        out.append(set(group[near[w > 0.75]].tolist()))
+    return out
+
+
+def parts_whole_groups(pieces, xyz, group):
+    """True when every piece holds an atom of the groups and no group has atoms
+    in two pieces: cut this way, a blob is only parted between groups."""
+    held, seen = groups_in(pieces, xyz, group), set()
+    for h in held:
+        if not h or seen & h:
+            return False
+        seen |= h
+    return True
+
+
+def group_splits(P, xyz, group, sliver):
+    """(pieces holding no atom of the groups, groups with atoms in two
+    pieces) for a part P: what a stick that cut a group apart would raise."""
+    held = groups_in(_solids(P, sliver)[0], xyz, group)
+    count = collections.Counter(g for h in held for g in h)
+    return sum(1 for h in held if not h), sum(1 for n in count.values() if n > 1)
+
+
+def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=None, necks=False):
     """Sticks of the last part pushed into the blob parts along the bonds
     between them.
 
@@ -2736,8 +2812,12 @@ def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=No
     just behind E is the last part (the bond leaves the blob through the
     surface or into another blob); a stick is accepted only if the part of it
     inside the blob keeps `wall` from the blob-coloured surface (the blob
-    parts' faces on the whole's surface) and its blob body stays one piece; a
-    stick that fails with its ball is tried without it, then dropped.  Each
+    parts' faces on the whole's surface) and its blob body stays one piece --
+    or, with `necks` and bonds["groups"] (each blob atom's group: the atoms of
+    its part bonded to it), falls into pieces that each hold whole groups, so
+    the stick only parts groups whose blobs merged in the map, through a neck,
+    and never cuts one group apart; a stick that fails with its ball is tried
+    without it, then dropped.  Each
     blob solid (an outer shell with its cavities) loses its own sticks only,
     and the last part gains exactly what they take from it (the solid's
     intersection with its sticks), so the tiling stays exact and no part's
@@ -2758,6 +2838,21 @@ def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=No
     B = np.asarray(bonds["blob_xyz"], dtype=np.float64).reshape(-1, 3)
     Rr = np.asarray(bonds["rest_xyz"], dtype=np.float64).reshape(-1, 3)
     nb = len(part)
+    G = bonds.get("groups") if necks else None
+    if G is not None:
+        gpart = np.asarray(G["part"], dtype=np.int64)
+        ggroup = np.asarray(G["group"], dtype=np.int64)
+        gxyz = np.asarray(G["xyz"], dtype=np.float64).reshape(-1, 3)
+    cut_why = "it would cut a group of bonded atoms apart" if G is not None else "it would cut its blob in two"
+
+    def parted_well(pieces, k):
+        """One piece, or (with necks) pieces that each hold whole groups of blob part k."""
+        if len(pieces) == 1:
+            return True
+        if G is None:
+            return False
+        mine_ = gpart == k
+        return parts_whole_groups(pieces, gxyz[mine_], ggroup[mine_])
     vec = B - Rr
     length = np.linalg.norm(vec, axis=1) if nb else np.zeros(0)
     u = vec / np.maximum(length, 1e-12)[:, None] if nb else np.zeros((0, 3))
@@ -2803,13 +2898,13 @@ def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=No
         if T.is_empty():
             return np.inf
         return wall_from(arrays(T.refine_to_length(STICK_SAMPLE))[0].astype(np.float64), surf)
-    new_blobs, by_part, walls, cut_any, taken = [], [], {}, False, []
+    new_blobs, by_part, walls, cut_any, taken, parted = [], [], {}, False, [], set()
     for k in range(n_blobs):
         idx = np.nonzero(part == k)[0]
         blob = parts[k]
         solids, loose = _solids(blob, sliver) if not blob.is_empty() else ([], [])
         rec = dict(part=k + 1, bonds=int(len(idx)), with_ball=0, without_ball=0, skipped=int(len(idx)),
-                   moved_volume=0.0, bodies_before=len(solids), bodies_after=len(solids))
+                   moved_volume=0.0, bodies_before=len(solids), bodies_after=len(solids), parted=0)
         if not len(idx) or blob.is_empty():
             for i in idx:
                 reason[i] = "its blob part is empty"
@@ -2880,9 +2975,12 @@ def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=No
                 if sh < wall * (1 - 1e-6):
                     reason[i] = f"closer than {wall:g} A to the blob-coloured surface"
                     continue
-                if len(_solids(rem, sliver)[0]) != 1:
-                    reason[i] = "it would cut its blob in two"
+                pieces = _solids(rem, sliver)[0]
+                if not parted_well(pieces, k):
+                    reason[i] = cut_why
                     continue
+                if len(pieces) > 1:
+                    parted.add(i)
                 shapes[i] = (S, with_ball)
                 walls[i] = min(search, sh)
                 status[i], reason[i] = ("stick+ball" if with_ball else "stick"), ""
@@ -2894,14 +2992,15 @@ def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=No
             while mine:
                 Su = mf.Manifold.batch_boolean([shapes[i][0] for i in mine], mf.OpType.Add)
                 rem = solids[j] - Su
-                if len(_solids(rem, sliver)[0]) == 1:
+                if parted_well(_solids(rem, sliver)[0], k):
                     cut[j] = rem
                     # what the sticks take from this solid, and nothing else, goes to the last part
                     taken.append(solids[j] ^ Su)
                     break
                 i = mine.pop()
                 del shapes[i]
-                status[i], reason[i] = "skipped", "it would cut its blob in two, with its neighbours"
+                parted.discard(i)
+                status[i], reason[i] = "skipped", cut_why + ", with its neighbours"
         acc = [i for i in idx if i in shapes]
         if acc:
             # each solid loses its own sticks only; the solids do not touch, so
@@ -2914,6 +3013,7 @@ def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=No
         rec["with_ball"] = sum(1 for i in acc if shapes[i][1])
         rec["without_ball"] = sum(1 for i in acc if not shapes[i][1])
         rec["skipped"] = int(len(idx)) - len(acc)
+        rec["parted"] = sum(1 for i in acc if i in parted)
         new_blobs.append(new)
         by_part.append(rec)
     infos, final_wall = None, None
@@ -2978,6 +3078,7 @@ def make_sticks(parts, ref, bonds, n_blobs, diameter, ball, wall, sliver, log=No
                 made=len(made), with_ball=sum(1 for i in made if status[i] == "stick+ball"),
                 without_ball=sum(1 for i in made if status[i] == "stick"), skipped=nb - len(made),
                 skip_reasons=dict(why), between_blobs=int(bonds.get("between_blobs", 0)),
+                cut_necks=G is not None, parted=sum(r["parted"] for r in by_part),
                 depth=[float(np.min(depth[made])), float(np.median(depth[made])),
                        float(np.max(depth[made]))] if made else None,
                 min_wall=float(min(walls[i] for i in made)) if made else None,
@@ -3752,8 +3853,19 @@ def _pipeline(a, c):
         shown_before = [area_on_surface(*arrays(P), (refV, refF)) for P in parts_m]
         parts_plain = parts_m                   # the pads are made on these: sticks are an add-on
         parts_m, new_infos, stick_info = make_sticks(parts_m, ref, bonds, N - 1, a.stick_diameter,
-                                                     a.stick_ball, a.stick_wall, sliver, log=log)
+                                                     a.stick_ball, a.stick_wall, sliver, log=log,
+                                                     necks=bool(getattr(a, "stick_cut_necks", True)))
         shown_after = [area_on_surface(*arrays(P), (refV, refF)) for P in parts_m]
+        if stick_info.get("parted"):
+            # measured again on the finished parts: sticks that parted merged groups
+            # left every group whole -- no piece without an atom, no group in two pieces
+            gp_ = np.asarray(bonds["groups"]["part"], dtype=np.int64)
+            gg_ = np.asarray(bonds["groups"]["group"], dtype=np.int64)
+            gx_ = np.asarray(bonds["groups"]["xyz"], dtype=np.float64).reshape(-1, 3)
+            stick_info["group_splits"] = [
+                dict(part=k + 1, before=group_splits(parts_plain[k], gx_[gp_ == k], gg_[gp_ == k], sliver),
+                     after=group_splits(parts_m[k], gx_[gp_ == k], gg_[gp_ == k], sliver))
+                for k in range(N - 1) if stick_info["parts"][k]["parted"]]
         for old, new_ in zip(pinfo, new_infos or []):   # the second pass's fragments add to the first's
             old.update(bodies=new_["bodies"], cavities=new_["cavities"])
             for key in ("slivers", "sliver_volume", "received", "received_volume", "dropped_volume"):
@@ -4002,9 +4114,19 @@ def _pipeline(a, c):
                       fw is None or fw >= a.stick_wall - STICK_SAMPLE / 4,
                       ("more than " + f"{2 * a.stick_wall:g}" if fw is None else f"{fw:.3f}")
                       + " A of blob between a stick and the blob-coloured surface, in the finished parts")
-            check("sticks split no blob", all(r["bodies_after"] == r["bodies_before"] for r in si["parts"]),
-                  ", ".join(f"P{r['part']} {r['bodies_before']} -> {r['bodies_after']} piece(s)"
-                            for r in si["parts"]))
+            pieces_ = ", ".join(f"P{r['part']} {r['bodies_before']} -> {r['bodies_after']} piece(s)"
+                                for r in si["parts"])
+            if si.get("cut_necks"):
+                gs_ = si.get("group_splits") or []
+                same_ = all(r["bodies_after"] == r["bodies_before"] for r in si["parts"] if not r["parted"])
+                check("sticks cut no group apart",
+                      same_ and all(x["after"][0] <= x["before"][0] and x["after"][1] <= x["before"][1]
+                                    for x in gs_),
+                      pieces_ + (f"; {si['parted']} stick(s) parted groups the map had merged, every piece "
+                                 f"a whole group of bonded atoms" if si["parted"] else ""))
+            else:
+                check("sticks split no blob", all(r["bodies_after"] == r["bodies_before"] for r in si["parts"]),
+                      pieces_)
             check("sticks leave the surface as it was",
                   all(abs(x - y) <= 1e-6 * max(1.0, y) for x, y in zip(shown_after, shown_before)),
                   "area on the whole's surface " + ", ".join(
@@ -4068,7 +4190,8 @@ def _pipeline(a, c):
                   f"--pad-thickness={a.pad_thickness:.12g}"]
     if sticks:
         repro += ["--sticks", f"--stick-diameter={a.stick_diameter:.12g}",
-                  f"--stick-ball={a.stick_ball:.12g}", f"--stick-wall={a.stick_wall:.12g}"]
+                  f"--stick-ball={a.stick_ball:.12g}", f"--stick-wall={a.stick_wall:.12g}",
+                  "--stick-cut-necks" if getattr(a, "stick_cut_necks", True) else "--no-stick-cut-necks"]
     for flag in ("allow_multi_shell", "keep_solvent", "keep_pinch_edges"):
         if getattr(a, flag):
             repro.append("--" + flag.replace("_", "-"))
@@ -4133,7 +4256,9 @@ def _pipeline(a, c):
             P_(f"  sticks              {a.stick_diameter:g} A across, along every bond from a blob atom to a P{N} "
                f"atom, from where its line leaves the blob to the atom"
                + (f", capped there with a ball {a.stick_ball:g} A across" if a.stick_ball > 0 else "")
-               + f"; at least {a.stick_wall:g} A of blob between them and the blob-coloured surface")
+               + f"; at least {a.stick_wall:g} A of blob between them and the blob-coloured surface"
+               + ("; may part groups of bonded atoms that the map merged" if getattr(a, "stick_cut_necks", True)
+                  else "; may not cut a blob in two"))
     else:
         P_(f"  K (penalty slope)   {K:g}          ({k_mode}"
            + (f"; K0 = {k0:.3g}" if k_mode == 'scanned' else "") + ")")
@@ -4216,8 +4341,11 @@ def _pipeline(a, c):
            f"{a.stick_diameter:g} A across"
            + (f", capped on the atom with a ball {a.stick_ball:g} A across" if a.stick_ball > 0 else "")
            + f"; at least {a.stick_wall:g} A of blob between them and the blob-coloured surface (else the stick "
-             f"is tried without its ball, then left out); a stick may not cut its blob in two; only the "
-             f"blob that holds the atom is cut")
+             f"is tried without its ball, then left out); "
+           + ("a stick may cut a blob in two only where it joins groups of atoms not bonded to each other, "
+              "so each piece is a whole group, never one group apart" if si.get("cut_necks") else
+              "a stick may not cut its blob in two")
+           + "; only the blob that holds the atom is cut")
         P_(f"  bonds                   {si['bonds']}" + (": " + ", ".join(
             f"{n_} {pair}" for pair, n_ in si["pairs"].items()) + (
             f" ({si['bond_length'][0]:.2f}-{si['bond_length'][1]:.2f} A)" if si["bond_length"] else "")
@@ -4230,7 +4358,9 @@ def _pipeline(a, c):
             made_ = r["with_ball"] + r["without_ball"]
             P_(f"  {labels[r['part'] - 1]:23s} {made_} of {r['bonds']} stick(s) made"
                + (f" ({r['with_ball']} with a ball)" if a.stick_ball > 0 else "")
-               + f"; {r['moved_volume']:,.1f} A^3 of the blob is now P{N}'s")
+               + f"; {r['moved_volume']:,.1f} A^3 of the blob is now P{N}'s"
+               + (f"; {r['parted']} parted groups the map had merged ({r['bodies_before']} -> "
+                  f"{r['bodies_after']} pieces)" if r.get("parted") else ""))
         if si["skipped"]:
             P_("  skipped                 " + "; ".join(f"{n_}: {w_}" for w_, n_ in si["skip_reasons"].items()))
         if si["made"]:
@@ -5268,7 +5398,8 @@ HELP = {
         "stick runs along its bond, from just inside the last part to the "
         "blob's atom.\n\n"
         "A stick is left out if it would come within Stick wall of the blob's "
-        "outside, or cut its blob in two. So is a stick whose bond leaves the "
+        "outside, or cut one group of bonded atoms apart (see Sticks may cut "
+        "necks between unbonded groups). So is a stick whose bond leaves the "
         "blob into air, another blob, or a closed pocket inside the blob. The "
         "report's STICKS section says why any were left out.\n\n"
         "The sticks are in the last part's STL and print in its filament. They "
@@ -5281,9 +5412,35 @@ HELP = {
         "phosphate blobs (P, OP1, OP2, OP3, O5′, O3′),\n"
         "1.5 Å sticks, no ball, Stick wall 0.6 Å:\n"
         "840 bonds, 420 O5′-C5′ and 420 O3′-C3′\n"
-        "838 sticks made; 2 would cut their blob in two\n"
+        "840 sticks made; 2 of them part phosphate groups\n"
+        "whose blobs had merged (Sticks may cut necks)\n"
         "sticks reach 1.77–2.16 Å into the blob\n"
         "thinnest blob wall over a stick 0.898 Å",
+    ),
+    "stick_cut_necks": (
+        "Sticks may cut necks between unbonded groups",
+        "Lets a stick cut through a thin neck of blob between two groups of "
+        "atoms that are not bonded to each other. A group is a set of the "
+        "part's atoms joined by bonds, such as one phosphate group or one "
+        "base.\n\n"
+        "At a coarser Resolution, the blobs of neighbouring groups can merge "
+        "through a thin neck, although the groups are not bonded. A stick next "
+        "to that neck can cut it. The blob then falls into two pieces, each a "
+        "whole group, as it would be at a finer Resolution.\n\n"
+        "Ticked, such a stick is kept. A stick is still left out if it would "
+        "cut one group apart, or cut off a lump of blob that holds none of the "
+        "part's atoms. Unticked, every stick that would split a blob into "
+        "pieces is left out, as before version 1.11.0.\n\n"
+        "The box is greyed out, and not used, unless Sticks is ticked. Ticked "
+        "by default.\n\n"
+        "Command line: on by default with --sticks; --no-stick-cut-necks turns "
+        "it off.",
+        "minimized 210 bp DNA ellipse, Resolution 4.1 Å,\n"
+        "phosphate blobs, 1.5 Å sticks, no ball:\n"
+        "ticked     840 of 840 sticks made; 4 of them part two\n"
+        "           phosphate groups whose blobs had merged,\n"
+        "           so the blob parts have 4 more pieces\n"
+        "unticked  836 made; those 4 are left out",
     ),
     "stick_diameter": (
         "Stick diameter (Å)",
@@ -5314,7 +5471,7 @@ HELP = {
         "where the stick ends.\n\n"
         "A ball takes more room and leaves a thinner wall of blob over the "
         "stick's end. A ball that would come within Stick wall of the blob's "
-        "outside, or cut its blob in two, is dropped. The plain stick is then "
+        "outside, or cut a group of bonded atoms apart, is dropped. The plain stick is then "
         "tried, and left out if it does not fit either. "
         "The report counts the sticks that kept their ball.\n\n"
         "In a slicing test (not a print), balls only made things worse. "
@@ -5584,19 +5741,21 @@ GUI_OPTIONS = [
     ("blobs", "Blob parts (each but the last is its own molmap)", False),
     ("pads", "Pads under blobs that touch the support", False),
     ("sticks", "Sticks from the rest into the blobs", False),
+    ("stick_cut_necks", "Sticks may cut necks between unbonded groups", True),
     ("no_widen", "Do not widen a failed level scan", False),
     ("keep_solvent", "Keep solvent (waters)", False),
     ("no_hydrogens", "Exclude hydrogens", True),
     ("keep_scan", "Keep scan STLs (<tag>_work/)", False),
     ("no_preview", "Skip preview PNG/GLB", False),
 ]
-GUI_OFF_FLAGS = {"lay_flat": "--no-lay-flat", "no_hydrogens": "--keep-hydrogens"}
+GUI_OFF_FLAGS = {"lay_flat": "--no-lay-flat", "no_hydrogens": "--keep-hydrogens",
+                 "stick_cut_necks": "--no-stick-cut-necks"}
 # A checkbox usable only when this other box is ticked (Sticks also needs the
 # parts given as atom selections)
-GUI_BOX_NEEDS = {"pads": "blobs", "sticks": "blobs"}
+GUI_BOX_NEEDS = {"pads": "blobs", "sticks": "blobs", "stick_cut_necks": "sticks"}
 # Boxes ticked whenever they become usable: once there are blob parts, pads and
 # sticks are on unless unticked
-GUI_ON_WHEN_USABLE = ("pads", "sticks")
+GUI_ON_WHEN_USABLE = ("pads", "sticks", "stick_cut_necks")
 
 
 def gui_usable(ticked, parts_by):
@@ -5606,9 +5765,9 @@ def gui_usable(ticked, parts_by):
     selections, and a field in GUI_NUMBER_NEEDS needs its box usable and
     ticked.  Every other box and field is always usable."""
     ticked = set(ticked)
-    off = {key for key, box in GUI_BOX_NEEDS.items() if box not in ticked}
-    if parts_by != "selections":
-        off.add("sticks")
+    off = {"sticks"} if parts_by != "selections" else set()
+    for _ in range(2):          # a box's own box may be off in turn (the necks box needs Sticks)
+        off |= {key for key, box in GUI_BOX_NEEDS.items() if box in off or box not in ticked}
     off |= {key for key, box in GUI_NUMBER_NEEDS.items() if box in off or box not in ticked}
     return ({k for k, _, _, _ in GUI_NUMBERS} | {k for k, _, _ in GUI_OPTIONS}) - off
 
@@ -6224,6 +6383,8 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
                 if g[key] != "" and key in usable:
                     args.append(f"{GUI_FLAG_NAMES.get(key, '--' + key.replace('_', '-'))}={g[key]}")
             for key, _, default in GUI_OPTIONS:
+                if key not in usable:
+                    continue
                 if g[key] and not default:
                     args.append("--" + key.replace("_", "-"))
                 elif not g[key] and default:
@@ -6635,8 +6796,8 @@ def build_parser():
                         "reads them, so they follow the selections: O5'-C5' and O3'-C3' when the "
                         "phosphate parts take O5' and O3', P-O5' and P-O3' when they do not), from "
                         "where the bond's line, followed back past the last-part atom, leaves the blob, "
-                        "to the blob's atom, capped there with a "
-                        "ball, and keeping --stick-wall of the blob between it and the blob-coloured "
+                        "to the blob's atom, where it ends flat (or with a --stick-ball), "
+                        "keeping --stick-wall of the blob between it and the blob-coloured "
                         "surface (the blob's faces on the outside of the model); the blobs are keyed into "
                         "the last part")
     g.add_argument("--stick-diameter", type=float, default=None,
@@ -6645,6 +6806,16 @@ def build_parser():
     g.add_argument("--stick-ball", type=float, default=None,
                    help=f"with --sticks: diameter of the ball capping each stick on the blob's atom, A "
                         f"(default {DEFAULT_STICK_BALL:g}, no ball; a ball must be larger than the stick)")
+    g.add_argument("--stick-cut-necks", dest="stick_cut_necks", action="store_true", default=True,
+                   help="with --sticks (the default): a stick may cut a blob piece in two where the "
+                        "piece only joins groups of atoms that are not bonded to each other (blobs the "
+                        "map merged through a neck, such as two neighbouring phosphate groups at 4.1 A), "
+                        "so each piece is a whole group; it is still left out if it would cut one bonded "
+                        "group apart")
+    g.add_argument("--no-stick-cut-necks", dest="stick_cut_necks", action="store_false",
+                   default=argparse.SUPPRESS,
+                   help="with --sticks: leave out every stick that would cut a blob piece in two, as "
+                        "before v1.11.0")
     g.add_argument("--stick-wall", type=float, default=None,
                    help=f"with --sticks: the least blob, A, between a stick or its ball and the "
                         f"blob-coloured surface (the blob's faces on the outside of the model); a stick "
@@ -6742,7 +6913,8 @@ def main(argv=None):
                                           "no_hydrogens", "keep_scan", "no_preview", "palette",
                                           "selection_syntax", "overlap", "chimera", "blobs",
                                           "blob_skin", "pads", "support_angle", "pad_thickness",
-                                          "sticks", "stick_diameter", "stick_ball", "stick_wall")}
+                                          "sticks", "stick_diameter", "stick_ball", "stick_wall",
+                                          "stick_cut_necks")}
         if a.part:
             pre["part"] = "\n".join(a.part)
             pre["parts_by"] = "selections"
