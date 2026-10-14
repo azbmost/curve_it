@@ -25,7 +25,11 @@ solids that tile the whole molmap surface EXACTLY, for multicolour printing
 
 This is Curve It's "Multicolor Split..." tool; it also runs on its own.  In the
 GUI every field, checkbox and group of buttons has a light-blue ? that opens an
-explanation of the setting, with an example for every entry field.
+explanation of the setting, with an example for every entry field.  The GUI greys
+out what the ticked boxes leave unused: Pads, Sticks and Blob skin until Blob
+parts is ticked (Sticks also until the parts are atom selections), and the pad
+and stick numbers until their box is ticked; ticking Blob parts ticks Pads and
+Sticks.  A greyed-out field's value is not used.
 
 Output (default): ./<structure stem>_molmap<resolution>_split/ holding
     <tag>_p1_chainA.stl, <tag>_p2_chainC.stl, ...   one per part (tag = the folder name;
@@ -211,8 +215,8 @@ METHOD  (the two-colour BR strand-split procedure, generalised to N parts)
    just behind E is the last part and the line does not leave the blob into
    one of its cavities (last-part atoms the blob encloses: a stick there would
    key nothing).  The stick, --stick-diameter across (1.5 A),
-   runs from half its diameter behind E to the blob's atom, where a ball of
-   --stick-ball (1.8 A; 0 for none) caps it.  It is accepted if the part of it
+   runs from half its diameter behind E to the blob's atom, where it ends
+   flat, or is capped by a ball of --stick-ball (default 0: none).  It is accepted if the part of it
    inside the blob keeps --stick-wall (0.6 A) from the blob-coloured surface
    (blob faces on the whole's surface: by the last part's own surface a root
    meets its own colour) and its blob body stays one piece; a stick that fails
@@ -258,7 +262,7 @@ import tempfile
 import time
 from pathlib import Path
 
-__version__ = "1.9.0"
+__version__ = "1.10.0"
 TOOL_NAME = "Multicolor Split"
 
 try:
@@ -301,7 +305,7 @@ PAD_MIN_AREA = 0.5             # mm^2 of top: smaller pads are dropped (narrower
 PAD_COLOR = (0.35, 0.35, 0.35)  # the pads in the previews
 # Sticks (--sticks): pegs of the last part pushed into the blobs along the bonds between them
 DEFAULT_STICK_DIAMETER = 1.5   # A (x --scale mm)
-DEFAULT_STICK_BALL = 1.8       # A: diameter of the ball capping a stick, on the blob's atom; 0 = none
+DEFAULT_STICK_BALL = 0.0       # A: diameter of the ball capping a stick, on the blob's atom; 0 = none
 MAX_STICK_DIAMETER = 4.0
 MAX_STICK_BALL = 6.0
 DEFAULT_STICK_WALL = 0.6       # A of its blob a stick keeps between it and the blob-coloured
@@ -4443,24 +4447,24 @@ def _convention_table():
 HELP = {
     "structure": (
         "Structure file",
-        "The PDB or mmCIF model whose chains are split into colours. It is "
-        "required; there is no default.\n\n"
-        "Accepted: .pdb and .ent (PDB), also gzip-compressed (.pdb.gz, "
-        ".ent.gz), and .cif and .mmcif (mmCIF), uncompressed only. ChimeraX's "
-        "mmCIF reader refuses a compressed file, so for a .cif.gz Detect "
-        "chains still lists the chains but Run split stops with an error; "
-        "gunzip it first.\n\n"
-        "Only the first model counts: the chain list is read from the file's "
-        "first model, and when ChimeraX opens several structures the maps are "
-        "built from the first one. Waters are left out unless Keep solvent is "
-        "ticked. "
-        "Output names follow the path as given, so a symbolic link's own name, "
-        "not its target's, becomes the default tag.\n\n"
-        "Browse… also runs Detect chains and fills Parts; after typing a path, "
-        "click Detect chains to list its chains (a structure passed in at "
-        "start-up is detected by itself).\n\n"
+        "The PDB or mmCIF file of the structure you want to split into "
+        "colours. This field is required.\n\n"
+        "PDB files (.pdb, .ent) may be gzip-compressed (.pdb.gz, .ent.gz). "
+        "mmCIF files (.cif, .mmcif) must not be compressed, because ChimeraX's "
+        "mmCIF reader refuses compressed files. For a .cif.gz, Detect chains "
+        "still lists the chains, but Run split stops with an error. Unzip it "
+        "first.\n\n"
+        "If the file holds several models, such as an NMR ensemble, only the "
+        "first one is used.\n\n"
+        "If Tag (file prefix) is blank, it is made from the file's name. For "
+        "example, model.pdb at a Resolution of 4 Å gives the Tag model_molmap4_split. "
+        "A symbolic link's own name is used, not its target's.\n\n"
+        "Choosing a file with Browse… runs Detect chains for you. If you type "
+        "a path instead, click Detect chains yourself. If you open the window "
+        "from the command line with a structure, its chains are detected at "
+        "once.\n\n"
         "Command line: the first argument, e.g. multicolor_split.py model.pdb "
-        "--parts A C; a file written last, after the --parts chains, is "
+        "--parts A C. A file name written last, after the --parts chains, is "
         "recognised too.",
         "model.pdb      PDB\n"
         "model.ent      PDB\n"
@@ -4470,25 +4474,24 @@ HELP = {
     ),
     "chains": (
         "Detect chains and the chain table",
-        "Detect chains reads the structure's first model, lists its chains in "
-        "the order they appear, and fills Parts with every chain that has an "
-        "ID, one colour each, in that order (replacing what Parts held).\n\n"
-        "Columns: chain is the chain ID, shown as (blank) when the ID is a "
-        "space; atoms counts the chain's atom records, hydrogens included; "
-        "residues is the number of residues; numbering is the first and last "
-        "residue number as written in the file; residue types lists each "
-        "residue name with its count. The line beside the button gives the "
-        "number of chains and models and the format read (pdb or mmcif). In "
-        "mmCIF the chain ID is auth_asym_id (label_asym_id when there is none).\n\n"
-        "Waters (residue names HOH, WAT, DOD, H2O, TIP, TIP3, SOL, T3P, SPC) "
-        "are not listed unless Keep solvent is ticked; click Detect chains "
-        "again after changing that box.\n\n"
-        "Atoms with a blank chain ID cannot be selected in ChimeraX, so they "
-        "can never be a part: a run leaves them out of the print and notes how "
-        "many atoms that is. A chain that is in no part is left out too, and "
-        "named in the log and the report.\n\n"
-        "Command line: there is no separate step; a run prints each chain with "
-        "its atom and residue counts when it starts.",
+        "Detect chains reads the structure's first model and lists its chains "
+        "in file order. It also fills Parts with one part per chain, replacing "
+        "what was there. Chains with a blank ID are skipped. Use it after "
+        "typing a structure path.\n\n"
+        "In the table, the atoms column includes hydrogens. Residue numbers are "
+        "as written in the file. A chain ID that is a space shows as (blank). "
+        "For mmCIF, the chain ID is the author chain ID (auth_asym_id), "
+        "or label_asym_id if "
+        "there is none.\n\n"
+        "Waters are not listed unless Keep solvent is ticked. Click Detect "
+        "chains again after changing that box.\n\n"
+        "When Parts by is chains, a chain in no part is left out of the print. "
+        "The log and the report name it. Atoms with a blank chain ID are left "
+        "out too, because ChimeraX cannot select a blank chain ID. When Parts "
+        "by is atom selections, these atoms go to the rest line, if Selections "
+        "has one.\n\n"
+        "Command line: no separate step. A run prints each chain's atom and "
+        "residue counts as it starts.",
         "chain  atoms  residues  numbering  residue types\n"
         "A      342    18        8–25       DC×18\n"
         "C      396    18        9–26       DG×18\n"
@@ -4496,52 +4499,49 @@ HELP = {
     ),
     "parts": (
         "Parts (colour order)",
-        "Which chains go into which colour, and in what order, when Parts by "
-        "is chains (for parts made of atom selections, see Selections). Each "
-        "part becomes one STL and one filament. "
-        "Separate parts with spaces (or |) and join chains into one part with "
-        "a comma (or +). Chain IDs must match the file exactly, a chain may be "
-        "in only one part, and at least two parts are needed.\n\n"
-        "Blank means every chain with an ID is its own part, in file order; "
-        "Detect chains fills that in. Chains left out of every part are not "
-        "printed, and the log and report name them.\n\n"
-        "The preview and the report colour the parts in order, in the "
-        "Palette's colours: by default blue, orange, green, red, purple, teal, "
-        "yellow, brown, then the list repeats (the STLs carry no colour; "
-        "filaments are assigned in the slicer). More "
-        "than 4 parts is noted, as that needs more than one 4-slot AMS.\n\n"
-        "The order matters: parts are peeled off one by one, P1 first, and the "
-        "last part is the exact remainder. At each colour boundary the "
-        "field-built face belongs to the earlier part, so the boundary sits "
-        "about 0.1–0.2 Å into the earlier part; reorder the parts to choose "
-        "which side takes it. With Blob parts, every part but the last is "
-        "instead its own molmap surface and the last part is the remainder, so "
-        "the order decides which parts are blobs.\n\n"
-        "Files are named <tag>_p1_chainA.stl, and <tag>_p1_chainsA+B.stl for a "
-        "joined part.\n\n"
-        "Command line: --parts A C (quote a |, e.g. --parts 'A+B|C', or the "
-        "shell reads it as a pipe), or --chains A,C as a shorthand for one "
-        "chain per part.",
+        "Which chains go into which colour, used when Parts by is chains. Each "
+        "part is one filament and one STL file, such as <tag>_p1_chainA.stl, "
+        "where <tag> is the Tag (file prefix). "
+        f"With more than {AMS_SLOTS} filaments (Pads add one), the log and the "
+        f"report note that one {AMS_SLOTS}-slot AMS is not enough.\n\n"
+        "Separate parts with spaces (or |). Join chains into one part with a "
+        "comma (or +). Chain IDs must match the file exactly.\n\n"
+        "A chain may be in only one part, and at least two parts are needed. "
+        "Blank means every chain with an ID is its own part, in file order. "
+        "Chains in no part are not printed.\n\n"
+        "The order matters. Without Blob parts, the parts are cut out of the "
+        "whole model's surface one at a time, P1 first. The last part gets what "
+        "is left.\n\n"
+        "Where two parts touch, the seam lies about 0.1–0.2 Å inside the "
+        "earlier part. Reorder the parts to choose which side that is.\n\n"
+        "With Blob parts ticked, each part except the last becomes a blob, a "
+        "molmap surface of its own atoms. The last part fills the whole surface "
+        "around the blobs.\n\n"
+        "Command line: --parts A C. Quote a |, as in --parts 'A+B|C', or the "
+        "shell reads it as a pipe. --chains A,C is a shorthand for one chain per "
+        "part.",
         "`A C`        two colours: chain A, then chain C\n"
         "`A,B C`      chains A and B share one colour\n"
         "`A+B | C`    the same, written another way\n"
-        "`C A`        C peeled first: the boundary sits in C",
+        "`C A`        C cut out first: the seam sits inside C",
     ),
     "parts_by": (
         "Parts by: chains or atom selections",
-        "How the parts are given. chains (the default): each part is one or "
-        "more whole chains, typed in Parts. atom selections: each part is a "
-        "set of atoms written as an atom selection in ChimeraX's or UCSF "
-        "Chimera's convention, one line per part in Selections, so a part can "
-        "be one chain's sugar-phosphate backbone, say, and one chain's atoms "
-        "can go to several parts.\n\n"
-        "Everything after the parts is the same either way: the maps, the K "
-        "and level scans, the peeling in part order, the checks and the "
-        "files. Only the rows of the chosen way are shown; switching keeps "
-        "what the other rows hold, and a run uses only the chosen one.\n\n"
-        "Command line: --parts A C for chains; --part once per part for atom "
-        "selections, e.g. --part 'bbA=/A & backbone' --part rest. The two "
-        "cannot be combined.",
+        "How you define the parts. With chains (the default), each part is one "
+        "or more whole chains, typed in Parts. With atom selections, each part "
+        "is an atom selection on its own line in Selections.\n\n"
+        "Atom selections let a part be less than a chain, such as one strand's "
+        "backbone. They also let one chain's atoms go to several parts.\n\n"
+        "The split itself works the same either way. The window shows only the "
+        "fields for the chosen way, and only those are used. Switching keeps "
+        "the text in the hidden fields.\n\n"
+        "Sticks (short rods that join the last part to the blobs) need atom "
+        "selections, because they follow bonds. With chains, the Sticks box is "
+        "unticked and greyed out. Switching to atom selections with Blob parts "
+        "ticked makes it available and ticks it (see Sticks).\n\n"
+        "Command line: --parts A C for chains. For atom selections, give --part "
+        "once per part, e.g. --part 'bbA=/A & backbone' --part rest. --part "
+        "cannot be used together with --parts or --chains.",
         "Parts by chains, typed in Parts:\n"
         "  `A C`\n"
         "  P1 = chain A, P2 = chain C\n"
@@ -4555,39 +4555,32 @@ HELP = {
     ),
     "part": (
         "Selections (one part per line)",
-        "One part per line, in colour order: the first line is P1, which is "
-        "peeled first. A line is either an atom selection, written in the "
-        "chosen Convention, or the word rest.\n\n"
-        "A selection may have a name in front, as in \"bbA = /A & backbone\": "
-        "the name goes into the file name, <tag>_p1_bbA.stl, and must start "
-        "with a letter and use only letters, digits and _ + -. Without a "
-        "name, the file name is made from the selection's words, so "
-        "\"/A & backbone\" is named A_backbone.\n\n"
-        "rest is this tool's word, not a selection: it takes every atom no "
-        "other line takes, and may be named too (\"bases = rest\"). Give it at "
-        "most once, anywhere in the order. At least two lines are needed, and "
-        "a line may not contain ;.\n\n"
-        "Selections are made in the structure's first model, after waters "
-        "are left out (unless Keep solvent is ticked), and hydrogens too when "
-        "Exclude hydrogens is ticked; a line that selects nothing else stops "
-        "the run with the reason. An atom two lines select goes to the "
-        "earlier part (see Shared atoms). Atoms no line selects, when there "
-        "is no rest line, are left out of the print; the log and the report "
-        "say how many, with examples.\n\n"
-        "How to write a selection in each convention: the Convention ? sets "
-        "them side by side. In short, chain A is \"/A\" in ChimeraX and "
-        "\":.A\" in Chimera. ChimeraX's keywords, such as \"backbone\", have "
-        "no Chimera equivalent; there Backbone per chain writes the atom "
-        "names for you. In ChimeraX, \"sidechain\" includes the sugar ring "
-        "atoms C1', C2', C3', C4' and O4' that \"backbone\" also has; for "
-        "the bases alone write \"sideonly\" or \"~backbone\".\n\n"
-        "The log and the report give each part's atom count, and say what the "
-        "Shared atoms rule did to it.\n\n"
+        "Type one part per line, in colour order, starting with P1. A line is "
+        "either an atom selection in the chosen Convention, or the word rest. "
+        "The ? beside Convention shows the syntax.\n\n"
+        "A line may start with a name, as in bbA = /A & backbone. The name goes "
+        "into the STL file name, <tag>_p1_bbA.stl, where <tag> is the Tag (file "
+        "prefix). Without a name, the part /A & backbone is named "
+        "A_backbone.\n\n"
+        "A name must start with a letter. It may contain only letters, digits "
+        "and the characters _ (underscore), + and -.\n\n"
+        "The word rest takes every atom that no other line takes. It may be "
+        "named too (bases = rest). Give it at most once, anywhere in the order. "
+        "At least two lines are needed, and none may contain a semicolon.\n\n"
+        "The order matters. Without Blob parts, P1 is cut out of the model's "
+        "surface first, then P2, and so on. With Blob parts, every part but the "
+        "last becomes a blob (its own molmap surface). "
+        "The last line's part gets what is left, even if it "
+        "is not rest.\n\n"
+        "A line that selects no atoms stops the run. An "
+        "atom two lines select goes to the earlier part (see Shared atoms). "
+        "Without a rest line, atoms no line selects are not printed, and "
+        "the log says how many.\n\n"
+        "For the bases of a nucleic acid alone, write sideonly or ~backbone, "
+        "not sidechain (see Shared atoms).\n\n"
         "Command line: one --part per line, in order, e.g. --part "
-        "'bbA=/A & backbone' --part 'bbC=/C & backbone' --part rest. Quote "
-        "each, as the shell reads & | ~ ( ), and use double quotes for a "
-        "Chimera line with primes (C1'). The report's REPRODUCE line writes "
-        "them as NAME=selection.",
+        "'bbA=/A & backbone' --part rest. Quote each value, with double quotes "
+        "if it has a prime (C1').",
         "Typed in Selections, ChimeraX convention:\n"
         "  `bbA = /A & backbone`\n"
         "  `bbC = /C & backbone`\n"
@@ -4597,63 +4590,63 @@ HELP = {
         "  P2 bbC   chain C's backbone              198 atoms\n"
         "  P3 rest  everything else (the bases)     342 atoms\n"
         "\n"
-        "The same parts typed in Chimera's convention (for a model\n"
-        "without hydrogens):\n"
+        "The same parts in Chimera's convention. The list names\n"
+        "only the standard backbone heavy atoms. That is enough\n"
+        "for this duplex, which has no hydrogens. Backbone per\n"
+        "chain writes the full list.\n"
         f"  `bbA = :.A{CHIMERA_DNA_BACKBONE}`\n"
         f"  `bbC = :.C{CHIMERA_DNA_BACKBONE}`\n"
         "  `rest`\n"
         "\n"
         "In a line, `bbA` is the part's name, `=` joins it to the\n"
-        "selection, and `/A & backbone` is the selection;\n"
+        "selection, and `/A & backbone` is the selection.\n"
         "`rest` is this tool's word, not a selection.",
     ),
     "selection_syntax": (
         "Convention (selection syntax)",
-        "The rules the Selections are written in, and so which program reads "
-        "them. ChimeraX (the default): ChimeraX reads them, the same ChimeraX "
-        "that builds the maps. Chimera: UCSF Chimera 1.x reads them, run "
-        "without a window for a few seconds before the maps are made, so it "
-        "must be installed (see the Chimera field, shown for this "
-        "convention).\n\n"
-        "Both conventions name atoms with @ (\"@P\"), list with a comma "
-        "(\"@P,OP1\"), and combine selections with & (and), | (or) and ~ "
-        "(not). They differ in how chains and residues are written and in "
-        "their keywords; the table below sets them side by side, and every "
-        "row was checked in both programs on a duplex of two 18-nt strands, "
-        "A and C, selecting the same atoms in each. In Chimera a comma lists "
-        "within one level only: \":12-20.A,C\" does not add chain C, so the "
-        "table writes \":12-20.A | :12-20.C\".\n\n"
-        "Chimera names the atoms it selects by chain, residue number, "
-        "insertion code and atom name; ChimeraX then takes exactly those "
-        "atoms, so the same atoms written in either convention give "
-        "byte-identical STLs. Atoms Chimera names that ChimeraX does not have "
-        "(the two can read a file's chain or residue names differently) are "
-        "left out with a note, and a part left with none stops the run. Where "
-        "a file has two atoms with the same chain, residue and name, a part "
-        "whose Chimera selection names them takes both, also noted.\n\n"
-        "The names before =, rest and the Shared atoms rule belong to this "
-        "tool and work the same in both conventions.\n\n"
+        "Which program's rules the Selections are written in. With ChimeraX (the "
+        "default), ChimeraX reads them. With Chimera, UCSF Chimera 1.x reads "
+        "them in the background before the surfaces are made. No Chimera window "
+        "opens.\n\n"
+        "Choose Chimera if your selections are already in Chimera's syntax. "
+        "Chimera must then be installed. Its path goes in the Chimera field, "
+        "shown for this convention.\n\n"
+        "Both conventions name atoms with @ (@P) and list them with a comma "
+        "(@P,OP1). Both combine selections with & (and), | (or) and ~ (not). "
+        "The table below shows how they differ.\n\n"
+        "In Chimera, a comma cannot add another chain after a chain ID. "
+        "So :12-20.A,C does not add chain C.\n\n"
+        "Chimera only finds which atoms each line selects. ChimeraX then builds "
+        "the surfaces from exactly those atoms. The same atoms give identical "
+        "STLs in either convention.\n\n"
+        "If Chimera selects an atom that ChimeraX "
+        "cannot find, that atom is left out and the log says so. If the file "
+        "has two atoms with the same chain, residue and atom name, a part whose "
+        "Chimera selection names one of them takes both. The log and the report "
+        "note this.\n\n"
         "Command line: --selection-syntax chimera (default chimerax).",
         _convention_table(),
     ),
     "overlap": (
         "Shared atoms",
-        "What happens to an atom that two Selections both select. earlier "
-        "part keeps them (the default): it goes to the part listed first; the "
-        "log, the report and its JSON say how many atoms each pair shares, "
-        "with examples, and how many each later part lost. refuse the run: "
-        "the run stops before any map is made and lists the shared atoms, so "
-        "each atom may be in at most one selection.\n\n"
-        "With the default, order does the work: put the specific part first "
-        "and a broad one after it. \"bbA = /A & backbone\" followed by "
-        "\"A = /A\" gives chain A's backbone to P1 and the rest of chain A to "
-        "P2, without writing \"~backbone\". rest never shares: it takes only "
-        "the atoms no line takes. A part whose every atom an earlier part "
-        "keeps stops the run.\n\n"
-        "A frequent surprise in ChimeraX's convention: \"sidechain\" includes "
-        "the sugar ring atoms C1', C2', C3', C4' and O4', which \"backbone\" "
-        "includes too, so \"/A & backbone\" and \"/A & sidechain\" share five "
-        "atoms per nucleotide; the bases alone are \"sideonly\".\n\n"
+        "What happens to an atom that two Selections lines both select.\n\n"
+        "With \"earlier part keeps them\" (the default), a shared atom goes to "
+        "the part listed first. The log and the report say how many atoms each "
+        "pair of parts shares.\n\n"
+        "With the default, put the narrow part first and a broad one after it. "
+        "For example, "
+        "put bbA = /A & backbone first and A = /A second. P1 gets "
+        "chain A's backbone. P2 gets the rest of chain A.\n\n"
+        "With \"refuse the run\", the run stops before any surface is made and "
+        "names the parts that share atoms. Choose it to catch overlaps you did "
+        "not intend.\n\n"
+        "The rest line never shares, because it takes only atoms that no other "
+        "line takes. A part whose atoms all go to earlier parts stops the "
+        "run.\n\n"
+        "For nucleic acids, ChimeraX's sidechain keyword includes the sugar "
+        "ring atoms C1', C2', C3', C4' and O4'. The backbone keyword includes "
+        "them too. So /A & backbone and /A & sidechain share five atoms per "
+        "nucleotide. For the bases alone, write sideonly.\n\n"
         "Command line: --overlap error (default first).",
         "Typed in Selections:\n"
         "  `bbA = /A & backbone`\n"
@@ -4671,28 +4664,25 @@ HELP = {
     ),
     "fill_backbone": (
         "Backbone per chain",
-        "Fills Selections with one line per chain holding that chain's "
-        "backbone, named bb<chain>, in file order, then rest for everything "
-        "else: the bases, side chains and ligands. It is the usual start for "
-        "giving each strand's backbone its own colour and the bases one more; "
-        "edit, reorder or delete lines afterwards. Selections that already "
-        "hold other lines are replaced after a question.\n\n"
-        "It takes the chains Detect chains found (running it when needed), "
-        "and skips a chain with a blank ID or with no nucleotide or "
-        "amino-acid residue, which then falls to rest.\n\n"
-        "In ChimeraX's convention a line is \"/A & backbone\". Chimera's has "
-        "no backbone keyword, so the line lists the atom names ChimeraX's "
-        "backbone covers, with hydrogens and other programs' names: for DNA "
-        "and RNA P, OP1, OP2, OP3, O1P, O2P, O3P, HP, O5', C5', C4', O4', "
-        "C3', O3', C2', O2', C1', H1', H2', H2'', H3', H4', H5', H5'', HO2', "
-        "HO3', HO5', H5T and H3T; for a protein N, CA, C, O, OXT, OT1, OT2, "
-        "H, HN, HA, HA1, HA2, HA3, HT1, HT2 and HT3, with H1, H2 and H3 only "
-        "in a chain with no nucleotide (in a nucleotide those are base "
-        "hydrogens). With the usual atom names both select the same atoms; "
-        "ChimeraX decides a hydrogen by the atom it is bonded to, so one with "
-        "an unusual name can differ.\n\n"
-        "Command line: write the --part values; Show command prints the ones "
-        "in this window.",
+        "This button fills Selections with one line per chain, selecting that "
+        "chain's "
+        "backbone. A rest line follows for everything else (bases, side chains, "
+        "ligands). The backbone lines are named bb plus the chain ID (bbA), in "
+        "file order. The button also sets Parts by to atom selections.\n\n"
+        "Use it to print each strand's backbone in its own colour and all the "
+        "bases in one more colour. Then edit the lines as needed. You are asked "
+        "before other lines in Selections are replaced.\n\n"
+        "The button uses the chains Detect chains last listed. After typing a "
+        "new structure path, click Detect chains first. A chain with a blank ID, "
+        "or with no nucleotide or amino-acid residue, gets no line. Its atoms go "
+        "to the rest line.\n\n"
+        "Chimera has no backbone keyword, so in the Chimera convention each "
+        "line lists the backbone atom names instead (see the example). With standard "
+        "atom names, both conventions select the same atoms. A hydrogen with an "
+        "unusual name may be selected by one program only. This matters only "
+        "when Exclude hydrogens is unticked.\n\n"
+        "Command line: give each line as a --part value. The Show command button "
+        "prints the whole command, with these --part values.",
         "For a DNA duplex with chains A and C, the button writes,\n"
         "in ChimeraX's convention:\n"
         "  `bbA = /A & backbone`\n"
@@ -4705,51 +4695,51 @@ HELP = {
     ),
     "palette": (
         "Palette (part colours)",
-        "The colours the parts are shown in: the preview PNG, the coloured "
-        "meshes of the GLB preview and the swatches beside this menu, and the "
-        "colour name each part gets in the log, the report and its JSON. The "
-        "STLs carry no colour, so they are the same whatever is chosen; "
-        "filaments are assigned in the slicer. P1 takes the first colour, P2 "
-        "the second, and so on.\n\n"
-        "default is this tool's own colours, unchanged: blue, orange, green, "
-        "red, purple, teal, yellow, brown, then the list repeats.\n\n"
-        "DiLiuLab is the lab's nine figure colours from gr_colors, in the order "
-        "red, blue, magenta, cyan, orange, purple, green, yellow, mint green, "
-        "repeating after nine. T100 is the full colour; T80, T60, T40 and T20 "
-        "are lighter tints mixed toward white, and T40 and T20 are pale enough "
-        "to be hard to see on the preview's white background. The palette's "
-        "neutral (black, gray at the lighter tints) is not used: every part is "
-        "a colour. The colours are read from assets/diliulab_colors.json.\n\n"
-        "A palette other than default is recorded in the report's PARAMETERS "
-        "block, in the JSON (palette) and on the REPRODUCE line; default adds "
-        "nothing there.\n\n"
+        "Chooses the colours of the parts in the previews (PNG and GLB) and "
+        "in the swatches beside this menu. Pick the palette closest to the "
+        "filaments you will load. The previews then look like the print.\n\n"
+        "The STLs carry no colour and are the same with any palette. You "
+        "choose the filaments in the slicer. Part 1 (P1) takes the first "
+        "colour, part 2 (P2) the second, and so on.\n\n"
+        "The default is this tool's own colours. Their order is blue, orange, "
+        "green, red, purple, teal, yellow, brown, then again from blue.\n\n"
+        "DiLiuLab holds the nine colours the lab uses in its figures, stored "
+        "in assets/diliulab_colors.json. Their order is red, blue, magenta, "
+        "cyan, orange, purple, green, yellow, mint green, then again from "
+        "red.\n\n"
+        "DiLiuLab T100 is the full colour. T80, T60, T40 and T20 are lighter "
+        "tints, mixed toward white. A smaller number is lighter. T40 and T20 "
+        "are hard to see on the preview's white background.\n\n"
+        "The report names each part's colour and records any palette other "
+        "than the default.\n\n"
         "Command line: --palette DiLiuLab, or --palette DiLiuLab-T80 for a "
         "tint.",
         "default          P1 blue, P2 orange, P3 green ...\n"
         "DiLiuLab T100    P1 red, P2 blue, P3 magenta ...\n"
-        "DiLiuLab T80     the same, one step lighter\n"
-        "--palette DiLiuLab, from the report:\n"
+        "DiLiuLab T80     the same colours, one step lighter\n"
+        "a report's parts line with --palette DiLiuLab:\n"
         "  parts       P1 = A (342 atoms, red)   P2 = C (396 atoms, blue)",
     ),
     "out": (
         "Output folder",
-        "The folder the STLs, report, previews and logs are written to; it is "
-        "created if needed.\n\n"
-        "Blank means ./<tag>: a folder named after the tag, which with a blank "
-        "tag is <structure stem>_molmap<resolution>_split, in the current "
-        "working directory. That is the folder the tool was started from, not "
-        "necessarily the structure's or the script's folder. When Curve It "
-        "opens this tool for a structure, it starts it in that structure's "
-        "folder; opened with no structure loaded, it starts it in Curve It's "
-        "own working folder, or in your home folder when that cannot be "
-        "written (an app opened from the Finder runs in /). A relative path "
-        "typed here is also taken from the current working directory. The "
-        "line under Tag shows the folder the run will use.\n\n"
-        "Several runs can share one folder as long as their tags differ: a "
-        "re-run moves aside only the files of its own tag, and other files in "
-        "the folder are never touched.\n\n"
+        "The folder where the run writes the STLs, the report, the previews "
+        "and the logs. Fill it in to put the files somewhere other than the "
+        "default folder. A folder that does not exist yet is created.\n\n"
+        "Blank means a folder named after the tag, inside the "
+        "current folder. The current folder is the one this window was "
+        "started in. A relative path (one that does not start with / or ~) "
+        "also starts from there.\n\n"
+        "Curve It starts this window in the loaded structure's folder. With no "
+        "structure loaded, the window starts in the folder Curve It was "
+        "started from. If that folder cannot be written to, the window starts "
+        "in your home folder.\n\n"
+        "The grey line under Tag shows the folder and file names the run will "
+        "use.\n\n"
+        "Several runs can share one folder if their tags differ. A new run "
+        "with the same tag moves that tag's earlier files into a _previous_ "
+        "folder (see Run split). Other files are never touched.\n\n"
         "Command line: --out FOLDER.",
-        "blank, started in ~/prints, structure duplex.pdb:\n"
+        "blank, window started in ~/prints, structure duplex.pdb:\n"
         "  ~/prints/duplex_molmap4_split/\n"
         "    duplex_molmap4_split_p1_chainA.stl\n"
         "    duplex_molmap4_split_p2_chainC.stl\n"
@@ -4757,479 +4747,505 @@ HELP = {
         "    duplex_molmap4_split_report.txt, .json\n"
         "    duplex_molmap4_split_preview.png, .glb\n"
         "    duplex_molmap4_split_work/\n"
-        "~/prints/run2   ->  ~/prints/run2/duplex_molmap4_split_...",
+        "`~/prints/run2`   ->  ~/prints/run2/duplex_molmap4_split_...",
     ),
     "tag": (
         "Tag (file prefix)",
-        "The name every output file starts with.\n\n"
-        "Blank means <structure stem>_molmap<resolution>_split: the file name "
-        "without .gz and its extension, then the resolution without trailing "
-        "zeros (4.0 gives molmap4, 3.7 gives molmap3.7). With the output folder "
-        "blank, the tag, given or default, also names the folder.\n\n"
-        "Characters other than A–Z, a–z, 0–9 and . _ + - are replaced by _ "
-        "(a run of them by one _), and every leading or trailing _ is dropped "
-        "(a tag with nothing left becomes model).\n\n"
-        "Give a tag to keep two runs of one structure side by side, e.g. at "
-        "two contour levels: a re-run with the same tag in the same folder "
-        "moves the previous set of that tag into _previous_<timestamp>/ when "
-        "it puts its own files in place.\n\n"
+        "The name every output file starts with. With Output folder blank, "
+        "the tag also names the folder. Give a tag to keep two runs of one "
+        "structure side by side, for example at two contour levels.\n\n"
+        "Blank means <structure stem>_molmap<resolution>_split. The "
+        "stem is the file name without .gz and without its extension. The "
+        "resolution is written without trailing zeros. A Resolution of 4.0 Å "
+        "gives molmap4, and 3.7 Å gives molmap3.7.\n\n"
+        "The letters A–Z and a–z, the digits 0–9 and the four marks . _ + - "
+        "are kept. Any other character, such as a space or a slash, becomes _. "
+        "Several such characters in a row become a single _. Any _ at the "
+        "start or the end is dropped. If no characters are left, the tag "
+        "becomes model.\n\n"
+        "A new run with the same tag in the same folder replaces the files of "
+        "that tag. The earlier ones move into a _previous_ folder (see Run "
+        "split).\n\n"
         "Command line: --tag NAME.",
-        "duplex.pdb, resolution 4, tag blank:\n"
+        "duplex.pdb, Resolution 4, Tag blank:\n"
         "  duplex_molmap4_split_p1_chainA.stl\n"
         "  duplex_molmap4_split_p2_chainC.stl\n"
         "  duplex_molmap4_split_whole.stl\n"
-        "1abc.pdb.gz, resolution 3.7:  1abc_molmap3.7_split\n"
-        "tag  my run   ->  my_run_p1_chainA.stl",
+        "1abc.pdb.gz, Resolution 3.7, Tag blank:  1abc_molmap3.7_split\n"
+        "`my run`   ->  my_run_p1_chainA.stl",
     ),
     "chimerax": (
         "ChimeraX",
-        "The UCSF ChimeraX program; the tool runs it without a window to build "
-        "the molmaps and contour them. Give the executable or, on macOS, the "
-        ".app: a path ending in .app is read as <app>/Contents/MacOS/ChimeraX.\n\n"
-        "Blank means the $CHIMERAX environment variable if it is set, else a "
-        "search: /Applications/ChimeraX*.app, ~/Applications/ChimeraX*.app, "
-        "chimerax or ChimeraX on the PATH, /usr/bin/chimerax, "
-        "/usr/local/bin/chimerax and "
-        "C:\\Program Files\\ChimeraX*\\bin\\ChimeraX-console.exe.\n\n"
-        "The window fills this in at start-up with the path it held the last "
-        "time Run split started a run (kept in ~/.multicolor_split_gui.json) "
-        "if that path still works, or else with $CHIMERAX or what the search "
-        "finds, so a remembered path that works wins over $CHIMERAX. A "
-        "remembered path that no longer works, e.g. after ChimeraX was moved, "
-        "is dropped with a line in the log.\n\n"
-        "A path in this field when Run split starts, or in $CHIMERAX, must "
-        "work: it is never replaced by a search. Clear the field to have "
-        "ChimeraX searched for again.\n\n"
+        "Where the UCSF ChimeraX program is on this computer. The tool runs "
+        "ChimeraX in the background to build the molmaps and their surfaces. "
+        "The window usually fills this in for you. Change it only if ChimeraX "
+        "is not found, or to use another version.\n\n"
+        "Give the program file, or on macOS the ChimeraX .app. For an .app, "
+        "the tool runs the program inside it, <app>/Contents/MacOS/ChimeraX.\n\n"
+        "When the window opens, it first tries the path from your last run, "
+        "if that path still works. Next it tries $CHIMERAX, a path that can be "
+        "set in the terminal before starting the tool (export CHIMERAX=...). "
+        "If $CHIMERAX is not set, the window searches /Applications, "
+        "~/Applications, the folders on your PATH (where the terminal looks "
+        "for programs), /usr/bin, /usr/local/bin, and C:\\Program Files on "
+        "Windows.\n\n"
+        "A path in this field, or in $CHIMERAX, must lead to an installed "
+        "ChimeraX. If it does not, the run stops with an error and does not "
+        "search. To make the run search again, clear the field and fix or "
+        "unset a wrong $CHIMERAX.\n\n"
         "Command line: --chimerax PATH.",
-        "/Applications/ChimeraX.app\n"
-        "/Applications/ChimeraX.app/Contents/MacOS/ChimeraX\n"
-        "/usr/bin/chimerax",
+        "`/Applications/ChimeraX.app`   the app; the program inside it is run\n"
+        "`/Applications/ChimeraX.app/Contents/MacOS/ChimeraX`   the same program\n"
+        "`/usr/bin/chimerax`   Linux",
     ),
     "chimera": (
         "Chimera",
-        "The UCSF Chimera program, 1.x (not ChimeraX), used only to read "
-        "Selections written in Chimera's convention; the maps are always "
-        "built by ChimeraX. The row is shown for that convention only. Give "
-        "the executable or, on macOS, the .app: a path ending in .app is read "
-        "as <app>/Contents/MacOS/chimera. A ChimeraX path is refused.\n\n"
-        "Blank means the $CHIMERA environment variable if it is set, else a "
-        "search: /Applications/Chimera*.app, ~/Applications/Chimera*.app, "
-        "chimera on the PATH, /usr/local/bin/chimera, "
-        "/opt/UCSF/Chimera*/bin/chimera and "
-        "C:\\Program Files\\Chimera*\\bin\\chimera.exe.\n\n"
-        "The window fills it in at start-up with the path it held the last "
-        "time Run split started a run (kept in ~/.multicolor_split_gui.json "
-        "with the ChimeraX path) if that path still works, or else with "
-        "$CHIMERA or what the search finds. A path in this field or in "
-        "$CHIMERA must work when a run needs it: it is never replaced by a "
-        "search. Chimera is available from "
-        "https://www.cgl.ucsf.edu/chimera/download.html.\n\n"
-        "Command line: --chimera PATH.",
-        "/Applications/Chimera.app\n"
-        "/Applications/Chimera.app/Contents/MacOS/chimera\n"
-        "/opt/UCSF/Chimera64-1.19/bin/chimera",
+        "Where UCSF Chimera 1.x is on this computer. Chimera is the older "
+        "program, not ChimeraX. The tool uses Chimera only to interpret "
+        "Selections written in Chimera's syntax, for example :12-20.A instead "
+        "of ChimeraX's /A:12-20. ChimeraX still builds every map. This row "
+        "appears only when Parts by is atom selections and Convention is "
+        "Chimera.\n\n"
+        "Give the program file, or on macOS the Chimera .app. For an .app, "
+        "the tool runs the program inside it, <app>/Contents/MacOS/chimera. A "
+        "ChimeraX path is refused.\n\n"
+        "When the window opens, it fills in this field the same way as the "
+        "ChimeraX field, with $CHIMERA in place of $CHIMERAX. The search looks "
+        "in /Applications, ~/Applications, the folders on your PATH, "
+        "/usr/local/bin, /opt/UCSF, and C:\\Program Files on Windows.\n\n"
+        "When a run needs Chimera, a path in this field or in $CHIMERA must "
+        "lead to an installed Chimera. If it does not, the run stops with an "
+        "error and does not search. If Chimera is not found, install it from "
+        "https://www.cgl.ucsf.edu/chimera/download.html. Or write the "
+        "Selections in ChimeraX's syntax and set Convention to ChimeraX.\n\n"
+        "Command line: --chimera PATH, used with --selection-syntax chimera.",
+        "`/Applications/Chimera.app`   the app; the program inside it is run\n"
+        "`/Applications/Chimera.app/Contents/MacOS/chimera`   the same program\n"
+        "`/opt/UCSF/Chimera64-1.19/bin/chimera`   Linux",
     ),
     "resolution": (
         "Resolution (Å)",
-        "The molmap resolution: how much the atoms are blurred before the "
-        "surface is drawn. Default 4 Å. A smaller value follows the atoms more "
-        "closely; a larger one gives a smoother blob.\n\n"
-        "4 Å is the default and the safest choice. 3.7 Å is worth trying when "
-        "you want more detail: it follows the atoms more closely and usually "
-        "still gives a surface without many holes, while a much smaller value "
-        "opens more holes and tunnels through the surface.\n\n"
-        "4 Å with a grid of 0.5 Å is the documented, validated operating "
-        "point, where K = 16 is used directly. At any other resolution, with K "
-        "blank, K is rescaled to K0 = 16 × (resolution/4) × (0.5/grid) and "
-        "confirmed by a K scan, which adds a ChimeraX pass. The contour level "
-        "is scanned around molmap's own level for this resolution.\n\n"
-        "The resolution is part of the default tag (molmap4, molmap3.7). When "
-        "no level passes because of sum, void, overlap or part-piece failures, "
-        "the run suggests a finer grid.\n\n"
+        "How much the atoms are blurred before the surface is drawn. It is the "
+        "resolution of ChimeraX's molmap command.\n\n"
+        "A smaller value follows the atoms more closely and shows more detail. It "
+        "also opens more holes and tunnels through the surface. A larger value gives "
+        "a smoother, rounder model. For more detail, try 3.7 Å. It usually still "
+        "gives a surface with few holes.\n\n"
+        "With K penalty slope blank, Resolution also sets K. K shapes the boundary "
+        f"between two colours (see K penalty slope). At {DOC_RESOLUTION:g} Å with Grid spacing "
+        f"{DOC_GRID:g} Å, a blank K is the tested value {DOC_K:g}. No K scan runs "
+        "then unless you ask for one.\n\n"
+        "At any other resolution, a blank K is rescaled, and a K scan checks it. "
+        "The scan adds one ChimeraX pass. K is not used when Blob parts is "
+        "ticked.\n\n"
+        "With Tag blank, the resolution goes into the file names (molmap4, "
+        "molmap3.7). Runs at different resolutions then keep separate files.\n\n"
+        f"Blank means {DOC_RESOLUTION:g} Å. The value must be above 0.\n\n"
         "Command line: --resolution 3.7.",
-        "4      K = 16 as documented, no K scan\n"
-        "3.7    K0 = 14.8; K scan 7.4, 11.1, 14.8, 18.5, 22.2\n"
-        "3      K0 = 12; K scan 6, 9, 12, 15, 18",
+        f"`{DOC_RESOLUTION:g}`     default: K = {DOC_K:g}, no K scan\n"
+        "`3.7`   more detail; the K scan tries 7.4 to 22.2\n"
+        "`3`     still more detail and more holes; the K scan tries 6 to 18",
     ),
     "grid": (
         "Grid spacing (Å)",
-        "The spacing of the molmap grid. Every map, the whole and each part, "
-        "is built on this one grid, and every surface is contoured at every "
-        "grid point. Default 0.5 Å.\n\n"
-        "0.5 Å is what resolves the colour interface: at molmap's own default "
-        "grid (resolution/3, 1.33 Å at 4 Å) the boundary cannot be placed "
-        "finer than about one voxel, about 1.3 mm at Scale 1. A spacing above "
-        "0.5 Å gets a warning in the log. A finer grid such as 0.25 Å has 8 "
-        "times the voxels, so the run is slower and the STLs have more "
-        "triangles; the run suggests it when no level passes because of sum, "
-        "void, overlap or part-piece failures.\n\n"
-        "Away from 0.5 Å, with K blank, K is rescaled to K0 = 16 × "
-        "(resolution/4) × (0.5/grid) and confirmed by a K scan. The fragment "
-        "size follows the grid too: a boolean piece under 4 voxels in volume "
-        "(0.5 Å³ at 0.5 Å) is handed to the neighbouring part it shares the "
-        "most surface with, and a part under that volume counts as empty.\n\n"
+        "The spacing of the grid that every density map is computed on. It is the "
+        "gridSpacing option of ChimeraX's molmap command. The spacing sets the finest "
+        "detail the colour boundaries can show.\n\n"
+        "Left to its own default, molmap uses one third of the resolution, "
+        f"{DOC_RESOLUTION / 3:.2f} Å at {DOC_RESOLUTION:g} Å. Such a grid places a "
+        "colour boundary only to about 1.3 mm at Scale 1. The default "
+        f"{DOC_GRID:g} Å places it much more finely. A spacing above {DOC_GRID:g} Å "
+        "gets a warning in the log.\n\n"
+        "A finer grid such as 0.25 Å has 8 times the grid points. The run is slower "
+        "and the STLs have more triangles. The run checks the parts at several "
+        "contour levels (the densities at which surfaces are drawn). Sometimes no "
+        "level is accepted, because parts break into extra pieces or do not add up "
+        "to the whole model. The run may then suggest 0.25 Å.\n\n"
+        "As with Resolution, any other spacing rescales a blank K and adds a K scan "
+        "(see K penalty slope). K is not used when Blob parts is ticked.\n\n"
+        f"Blank means {DOC_GRID:g} Å. The value must be above 0.\n\n"
         "Command line: --grid 0.25.",
-        "0.5    default; K = 16 at resolution 4\n"
-        "0.25   8x the voxels; K0 = 32, K scan 16, 24, 32, 40, 48",
+        f"`{DOC_GRID:g}`    default; K = {DOC_K:g} at Resolution {DOC_RESOLUTION:g}\n"
+        "`0.25`   8 times the grid points, slower; the K scan tries 16 to 48",
     ),
     "dust": (
         "Dust size (Å)",
-        "ChimeraX's surface dust, applied to every contour after it is built: "
-        "a separate surface piece no bigger than this across (the longest side "
-        "of its bounding box) is removed, and a sealed cavity no bigger than "
-        "this is filled. Default 20 Å; 0 removes nothing.\n\n"
-        "On the whole it removes loose specks and fills small cavities, but "
-        "never removes the whole's largest piece or a piece that carries a "
-        "part's main piece. So a small ligand whose chain is a part of its own "
-        "survives, but one whose chain is joined to another in one part (A,L) "
-        "is removed like any other speck. On the part fields it only fills "
-        "small cavities and never removes a piece, so a part's detached bit, "
-        "such as the tail after a chain break, keeps its colour wherever the "
-        "whole keeps it.\n\n"
-        "Separate molecules (heavy atoms within 4 Å form one) whose atoms span "
-        "less than the dust size minus the resolution, and that are no part's "
-        "main molecule, are named in a note at the start of the run: they "
-        "will not print.\n\n"
-        "Lower it, or make the chain a part of its own, to keep small separate "
-        "pieces such as ions; raise it to clear more specks. When no level "
-        "passes because a part comes out empty, the run suggests a smaller "
-        "dust.\n\n"
+        "Clears small loose bits off the surfaces and fills small sealed hollows. "
+        "Loose pieces up to this size across are removed. Sealed cavities up to this "
+        "size are filled. Lower Dust size to keep small pieces such as ions. Raise it "
+        "to clear more specks.\n\n"
+        "Loose bits are judged on the whole model (all colours together). A part "
+        "loses a bit only when the whole loses it. A part's tail after "
+        "a chain break therefore keeps its colour while the whole keeps it.\n\n"
+        "Dust never removes the whole model's largest piece, or the piece holding "
+        "each part's largest molecule. A small separate molecule, such as a ligand, "
+        "therefore survives as a part of its own. If it shares a part with a larger "
+        "molecule, it is removed like any speck. To keep several ions that share one "
+        "part, lower Dust size.\n\n"
+        "At the start of a run, a log note lists the molecules that will not print, "
+        "by chain (by part with atom selections). If a part comes out empty at every "
+        "contour level tried, the run suggests a smaller Dust size.\n\n"
+        f"Blank means {DEFAULT_DUST:g} Å. The value must be 0 or more. 0 removes and "
+        "fills nothing.\n\n"
         "Command line: --dust 10.",
-        "20   a loose blob up to 20 Å across is removed and\n"
-        "     a sealed cavity up to 20 Å across is filled\n"
-        "0    nothing is removed, no cavity is filled",
+        f"`{DEFAULT_DUST:g}`   loose pieces up to {DEFAULT_DUST:g} Å across are removed,\n"
+        f"     sealed cavities up to {DEFAULT_DUST:g} Å across are filled\n"
+        "`0`    nothing is removed, no cavity is filled",
     ),
     "k": (
         "K penalty slope",
-        "How steeply a part's ownership field drops where a rival part's "
-        "density is higher than its own; it shapes the cut face between two "
-        "colours. K is a slope per voxel.\n\n"
-        "Blank means automatic. At resolution 4 Å and grid 0.5 Å the "
-        "documented K = 16 is used without a scan, unless K candidates are "
-        "given or Force a K scan is ticked. (In the sweep K = 16 was validated "
-        "on, below about 12 the field-built parts interfered and at 20 or more "
-        "marching cubes tore; another model can differ: the switchback "
-        "example gives clean fields for every K from 8 to 24.) "
-        "Elsewhere K0 = 16 × (resolution/4) × (0.5/grid), and a K scan at the "
-        "level guess (or the pinned level) tries K0 × 0.5, 0.75, 1, 1.25 and "
-        "1.5, rounded to 2 decimals; the candidate with clean fields nearest "
-        "K0 wins (the lower one on a tie), and if none is clean, K0 itself is "
-        "used and the level scan decides.\n\n"
-        "A number typed here is used as it is, with no K scan, even when K "
-        "candidates are given or Force a K scan is ticked. Blob parts use no K. "
-        "K moves the colour boundary only by hundredths of a mm.\n\n"
+        "K sets how closely the boundary between two colours follows the halfway "
+        "surface. There, both parts' atoms give equal molmap density. A part is "
+        "penalised for reaching past that surface, and K is the slope of the "
+        "penalty. A higher K keeps the boundary closer to the halfway "
+        "surface.\n\n"
+        "K moves the boundary by only hundredths of a mm, so you can usually "
+        f"leave this field blank. At the default Resolution ({DOC_RESOLUTION:g} Å) and "
+        f"Grid spacing ({DOC_GRID:g} Å), blank means K = {DOC_K:g}, the tested "
+        "value. At other settings, or with K candidates or Force a K scan, blank "
+        "runs a K scan instead.\n\n"
+        f"A K scan tries K0 × {K_SCAN_FACTORS[0]:g} to K0 × {K_SCAN_FACTORS[-1]:g} "
+        f"(or your K candidates), where K0 = {DOC_K:g} × (resolution/{DOC_RESOLUTION:g}) × "
+        f"({DOC_GRID:g}/grid). It keeps the value nearest K0 that gives clean "
+        "part shapes (each part a closed solid, not broken into extra "
+        "pieces).\n\n"
+        "A number typed here is used as it is, with no K scan, even with K "
+        "candidates or Force a K scan. It must be above 0. K is not used when "
+        "Blob parts is ticked.\n\n"
+        f"On the model used to choose K = {DOC_K:g}, K below about 12, or 20 and "
+        "above, gave flawed part shapes. Other models can differ. The switchback666 "
+        "duplex gives clean shapes for every K from 8 to 24.\n\n"
         "Command line: --k 16.",
-        "blank, 4 Å / 0.5 Å     K = 16 (documented)\n"
-        "blank, 3.7 Å / 0.5 Å   K scan 7.4 ... 22.2 -> K = 14.8\n"
-        "14                     K = 14, no scan",
+        f"blank, Resolution {DOC_RESOLUTION:g} Å, Grid {DOC_GRID:g} Å\n"
+        f"        K = {DOC_K:g}, no scan (unless K candidates or Force a K scan)\n"
+        f"blank, Resolution 3.7 Å, Grid {DOC_GRID:g} Å\n"
+        "        K scan "
+        f"{', '.join(f'{round(DOC_K * 3.7 / DOC_RESOLUTION * x, 2):g}' for x in K_SCAN_FACTORS)}\n"
+        f"        keeps {round(DOC_K * 3.7 / DOC_RESOLUTION, 2):g} if K = "
+        f"{round(DOC_K * 3.7 / DOC_RESOLUTION, 2):g} gives clean shapes\n"
+        "`14`    K = 14, no scan",
     ),
     "k_list": (
         "K candidates",
-        "Your own K values for the K scan, separated by commas or spaces. Each "
-        "must be a positive number; duplicates are dropped. Blank means none: "
-        "a K scan, when there is one, tries K0 × 0.5, 0.75, 1, 1.25 and 1.5.\n\n"
-        "Giving a list forces a K scan, even at the documented 4 Å / 0.5 Å. "
-        "The choice rule stays the same: the candidate with clean fields "
-        "nearest K0 = 16 × (resolution/4) × (0.5/grid) wins, and if none is "
-        "clean, K0 itself is used even when it is not in the list.\n\n"
-        "Ignored when K is set, though it must still be a valid list or the "
-        "run does not start.\n\n"
+        "Your own K values to try in a K scan, separated by commas or spaces. K "
+        "sets how closely the boundary between two colours follows the halfway "
+        "surface (see K penalty slope). Use this field to test values the "
+        "automatic scan would not try.\n\n"
+        "A list runs a K scan, even at the default Resolution and Grid spacing. "
+        "Each value is tested at Level scan centre, or at Contour level if that "
+        "field is filled in.\n\n"
+        "The scan keeps the value nearest K0, the automatic K, that gives clean "
+        "part shapes (each part a closed solid, not broken into extra pieces). "
+        "If none of your values is clean, K0 is used, even if it is not in your "
+        "list.\n\n"
+        "Blank means no list. A K scan, when one runs, then tries its own values "
+        "around K0. The list "
+        "is ignored when K penalty slope is filled in or Blob parts is ticked. It "
+        "must still be a valid list of numbers above 0, or the run does not "
+        "start.\n\n"
         "Command line: --k-list 12,16,20.",
-        "12,16,20 at 4 Å / 0.5 Å (K0 = 16), from the log:\n"
+        f"`12,16,20`   at Resolution {DOC_RESOLUTION:g} Å, Grid {DOC_GRID:g} Å, "
+        f"K0 = {DOC_K:g}.\n"
+        "             When all three give clean part shapes, the log shows:\n"
         "    K=12     fields: clean\n"
         "    K=16     fields: clean\n"
         "    K=20     fields: clean\n"
-        "    -> K = 16 (clean candidate nearest K0 = 16)",
+        f"    -> K = {DOC_K:g} (clean candidate nearest K0 = {DOC_K:g})",
     ),
     "level": (
         "Contour level",
-        "Pins the contour level, in the map's contour units, instead of "
-        "scanning for one. Blank means scan: candidate levels around the level "
-        "guess are checked and the accepted one nearest the guess is used.\n\n"
-        "A pinned level is still checked by the same tests. If it fails one "
-        "but the parts can still be built, they are exported anyway, the "
-        "report adds a FAIL line for it and the run exits with 3. If the level "
-        "is at or above the map's maximum there is no surface, and the run "
-        "stops with an error, as it does when the parts cannot be built at "
-        "all.\n\n"
-        "A pinned level is never widened. The whole's expected piece count is "
-        "then what the whole has at that level; a mismatch with the molecule "
-        "count is only a warning. A K scan, if one runs, uses the pinned level. "
-        "Every report's REPRODUCE line pins the level and K that run used "
-        "(with Blob parts, the level, --blobs and its skin).\n\n"
+        "Fixes the contour level instead of searching for one. The contour level "
+        "is the density at which the surface is drawn, as in ChimeraX's Volume "
+        "Viewer. A lower level gives a fuller model.\n\n"
+        "Fill it in to repeat an earlier run. Copy the level and K from the "
+        "REPRODUCE line in that run's report, or paste the whole line into a "
+        "terminal. With Blob parts, the line gives the blob skin instead of "
+        "K.\n\n"
+        "Blank means a level scan. The scan picks the accepted level nearest "
+        "Level scan centre.\n\n"
+        "A fixed level gets the same checks as a scanned one, but the whole "
+        "model (all colours together) need not have one piece per separate "
+        "molecule. If the contour joins or splits molecules, the report only "
+        "warns.\n\n"
+        "If a fixed level fails a check but the parts can be built, they are "
+        "written anyway. The report then has a FAIL line, and the run ends with "
+        f"exit code {EXIT_FAIL}. If the parts cannot be built, or the level is at "
+        "or above the map's highest density, the run stops with an error. The "
+        "level must be above 0.\n\n"
         "Command line: --level 0.112.",
-        "0.112, from the log:\n"
-        "    level 0.1120: ACCEPT  [2 pinch edges after welding]",
+        "blank     scan around Level scan centre\n"
+        "`0.112`   use 0.112 as it is, with no level scan",
     ),
     "level_guess": (
         "Level scan centre",
-        "The level the scan is centred on (and the level a K scan is run at). "
-        "Blank means molmap's own automatic level, the contour enclosing 95 % "
-        "of the map's density, rounded to 3 decimals; the log prints it as "
-        "\"auto level\".\n\n"
-        "The scan tries the guess ± span in steps, keeps the levels above 0, "
-        "and uses the accepted level nearest the guess (on a tie, fewer pinch "
-        "edges, then the lower level). The whole must have one piece per "
-        "separate molecule; if no clean level in the scan has that, the "
-        "whole's piece count at the guess is the target instead (or, if the "
-        "whole is not clean at the guess, the fewest pieces any clean level "
-        "has).\n\n"
-        "Move it to get a fuller (lower level) or thinner (higher level) model "
-        "that still passes the checks; the run suggests it when no level "
-        "passes and the whole is one of the reasons. Ignored when the level is "
-        "pinned.\n\n"
+        "The contour level the level scan is centred on. Lower it for a fuller "
+        "model, or raise it for a thinner one. The scan tries levels on both "
+        "sides and uses the accepted level nearest the centre. A K scan, when "
+        "one runs, is also done at this level.\n\n"
+        "Blank means molmap's own automatic level, rounded to 3 decimals. "
+        "ChimeraX uses this level when it first shows a molmap. A surface at "
+        "this level encloses 95 % of the map's density. The log calls it the "
+        "molmap auto level.\n\n"
+        "A level is accepted only if, among other checks, the whole model (all "
+        "colours together) has one piece per separate molecule. Heavy atoms closer "
+        f"than {CONTACT_CUTOFF:g} Å belong to one molecule. If no level gives that "
+        "count, the program settles for another count. The report names the "
+        "count it used.\n\n"
+        "If no level is accepted because the whole model fails a check, the run "
+        "suggests moving the centre. The centre must be above 0. It is ignored "
+        "when Contour level is filled in.\n\n"
         "Command line: --level-guess 0.12.",
-        "blank   auto level 0.11203, so the centre is 0.112\n"
-        "0.104, from the log:\n"
-        "[2] level scan: 0.1040 +/- 0.008 in 0.002 steps, K = 16\n"
-        "    -> level 0.1040  (nearest clean level to the guess 0.1040)",
+        "blank     auto level 0.11203, so the centre is 0.112\n"
+        "`0.104`   with the default span and step, tries\n"
+        "          0.096 to 0.112 in steps of 0.002",
     ),
     "span": (
         "Level scan span (±)",
-        "How far either side of the guess the level scan reaches, in contour "
-        "units. Default 0.008, so with the default step of 0.002 the scan "
-        "tries 9 levels: the guess and 4 on each side.\n\n"
-        "If none of them is accepted, the scan is widened once to ± twice the "
-        "span (only the new levels are computed) and every level is checked "
-        "again; if still none passes, the run prints the scan table with hints "
-        "and exits with 1. Do not widen skips that second pass.\n\n"
-        "A wider span costs time: every level contours the whole and every "
-        "part field. The span must be at least the step. Not used with a "
-        "pinned level.\n\n"
+        "How far the level scan reaches on each side of Level scan centre, in "
+        "contour level units. A wider span tries more levels. Widen it if no "
+        "level is accepted. Narrow it to make the run faster.\n\n"
+        f"Blank means {DEFAULT_SPAN:g}. With the default step of "
+        f"{DEFAULT_STEP:g}, the scan tries "
+        f"{2 * round(DEFAULT_SPAN / DEFAULT_STEP) + 1} levels. These are the "
+        f"centre and {round(DEFAULT_SPAN / DEFAULT_STEP)} on each side.\n\n"
+        "If no level is accepted, the program tries once more with the span "
+        "doubled. To skip that second try, tick Do not widen a failed level "
+        "scan.\n\n"
+        "Each extra level adds run time. At every level, the program builds the "
+        "surface of the whole model and of each part. The span must be above 0 "
+        "and at least the step. The span is not used when Contour level is "
+        "filled in.\n\n"
         "Command line: --level-span 0.008.",
-        "0.008   guess 0.112: 0.104, 0.106 ... 0.120 (9 levels)\n"
-        "        widened: 0.096 ... 0.128 (8 more)\n"
-        "0.004   5 levels; widened to ± 0.008 (4 more)",
+        "with step 0.002 and centre 0.112:\n"
+        "`0.008`   tries 0.104, 0.106 ... 0.120 (9 levels);\n"
+        "          widened: 0.096 ... 0.128 (8 more)\n"
+        "`0.004`   tries 5 levels; widened: ± 0.008 (4 more)",
     ),
     "step": (
         "Level scan step",
-        "The spacing between the contour levels the scan tries, in contour "
-        "units. Default 0.002. This is not the voxel step: surfaces are always "
-        "contoured at every grid point.\n\n"
-        "A smaller step tries more levels in the same span, which takes "
-        "longer, and can find a clean level between two rejected ones; the run "
-        "suggests 0.001 when no level passes and the whole is one of the "
-        "reasons. It must not be larger than the span.\n\n"
+        "The gap between neighbouring levels in the level scan, in contour level "
+        "units. A smaller step tries more levels within the same span.\n\n"
+        "A smaller step takes longer, but it can find an accepted level between "
+        "two rejected ones. Sometimes no level is accepted because the whole model "
+        "(all colours together) fails a check, such as its piece count. The run "
+        "then suggests a step of 0.001, or moving Level scan centre.\n\n"
+        "This is not ChimeraX's surface step (the voxel step). The program always "
+        "draws every surface at full detail.\n\n"
+        f"Blank means {DEFAULT_STEP:g}. The step must be above 0 and no larger "
+        "than the span, or the run does not start. The step is not used when "
+        "Contour level is filled in.\n\n"
         "Command line: --level-step 0.001.",
-        "0.002   default: 9 levels over ± 0.008\n"
-        "0.001   17 levels over the same span",
+        "with span 0.008:\n"
+        "`0.002`   9 levels\n"
+        "`0.001`   17 levels, over the same range",
     ),
     "scale": (
         "Scale (mm per Å)",
-        "How many millimetres one ångström becomes in the exported files "
-        "(slicers read STL units as mm). Default 1: 1 Å becomes 1 mm.\n\n"
-        "It is applied only when the files are written. The split itself, "
-        "the maps, the level and K, and the shapes of the parts, is computed "
-        "in Å and does not depend on it, and the report's volumes stay in Å³. "
-        f"Pads are the exception: their smallest size, {PAD_MIN_AREA:g} mm², and "
-        f"their reach down to the lowest pad, {2 * LAYER_H:g} mm, are in mm at the "
-        "exported size, so the pads differ between scales (scaled in the slicer, "
-        "those sizes shrink with the print). "
-        "The part STLs, the whole STL and the GLB preview are scaled, and the "
-        "report's PRINTING section gives the exported size in mm and the layer "
-        "count.\n\n"
+        "How many millimetres one ångström becomes in the exported files. Slicers "
+        "read STL units as millimetres, so the default 1 prints 1 Å as 1 mm.\n\n"
+        "Raise it for a bigger print, lower it for a smaller one. Set the print size "
+        "here, not in the slicer. The report's sizes, layer counts and warnings then "
+        "match the real print.\n\n"
+        "Scale only resizes the written files, such as the STLs and the GLB preview. "
+        "The split itself is computed in Å. The report's volumes stay in Å³.\n\n"
+        "Pads (slabs under the blobs) are the exception. Two of their rules are in mm "
+        f"at the exported size. A pad under {PAD_MIN_AREA:g} mm² is dropped. A pad "
+        f"that would end less than {2 * LAYER_H:g} mm above the bed goes down to the "
+        "bed. Pads made at different scales can therefore differ in more than size.\n\n"
+        "At a small scale, the report warns when pads or sticks get too thin to "
+        "print. It also warns when pads come too close to other parts.\n\n"
+        "Blank means 1. The value must be above 0.\n\n"
         "Command line: --scale 2.",
-        "with Lay flat unticked:\n"
-        "1    24.9 x 67.2 x 24.7 Å  ->  24.9 x 67.2 x 24.7 mm\n"
-        "2    24.9 x 67.2 x 24.7 Å  ->  49.8 x 134.5 x 49.3 mm",
+        "from a report's PRINTING section (sizes rounded), Lay flat unticked:\n"
+        "`1`    24.9 x 67.2 x 24.7 Å  ->  24.9 x 67.2 x 24.7 mm\n"
+        "`2`    24.9 x 67.2 x 24.7 Å  ->  49.8 x 134.5 x 49.3 mm",
     ),
     "lay_flat": (
         "Lay flat for printing",
-        "Rotates everything, every part and the whole by one shared transform, "
-        "so the model's longest principal axis runs along X, the middle one "
-        "along Y and the shortest one is vertical, then centres it in X and Y "
-        "and puts its lowest point at Z = 0. The axes come from a principal "
-        "component analysis of the whole's surface vertices. "
-        "On by default; untick it to keep the PDB frame.\n\n"
-        "A lower model needs fewer layers, and on a multi-material printer the "
-        "purge scales with the layer count. When the model is not laid flat "
-        "and lying flat would make it less than 80 % as tall, the report's "
-        "PRINTING section says so, with the layer counts at 0.2 mm layers. The "
-        "parts stay registered either way; the alternative is to rotate the "
-        "whole object in the slicer, never the parts on their own. With Pads "
-        "ticked, do not tilt or flip the object: the pads are placed for the "
-        "exported up direction (turning it about Z, moving it or scaling the "
-        "whole object uniformly is fine).\n\n"
+        "Turns the model to lie flat for printing. Its long axis (the direction it "
+        "spreads most) runs along X. Its short axis (where it is thinnest) points "
+        "up. The model is centred in X and Y, with its lowest point at Z = 0.\n\n"
+        "Every part, the whole model (all colours together) and the "
+        "previews turn together. The parts therefore still fit together exactly. Ticked "
+        "by default. Untick it to keep the structure file's own coordinates (the PDB "
+        "frame), for example to match other files in that frame.\n\n"
+        "A lower model needs fewer layers. On a multi-material printer, fewer layers "
+        "mean less purge waste. With Lay flat unticked, the report's PRINTING section "
+        "says when lying flat would cut the height by more than 20 %.\n\n"
+        "You can also turn the model in the slicer, if all the parts turn together "
+        "as one object. With Pads ticked, do not tilt or flip it there. The pads are "
+        "built for the exported up direction (see Pads).\n\n"
         "Command line: on by default; --no-lay-flat keeps the PDB frame.",
-        "a triplex, from the report:\n"
-        "off   67.1 mm tall, ~336 layers at 0.2 mm\n"
+        "a triplex at Scale 1, from the report's PRINTING section:\n"
+        f"off   67.1 mm tall, ~336 layers at {LAYER_H:g} mm\n"
         "on    27.4 mm tall, ~138 layers",
     ),
     "k_scan": (
         "Force a K scan",
-        "Scans K even at the documented point (resolution 4 Å, grid 0.5 Å), "
-        "where K = 16 is otherwise used without a scan. The candidates are "
-        "16 × 0.5, 0.75, 1, 1.25 and 1.5, i.e. 8, 12, 16, 20 and 24, or the K "
-        "candidates if given, each tested at the level guess (or the pinned "
-        "level); the candidate with clean fields nearest K0 = 16 wins.\n\n"
-        "Off (the default): a K scan runs only away from the documented point "
-        "or when K candidates are given. Ignored when K is set. "
-        "It confirms K = 16 for an unusual model at the cost of an extra "
-        "ChimeraX pass.\n\n"
+        "Runs a K scan even at the default Resolution "
+        f"({DOC_RESOLUTION:g} Å) and Grid spacing ({DOC_GRID:g} Å). Off (the "
+        f"default), K = {DOC_K:g} is used there without a scan. K sets how "
+        "closely the boundary between two colours follows the halfway surface "
+        "(see K penalty slope).\n\n"
+        "The scan tries "
+        f"{', '.join(f'{DOC_K * x:g}' for x in K_SCAN_FACTORS)}, or your K "
+        "candidates if given. It keeps the value nearest "
+        f"{DOC_K:g} that gives clean part shapes (each part a closed solid, not "
+        f"broken into extra pieces). If no value is clean, K = {DOC_K:g} is used "
+        "anyway.\n\n"
+        f"Tick this box for an unusual model. The scan then confirms K = {DOC_K:g}, "
+        f"or finds a working value near {DOC_K:g} when {DOC_K:g} fails. The scan "
+        "adds one more ChimeraX pass, so the split takes longer. K moves the "
+        "boundary by only hundredths of a mm, so the default is usually "
+        "fine.\n\n"
+        "This box is ignored when K penalty slope is filled in or Blob parts is "
+        "ticked.\n\n"
         "Command line: --k-scan.",
-        "at 4 Å / 0.5 Å the scan tries 8, 12, 16, 20, 24\n"
-        "and keeps 16 whenever its fields are clean",
+        f"at Resolution {DOC_RESOLUTION:g} Å, Grid {DOC_GRID:g} Å, the scan tries "
+        f"{', '.join(f'{DOC_K * x:g}' for x in K_SCAN_FACTORS)}\n"
+        f"and keeps {DOC_K:g} whenever K = {DOC_K:g} gives clean shapes",
     ),
     "allow_multi_shell": (
         "Allow parts with several shells",
-        "Drops the piece-count limits on the parts. Off (the default), each "
-        "part's own field-built solid inside the whole, and each finished "
-        "part, may have at most one piece per cluster of the part's own atoms "
-        "(heavy atoms within 4 Å form a cluster): 1 normally, 2 for a chain "
-        "with a break. A level where a part has more pieces is rejected.\n\n"
-        "The report's boolean-result check for each part, though, wants "
-        "exactly that many pieces. So a part with a chain break that comes out "
-        "in one piece is accepted by the scan but gets a FAIL line there, and "
-        "the run exits with 3 although the part is intact; ticking this "
-        "clears that FAIL.\n\n"
-        "Ticked, a part may come out in any number of pieces. The whole's own "
-        "piece-count rule and every other check still apply.\n\n"
-        "Use it also when a part really is in several pieces and the scan "
-        "rejects every level for the piece count of that part's field (Npc "
-        "under S1, S2 ..., or B1, B2 ... with Blob parts); the run suggests it then. With it, a part cut "
-        "into islands by its neighbours is no longer caught.\n\n"
+        "Lets a part come out in any number of shells (separate closed pieces). "
+        "Tick it when an intact part gets a FAIL for its piece count. Tick it also "
+        "when no contour level is accepted and the run suggests this box.\n\n"
+        "Off (the default), the run compares each part's piece count with its "
+        f"molecules. Heavy atoms within {CONTACT_CUTOFF:g} Å of each other, directly or "
+        "through other atoms, belong to one molecule. A chain is normally one "
+        "molecule, and a chain with a break is two.\n\n"
+        "The run will not use a contour level at which a part has more pieces than "
+        "molecules. The report also wants exactly as many pieces as molecules. A part with "
+        "fewer gets a FAIL line (exit code 3). A broken chain in one piece does this, "
+        "and so do merged blobs of one part.\n\n"
+        "Ticked, the run no longer flags a part cut into loose islands by its "
+        "neighbours. The whole model's piece count and all other checks still "
+        "apply.\n\n"
         "Command line: --allow-multi-shell.",
         None,
     ),
     "blobs": (
         "Blob parts",
-        "Another way to cut the parts, for parts that are separate blobs, such as "
-        "each chain's phosphate groups. Ticked, every part but the last is its "
-        "own molmap surface: the surface its atoms' density alone has at the "
-        "contour level, the molmap ChimeraX draws for those atoms on their own, "
-        "clipped to the whole (where two blobs overlap, the earlier part keeps the "
-        "overlap). The last part is the whole minus the blobs, so the blobs sit in "
-        "sockets in it, and the parts still tile the whole exactly.\n\n"
-        "Off (the default), each part is the territory where its own density beats "
-        "the others' (ownership fields with the K penalty), which cuts a part "
-        "midway between its atoms and the neighbouring ones. A blob's face inside "
-        "the model is instead its own rounded molmap surface, so it reaches as far "
-        "into its neighbours as its own density does. On the switchback666 duplex "
-        "at 3.7 Å, chain A's phosphate groups (P, OP1, OP2, O5′, O3′) make "
-        "1,474 Å³ as blobs against 1,274 Å³ as ownership territory, and show "
-        "954 Å² of surface against 1,042 Å².\n\n"
-        "Put the part that should fill around the blobs last (rest, for "
-        "instance): the order decides which parts are blobs. No K is used, so "
-        "there is no K scan, and the level scan checks the levels nearest the "
-        "guess first and stops at the nearest clean one, which is the level a "
-        "full scan would pick; on a 210 bp supercoil the phosphate split took 184 s this way, against 496 s by ownership with v1.5.0. "
-        "Each level it checks gets the same checks, except that the last part "
-        "has no field of its own, and the report leaves out the density-share "
-        "warning, which a blob is not meant to meet. Blob skin sets what happens "
-        "where a blob would lie a hair beneath the surface, and Pads keep the "
-        "slicer's support off the blobs where a pad fits.\n\n"
-        "Command line: --blobs.",
+        "Ticked, every part except the last becomes a blob. A blob is the molmap "
+        "surface of that part's atoms alone, at the run's contour level. Each blob is "
+        "trimmed to fit inside the whole model. The last part is the whole model minus "
+        "the blobs, so the blobs sit in sockets in it. A blob also takes over a "
+        "hair-thin skin of the last part that would cover it (see Blob skin).\n\n"
+        "Use blobs for small separate lumps, such as each chain's phosphate groups. "
+        "Where two blobs overlap, the earlier part keeps the shared space.\n\n"
+        "Off (the default), each part is where its own atoms' density beats the other "
+        "parts'. The boundaries then lie midway between neighbouring atoms. A "
+        "blob is rounder. It reaches into its neighbours as far as its own molmap "
+        "surface does. Example: switchback666 duplex, Resolution 3.7 Å, Blob skin "
+        "0.2 Å, no sticks. Chain A's phosphate blobs take up 1,474 Å³, and 1,274 Å³ "
+        "the default way.\n\n"
+        "List last the part that should fill in around the blobs, usually rest (every "
+        "atom not in another part). K penalty slope, K candidates and Force a K scan "
+        "are not used.\n\n"
+        "Ticking Blob parts makes Blob skin and Pads available, and ticks Pads. When "
+        "Parts by is atom selections, Sticks also becomes available and is ticked. "
+        "Unticking Blob parts unticks Pads and Sticks and greys them out.\n\n"
+        "If blobs of one part merge, the report shows a FAIL for that part's piece "
+        "count. Tick Allow parts with several shells to accept it.\n\n"
+        "Command line: --blobs (--pads and --sticks stay off unless given).",
         "Parts by atom selections, Blob parts ticked:\n"
         "  `phosA = /A@P,OP1,OP2,OP3,O5',O3'`\n"
         "  `phosC = /C@P,OP1,OP2,OP3,O5',O3'`\n"
         "  `rest`\n"
-        "P1, P2 = each phosphate group's own molmap blob\n"
-        "P3 = the whole minus the blobs",
+        "phosA, phosC = the blobs of each chain's phosphate groups\n"
+        "rest = the whole model minus the blobs",
     ),
     "blob_skin": (
         "Blob skin (Å)",
-        "Used only with Blob parts. Where a blob faces outwards, its own molmap "
-        "surface lies a hair inside the whole's, because the neighbouring atoms "
-        "add a trace of density there. Cut exactly, the last part would wrap each "
-        "blob in a film, about half of it under 0.01 Å thick and up to a few "
-        "tenths of an Å near the blob's edge.\n\n"
-        "Printed together at 1 mm per Å, that half is under 10 µm, far below "
-        "what a slicer prints, so a slicer should drop it on the blob's sides "
-        "and show the blob's colour there (not tested). What the film does "
-        "change is the files. The last part's STL covers the blobs (and can seal "
-        "one in completely), its mesh grows by about 70 %, the preview PNG and GLB and the slicer's view before slicing "
-        "show the blobs in the last part's colour, and the thicker band near a "
-        "blob's edge, a near-flat blob top, or a large Scale can print as strips "
-        "or patches of the last part's colour.\n\n"
-        "Where the last part's skin over a blob would be thinner than this and "
-        "the blob's own density exceeds that of all the other atoms together, the blob takes the "
-        "skin, so the files come closer to what should print. The skin is estimated from the "
-        "maps: the other atoms' density over the slope of the whole map. The "
-        "estimate runs low for thicker skins, so at 0.2 Å skins up to about "
-        "0.3 Å thick go to the blob. Blank means 0.2 Å; 0 keeps every blob "
-        "exactly its own molmap surface, films included. Above about 0.3 Å it "
-        "changes little, since only places where the blob's own density exceeds "
-        "the other atoms' together are ever taken. Allowed 0 to 1.\n\n"
-        "Command line: --blob-skin 0.2.",
-        "switchback666 at 3.7 Å, chain A's phosphate blobs:\n"
-        "`0.2`   1,474 Å³; 954 Å² on the whole's surface\n"
-        "`0`     1,437 Å³; 208 Å² within 0.0001 Å of the\n"
-        "        surface, 168 Å² of it still under the rest's\n"
-        "        film, which covers the rest of each blob and\n"
-        "        seals one blob in",
+        "Lets a blob show its own colour where it faces out. There the last part "
+        "(around the blobs) would cover the blob with a hair-thin skin. The blob takes "
+        "the skin wherever the skin is thinner than this value and the blob's atoms "
+        "give most of the density.\n\n"
+        "Use 0 only when each blob must be exactly its own molmap surface. Avoid 0 with "
+        "Pads. At 0, the skin covers most outward blob faces, so few get pads.\n\n"
+        "At 0 and Scale 1, about half the skin is under 10 µm thick. A slicer should "
+        "drop that half (not tested). The previews still show the blobs in the last "
+        "part's colour. Near a blob's edge, on near-flat tops or at a large Scale, the "
+        "skin can print in patches. The last part's STL also grows by about 70 %.\n\n"
+        "At 0.2 Å, skins up to about 0.3 Å thick go to the blob. Larger values change "
+        "little.\n\n"
+        "The field is greyed out, and not used, unless Blob parts is ticked. Blank "
+        f"means {DEFAULT_BLOB_SKIN:g} Å. The value must be from 0 to "
+        f"{MAX_BLOB_SKIN:g} Å.\n\n"
+        f"Command line: --blob-skin {DEFAULT_BLOB_SKIN:g}.",
+        "switchback666 at Resolution 3.7 Å, chain A's phosphate\n"
+        "blobs, no sticks:\n"
+        "`0.2`   blobs 1,474 Å³ in all; 954 Å² of their surface\n"
+        "        is on the outside\n"
+        "`0`     blobs 1,437 Å³; the last part's skin covers 96 % of\n"
+        "        their outside and seals one blob in completely",
     ),
     "pads": (
         "Pads under blobs that touch the support",
-        "Used only with Blob parts. A blob is small and held only by the faces "
-        "it shares with its neighbours, so where the slicer's support touches a "
-        "blob, pulling the support off can take the blob with it. Ticked, the "
-        "tool also writes <tag>_pads.stl: a pad under every blob face the "
-        "support would touch, so the support touches the pad instead.\n\n"
-        "A blob face is taken to touch the support when it is on the model's "
-        "surface, faces down at a slope from horizontal below the Support angle "
-        "(the slicer's support threshold angle). Each patch of such faces gets "
-        "one pad, which fills the space straight below them down to a flat "
-        "bottom, Pad thickness below the patch's lowest point, and shares the "
-        "blob's faces exactly, so the two touch. Under a blob near the bed the "
-        "pad reaches below the model, so the print stands up to Pad thickness "
-        "taller, and a pad that would end less than two 0.2 mm layers above the "
-        "lowest pad reaches down to it, so none hangs over a gap too thin for "
-        "support. A face whose pad would come "
-        f"within {PAD_GAP:g} Å of any other part (the last part or another blob) "
-        "is left bare, so a pad touches only its own blob, and pads smaller than "
-        f"{PAD_MIN_AREA:g} mm² are dropped. The report's PADS section gives, per "
-        "blob part, the area that needs support and the area padded, and checks "
-        f"that the pads are closed, keep {PAD_GAP:g} Å from the other parts and "
-        "lie outside the model. The preview adds a view from below.\n\n"
-        "All the pads are one part: import <tag>_pads.stl with the part STLs and "
-        "give it a filament the parts can be freed from: PVA or BVOH, which "
-        "dissolve in water, or, with PLA parts, PETG, which breaks away. A pad "
-        "printed in the parts' own filament fuses to its blob, so pulling the "
-        "support off still pulls on the blob. "
-        "The pads are built for the exported up direction (laid flat by "
-        "default), so do not tilt or flip the object in the slicer; turning it "
-        "about Z, moving it or scaling the whole object uniformly is fine, and "
-        f"the pads scale with it: scaled to 50 %, {DEFAULT_PAD_THICKNESS:g} Å pads "
-        f"made at Scale 1 print {DEFAULT_PAD_THICKNESS / 2:g} mm thick and keep "
-        f"{PAD_GAP / 2:g} mm from their neighbours. The tool's two rules in mm, "
-        f"pads under {PAD_MIN_AREA:g} mm² dropped and a pad ending less than "
-        f"{2 * LAYER_H:g} mm above the lowest pad taken down to it, apply at the "
-        "exported size, like the report's figures and its warnings when a pad is "
-        "under two 0.2 mm layers or its gap is narrower than a 0.4 mm line; give "
-        "the print scale with Scale for them to apply to the print.\n\n"
-        "Command line: --pads (with --blobs).",
-        "210 bp supercoil at 3.7 Å, phosphate blobs, laid flat:\n"
-        "P1  192 blobs, 1,522 Å², would touch the support;\n"
-        "    134 of them padded, 983 Å², by 138 pads\n"
-        "P2  191 blobs, 1,492 Å²; 137 padded, 997 Å²\n"
-        "closest approach to another part or blob 0.52 Å",
+        "Adds pads under the blobs where the slicer's support would touch them. A pad "
+        "is a thin slab of its own filament between a blob and the support. Without a "
+        "pad, pulling the support off can tear a small blob out.\n\n"
+        "A blob face gets a pad when it faces down on the model's outside, at a slope "
+        "the slicer will support (see Support angle). Each patch of such faces gets "
+        "one pad. The pad hangs straight down to a flat bottom (see Pad "
+        "thickness).\n\n"
+        f"Each pad keeps a gap of at least {PAD_GAP:g} Å to other parts and blobs. No pad "
+        "is made where the same blob continues underneath. Pads under "
+        f"{PAD_MIN_AREA:g} mm² are dropped.\n\n"
+        "All the pads go into one extra file ending in _pads.stl. Import it with the "
+        "part STLs. Give it a filament that comes off the parts. "
+        "PVA and BVOH dissolve in water, and PETG breaks away from PLA.\n\n"
+        "The pads are built for the exported up direction. In the slicer, do "
+        "not tilt or flip the object. Moving, turning about the vertical axis or "
+        "scaling evenly is fine. The pads and their gap scale with the object. Set "
+        "the print size with Scale, so that the report and the pads' mm rules "
+        "match the print. The report warns when the gap "
+        "prints under a 0.4 mm line. A pad may then fuse to its neighbour.\n\n"
+        "Ticking Blob parts makes this box available and ticks it. Unticking Blob "
+        "parts unticks it and greys it out.\n\n"
+        "Command line: --pads (with --blobs; off unless given).",
+        "210 bp supercoil at Resolution 3.7 Å, phosphate blobs,\n"
+        "laid flat, Support angle 45°; P1, P2 = the two blob parts:\n"
+        "P1  192 blobs (1,522 Å² in all) would touch the support\n"
+        "P2  191 blobs (1,492 Å² in all)\n"
+        "about 70 % of them get pads; the others are too\n"
+        "close to a neighbour, or too small for a pad",
     ),
     "support_angle": (
         "Support angle (°)",
-        "Used only with Pads. The slicer's support threshold angle: the slicer "
-        "supports a face that slopes less than this from horizontal, so those "
-        "are the blob faces that get pads. Give the number set in the slicer "
-        "(in Bambu Studio, Support > Threshold angle) or a larger one: a larger "
-        "angle pads steeper faces too, which costs only pad material, while a "
-        "smaller one leaves faces the slicer supports bare. Bambu Studio adds 1° "
-        "to it, and so does the tool. A face's slope is taken from the blob's "
-        "surface averaged over 1 Å, so the pads are not speckled by the mesh. "
-        "Blank means 45°.\n\n"
-        "Command line: --support-angle 45.",
+        "Tells the tool which blob faces the slicer will support, so it can put pads "
+        "under them. Downward blob faces that slope less than about this angle from "
+        "horizontal get pads.\n\n"
+        "Give the support threshold angle set in the slicer (in Bambu Studio, Support > "
+        "Threshold angle), or a larger one. A larger angle also pads steeper faces. "
+        "That costs only some extra pad filament. A smaller angle leaves some supported "
+        "faces without pads. Bambu Studio supports faces that slope less than its "
+        "threshold angle plus 1°. This tool adds the same 1°.\n\n"
+        "The field is greyed out, and not used, unless Pads is ticked. Blank means "
+        f"{DEFAULT_SUPPORT_ANGLE:g}°. The value must be above 0° and below 90°.\n\n"
+        f"Command line: --support-angle {DEFAULT_SUPPORT_ANGLE:g}.",
         "`45`   faces sloping less than 46° from horizontal\n"
         "       get pads\n"
         "`35`   only the flatter ones, up to 36°",
     ),
     "pad_thickness": (
         "Pad thickness (Å)",
-        "Used only with Pads. How far each pad's flat bottom lies below the "
-        "lowest point of its blob faces, the pad's least thickness, in "
-        "Å, so in mm times Scale, and times any scaling in the slicer: at the "
-        "default 1 mm per Å, 0.8 Å is 0.8 mm, four 0.2 mm layers. Under a blob "
-        "near the bed the pad reaches below the "
-        "model, so the print can stand up to this much taller. Blank means "
-        "0.8 Å; allowed above 0 and up to 5 Å.\n\n"
-        "Command line: --pad-thickness 0.8.",
+        "Sets the minimum thickness of each pad. Each pad has a flat bottom at least "
+        "this far below the lowest point of the blob faces it covers. A thicker pad "
+        "keeps the support farther from the blob. It also uses more pad filament.\n\n"
+        "To get mm, multiply the value by Scale and by any scaling you set in the "
+        f"slicer. At Scale 1, {DEFAULT_PAD_THICKNESS:g} Å is {DEFAULT_PAD_THICKNESS:g} "
+        f"mm, four {LAYER_H:g} mm layers. If you shrink the print to 50 % in the "
+        f"slicer, enter {2 * DEFAULT_PAD_THICKNESS:g} Å to keep "
+        f"{DEFAULT_PAD_THICKNESS:g} mm.\n\n"
+        f"A pad that would end less than {2 * LAYER_H:g} mm above the bed goes down to "
+        "the bed and is then thicker. Pads may reach below the model, so the print can "
+        "stand up to this much taller. The report warns when this value times Scale is "
+        f"under two {LAYER_H:g} mm layers.\n\n"
+        "The field is greyed out, and not used, unless Pads is ticked. Blank means "
+        f"{DEFAULT_PAD_THICKNESS:g} Å. The value must be above 0 and at most "
+        f"{MAX_PAD_THICKNESS:g} Å.\n\n"
+        f"Command line: --pad-thickness {DEFAULT_PAD_THICKNESS:g}.",
         "`0.8`   at Scale 1: 0.8 mm, four 0.2 mm layers\n"
         "`0.8`   at Scale 0.5, or at Scale 1 printed at 50 %:\n"
         "        0.4 mm, two layers\n"
@@ -5237,218 +5253,271 @@ HELP = {
     ),
     "sticks": (
         "Sticks from the rest into the blobs",
-        "Used only with Blob parts and parts given as atom selections. A blob is "
-        "held only by the faces it shares with the last part; ticked, the tool "
-        "pushes a stick of the last part into the blobs along every bond "
-        "between a blob atom and a last-part atom, so each blob is keyed into "
-        "the rest.\n\n"
-        "The bonds are ChimeraX's own, so they follow the selections: when the "
-        "phosphate parts take O5\u2032 and O3\u2032, the bonds into the rest are O5\u2032-C5\u2032 "
-        "and O3\u2032-C3\u2032; when they take only P, OP1 and OP2, they are P-O5\u2032 and "
-        "P-O3\u2032; with the bases as blob parts, N9-C1\u2032 and N1-C1\u2032. Hydrogens "
-        "are left out.\n\n"
-        "Each stick runs along the line of its bond, from where that line, "
-        "followed back from the blob's atom past the last part's atom, leaves "
-        "the blob, to the blob's atom (the last part's own atom often lies "
-        "inside the blob, so a stick between the two atoms would float in it), "
-        "and is "
-        "capped on that atom with a ball a little wider than the stick. Only "
-        "the blob that holds the atom is cut. A stick or ball that would come "
-        "closer than Stick wall to the blob-coloured surface (the blob's faces "
-        "on the outside), or that would cut its blob in two, is tried without "
-        "its ball, then left out. A bond is left out at once when its line "
-        "leaves the blob into a pocket of the last part that the blob encloses, "
-        "or when less than half of the stick's cross-section just past the blob "
-        "is the last part. The report's STICKS section counts them all. The "
-        "sticks are "
-        "part of the last part's STL and print in its filament; nothing else "
-        "is imported. They do not show outside the model, in the files or the "
-        "previews; the slicer's sliced preview shows them as dots inside the "
-        "blobs. With Pads, the pads are the ones the same set gets without "
-        "sticks: the sticks are an add-on inside the blobs.\n\n"
-        "Command line: --sticks (with --blobs and --part).",
-        "210 bp supercoil at 4.1 Å, phosphate blobs:\n"
-        "840 bonds, 420 O5\u2032-C5\u2032 and 420 O3\u2032-C3\u2032\n"
-        "837 sticks made, each with its ball; 3 would\n"
-        "cut their blob in two",
+        "Adds short sticks, like dowels, from the last part into each blob. The "
+        "last part is the one listed last, often rest (every atom not in "
+        "another part). The other parts are the blobs. Without sticks, a blob "
+        "is held only where its surface touches the last part.\n\n"
+        "Sticks needs Blob parts ticked and Parts by set to atom selections, "
+        "because sticks follow bonds. Once both are set, this box becomes "
+        "available and is ticked. Unticking Blob parts, or switching to chains, "
+        "unticks it and greys it out.\n\n"
+        "Each bond between a blob atom and a last-part atom can get one stick. "
+        "Bonds to hydrogens never do. A phosphate blob that holds O5′ and O3′ "
+        "gets sticks along O5′-C5′ and O3′-C3′. A phosphate blob without O5′ "
+        "and O3′ uses P-O5′ and P-O3′. A base blob uses N9-C1′ or N1-C1′. Each "
+        "stick runs along its bond, from just inside the last part to the "
+        "blob's atom.\n\n"
+        "A stick is left out if it would come within Stick wall of the blob's "
+        "outside, or cut its blob in two. So is a stick whose bond leaves the "
+        "blob into air, another blob, or a closed pocket inside the blob. The "
+        "report's STICKS section says why any were left out.\n\n"
+        "The sticks are in the last part's STL and print in its filament. They "
+        "change nothing on the model's outside, in the previews or in the "
+        "pads. The slicer's sliced preview shows them as dots inside the "
+        "blobs. In print they thin the blob around them (see Stick "
+        "diameter).\n\n"
+        "Command line: --sticks, with --blobs and --part.",
+        "Measured on a minimized 210 bp DNA ring, Resolution 4.1 Å,\n"
+        "phosphate blobs (P, OP1, OP2, OP3, O5′, O3′),\n"
+        "1.5 Å sticks, no ball, Stick wall 0.6 Å:\n"
+        "840 bonds, 420 O5′-C5′ and 420 O3′-C3′\n"
+        "838 sticks made; 2 would cut their blob in two\n"
+        "sticks reach 1.77–2.16 Å into the blob\n"
+        "thinnest blob wall over a stick 0.898 Å",
     ),
     "stick_diameter": (
         "Stick diameter (Å)",
-        "Used only with Sticks. How thick each stick is, in Å, so in mm times "
-        "Scale, and times any scaling in the slicer. Blank means "
-        f"{DEFAULT_STICK_DIAMETER:g} Å; allowed above 0 and up to {MAX_STICK_DIAMETER:g} Å. "
-        "A stick narrower than one extruded line (about 0.4 mm) may be left "
-        "out by the slicer, and the report warns.\n\n"
-        "Command line: --stick-diameter 1.5.",
-        "`1.5`   at Scale 1: 1.5 mm; printed at 50 %: 0.75 mm\n"
+        "How thick each stick is, in Å. At the default Scale of 1, each Å "
+        "prints as 1 mm, before any scaling in the slicer.\n\n"
+        "A thicker stick needs more room, with a wall of blob at least Stick "
+        "wall thick around it. Fewer blobs have that room, and more sticks are left out. "
+        "A thicker stick also leaves more of the blob in thin walls.\n\n"
+        "In a test, a minimized 210 bp DNA ring at Resolution 4.1 Å was sliced at 50 % in "
+        "0.2 mm layers. The test summed the blobs' area narrower than a 0.4 mm "
+        "line over the layers. It was 389, 260 and 208 mm² with 1.5, 1.2 and "
+        "1.0 Å sticks, all without balls. Without sticks it was 41 mm².\n\n"
+        "A stick narrower than one printed line (about 0.4 mm) may be dropped "
+        "by the slicer. The report warns about this at the Scale you set. Set "
+        "Scale to your print's scale for the warning to match.\n\n"
+        "The field is greyed out, and not used, unless Sticks is ticked. Blank means "
+        f"{DEFAULT_STICK_DIAMETER:g} Å. The value must be above 0 and at most "
+        f"{MAX_STICK_DIAMETER:g} Å.\n\n"
+        f"Command line: --stick-diameter {DEFAULT_STICK_DIAMETER:g}.",
+        f"`{DEFAULT_STICK_DIAMETER:g}`   at Scale 1: {DEFAULT_STICK_DIAMETER:g} mm; "
+        f"printed at 50 %: {DEFAULT_STICK_DIAMETER / 2:g} mm\n"
         "`1.2`   thinner, for blobs with little room",
     ),
     "stick_ball": (
         "Stick ball (Å)",
-        "Used only with Sticks. The diameter of the ball capping each stick, "
-        "centred on the blob's atom, in Å. It must be larger than the stick; 0 "
-        "leaves the balls off. Blank means "
-        f"{DEFAULT_STICK_BALL:g} Å. At 4.1 Å an O atom's room in its phosphate blob "
-        "is a ball about 3.4 Å across, so a larger ball leaves a thinner shell "
-        "of blob over it.\n\n"
-        "Command line: --stick-ball 1.8.",
-        "`1.8`   a ball 0.15 Å wider than a 1.5 Å stick\n"
-        "        all round\n"
-        "`0`     sticks without balls",
+        "Adds a ball, like a knob, at the inner end of each stick. The value "
+        "is the ball's diameter, in Å. The ball is centred on the blob's atom, "
+        "where the stick ends.\n\n"
+        "A ball takes more room and leaves a thinner wall of blob over the "
+        "stick's end. A ball that would come within Stick wall of the blob's "
+        "outside, or cut its blob in two, is dropped. The plain stick is then "
+        "tried, and left out if it does not fit either. "
+        "The report counts the sticks that kept their ball.\n\n"
+        "In a slicing test (not a print), balls only made things worse. "
+        "A minimized 210 bp DNA ring at Resolution 4.1 Å "
+        "with 1.2 Å sticks was sliced at 50 % in 0.2 mm layers. Balls 1.6 Å "
+        "wide added about 775 holes in the blobs' layers and about 750 small "
+        "islands of the sticks' filament. The thinnest blob wall over a stick "
+        "fell from 1.077 to 0.983 Å.\n\n"
+        "The field is greyed out, and not used, unless Sticks is ticked. Blank "
+        f"means {DEFAULT_STICK_BALL:g}, no ball. A ball must be wider than Stick "
+        f"diameter and at most {MAX_STICK_BALL:g} Å. Any other size is refused "
+        "with an error.\n\n"
+        "Command line: --stick-ball 1.8 (leave it out for no ball).",
+        "`0`     no ball (the default): plain sticks\n"
+        f"`1.8`   a ball that stands {(1.8 - DEFAULT_STICK_DIAMETER) / 2:g} Å out from a\n"
+        f"        {DEFAULT_STICK_DIAMETER:g} Å stick on every side\n"
+        f"`{DEFAULT_STICK_DIAMETER:g}`   refused with a {DEFAULT_STICK_DIAMETER:g} Å "
+        "stick: a ball must\n"
+        "        be wider than the stick",
     ),
     "stick_wall": (
         "Stick wall (Å)",
-        "Used only with Sticks. The least blob kept between a stick or its "
-        "ball and the blob's surface, in Å: a stick that would come closer is "
-        "tried without its ball, then left out. Only the blob-coloured surface "
-        "counts: where a stick's root lies by the last part's own surface, "
-        "its colour meets its own. Blank means "
-        f"{DEFAULT_STICK_WALL:g} Å; allowed from {MIN_STICK_WALL:g} (above the pads' gap, so no "
-        f"pad is lost to a stick) to {MAX_STICK_WALL:g} Å.\n\n"
-        "Command line: --stick-wall 0.6.",
-        "`0.6`   0.3 mm of blob over a stick at 50 %\n"
-        "`1.0`   one 0.5 mm line at 50 %: fewer balls fit",
+        "Each stick sits inside a blob, under a wall of the blob's own colour. "
+        "Stick wall sets how thin that wall may get, in Å. A stick that would "
+        "leave a thinner wall anywhere is left out. A ball that would do so is "
+        "dropped (see Stick ball).\n\n"
+        "The wall keeps the stick's colour out of sight. A very thin wall "
+        "prints poorly. A larger value keeps a thicker wall but leaves more "
+        "sticks out. A smaller value lets more sticks in, under a thinner "
+        "wall. The report's STICKS section gives the thinnest wall left.\n\n"
+        "The wall is measured only to the blob's outside, where the blob's "
+        "colour shows. The report calls this the blob-coloured surface. No "
+        "wall is needed where the stick starts. There the stick joins the "
+        "last part (around the blobs), which prints in the same filament.\n\n"
+        "The field is greyed out, and not used, unless Sticks is ticked. Blank means "
+        f"{DEFAULT_STICK_WALL:g} Å. The value must be from {MIN_STICK_WALL:g} "
+        f"to {MAX_STICK_WALL:g} Å. The lower limit keeps the sticks clear of "
+        "the pads.\n\n"
+        f"Command line: --stick-wall {DEFAULT_STICK_WALL:g}.",
+        f"`{DEFAULT_STICK_WALL:g}`   at least {DEFAULT_STICK_WALL:g} mm of blob over a "
+        "stick at Scale 1;\n"
+        f"        printed at 50 %: at least {DEFAULT_STICK_WALL / 2:g} mm, "
+        "thinner than one\n"
+        "        0.4 mm printed line\n"
+        "`1.0`   at least 0.5 mm at 50 %: a thicker wall, but\n"
+        "        sticks with less room are left out",
     ),
     "no_widen": (
         "Do not widen a failed level scan",
-        "Stops after the first level scan when no level in it is accepted. "
-        "Off (the default), the scan is then widened once to ± twice the span; "
-        "only the new levels are computed, and every level is checked again "
-        "before the run gives up.\n\n"
-        "Either way, when nothing passes, the run prints the scan table and "
-        "hints and exits with 1. Ticked, it saves the time of the second pass, "
-        "but a level that only the wider scan reaches is never tried, so a run "
-        "the widening would have rescued exits with 1 instead.\n\n"
-        "A pinned level is never widened.\n\n"
+        "Stops after the first level scan when none of its levels is accepted. "
+        "Off (the default), the program then tries once more with the span "
+        "doubled.\n\n"
+        "If the last scan finds no accepted level, the run stops with an error "
+        f"(exit code {EXIT_ERROR}). The log shows the table of levels tried and "
+        "suggests what to change.\n\n"
+        "Tick this box to save the time of the second try. The cost is that "
+        "levels outside the first span are never tried. A run that the second "
+        "try would have saved fails instead.\n\n"
+        "This box has no effect when Contour level is filled in. A fixed level "
+        "is never widened.\n\n"
         "Command line: --no-widen.",
         None,
     ),
     "keep_solvent": (
         "Keep solvent (waters)",
-        "Includes waters in the maps. Off (the default), ChimeraX's solvent is "
-        "left out of every map, and the chain table and the molecule count "
-        "skip the residue names HOH, WAT, DOD, H2O, TIP, TIP3, SOL, T3P and "
-        "SPC.\n\n"
-        "Ticked, a water counts as part of the chain it is in and adds to that "
-        "part's density, and a chain of waters becomes a chain of its own. "
-        "With Parts blank, or filled by Detect chains, that chain then becomes "
-        "a colour of its own, which is rarely wanted (and as dust spares a "
-        "part's main molecule, one of its waters standing apart can print as a "
-        "loose blob); list the parts without it.\n\n"
-        "Any other water standing apart from everything is a separate small "
-        "molecule: unless it is a part's main molecule, the default dust "
-        "removes it, and the run names such molecules in a note. Click Detect "
-        "chains again after changing this box.\n\n"
+        "Puts the model's waters into the maps (the density maps the surfaces "
+        "are made from). Tick it when waters close to the molecule should be "
+        "part of the print. Click Detect chains again after changing this "
+        "box.\n\n"
+        "Off (the default), what ChimeraX calls solvent is left out. The chain "
+        "table and the molecule count (the pieces to expect) then skip waters "
+        "too. These are residues named HOH, WAT, DOD, H2O, TIP, TIP3, SOL, T3P "
+        "or SPC.\n\n"
+        "Ticked, a water joins the part that holds its chain. When Parts by is "
+        "atom selections, it joins the part that selects it, or else the rest "
+        "line (every atom not in another part). Without a rest line, a water no "
+        "part selects is left out, and a note says so.\n\n"
+        "Waters with a chain ID of their own form an extra chain. With Parts "
+        "blank, or filled by Detect chains, that chain gets its own colour. "
+        "This is rarely wanted, so leave that chain out of Parts. If that chain "
+        "is a part, one of its lone waters can print as a loose blob.\n\n"
+        f"Waters more than {CONTACT_CUTOFF:g} Å from the molecule are removed "
+        "by the default Dust size, and the log notes them. A smaller Dust size "
+        "can keep them.\n\n"
         "Command line: --keep-solvent.",
         None,
     ),
     "no_hydrogens": (
         "Exclude hydrogens",
-        "Leaves hydrogen atoms out of the maps, so the maps are of the heavy "
-        "atoms only, as for a model that has no hydrogens. On by default; "
-        "untick it to put the file's hydrogens into the maps like any other "
-        "atom.\n\n"
-        "It does not change which atoms form a molecule or a cluster "
-        "(hydrogens never count there) or the chain table's atom counts; the "
-        "atom counts on the report's parts line are the atoms in the maps, so "
-        "they drop by the hydrogens. The report's \"solvent / H\" line says "
-        "which was used.\n\n"
-        "Command line: on by default; --keep-hydrogens puts them in.",
+        "Leaves hydrogen atoms out of the maps. The surfaces then come from "
+        "the heavy atoms only, as for a model without hydrogens. Ticked by "
+        "default.\n\n"
+        "Untick the box to put the file's hydrogens into the maps like any "
+        "other atom. Hydrogens add density, so at the same contour level the "
+        "surface lies a little further out. When Parts by is atom selections and "
+        "this box is ticked, hydrogens are left out before the selections are "
+        "made. A Selections line that selects only hydrogens then stops the "
+        "run.\n\n"
+        "The box does not change the chain table's atom counts, which include "
+        "hydrogens. It does not change the molecule count either. That count "
+        "never uses hydrogens. The report's parts line counts only the atoms "
+        "in the maps. With the box ticked, that count leaves the hydrogens "
+        "out. The report's \"solvent / H\" line says whether waters and "
+        "hydrogens were used.\n\n"
+        "Command line: hydrogens are left out by default. --keep-hydrogens "
+        "puts them in.",
         None,
     ),
     "keep_scan": (
         "Keep scan STLs",
-        "Also keeps every candidate surface the scans exported, the whole at "
-        "each level and each part field at each K and level, in scan_kscan/, "
-        "scan_level/ and scan_widen/ inside <tag>_work/ (or "
-        "<tag>_work_failed/). S1, S2 ... are the parts' own fields and H2 ... "
-        "the peeling fields of 3 or more parts; with Blob parts, B1, B2 ... "
-        "are the blobs (B1_L0.112000.stl, no K and no K scan). Off (the default), only the "
-        "ChimeraX jobs, parameters and logs are kept.\n\n"
-        "Useful to look at why a level was rejected; each file is a full-size "
-        "STL, so the folder grows with every level and K tried.\n\n"
+        "To choose a contour level, the program makes trial surfaces at many "
+        "levels. These searches are the scans. This box keeps every trial "
+        "surface as an STL. Open them, for example in ChimeraX, to see why a "
+        "level was rejected.\n\n"
+        "Off (the default), the work folder <tag>_work/ keeps only the "
+        "ChimeraX jobs, settings and logs. Here <tag> is the Tag (file "
+        "prefix). Ticked, the work folder also keeps scan_level/. "
+        "It also gets scan_kscan/ when a K scan ran, "
+        "and scan_widen/ when the level scan was widened. A run that stops or "
+        "ends with an error uses <tag>_work_failed/ instead.\n\n"
+        "Each file name gives the surface, its K and its contour level (L). "
+        "ref is the whole model. S1, S2 ... are each part's own trial surface. "
+        "H2, H3 ... are in-between surfaces used to separate 3 or more parts "
+        "one at a time. With Blob parts there are no S or H files. Each blob's "
+        "surface is B1, B2 ..., with no K.\n\n"
+        "Each file is a full-size STL, and the folder grows with every level "
+        "and K tried. Leave this off for normal runs.\n\n"
         "Command line: --keep-scan.",
-        "<tag>_work/scan_level/ref_L0.112000.stl     whole\n"
-        "<tag>_work/scan_level/S1_K16_L0.112000.stl  part 1 field\n"
-        "<tag>_work/scan_kscan/S2_K12_L0.112000.stl  K scan",
+        "<tag>_work/scan_level/ref_L0.112000.stl     the whole model\n"
+        "<tag>_work/scan_level/S1_K16_L0.112000.stl  part 1, K 16\n"
+        "<tag>_work/scan_kscan/S2_K12_L0.112000.stl  K scan, part 2\n"
+        "<tag>_work/scan_level/B1_L0.112000.stl      blob of part 1\n"
+        "(L0.112000 = contour level 0.112)",
     ),
     "no_preview": (
         "Skip preview PNG/GLB",
-        "Skips the two local previews. Off (the default), a run writes "
-        "<tag>_preview.png, a top view (the print bed is the page) and an "
-        "oblique view with each part in its colour, and <tag>_preview.glb, the "
-        "parts as coloured meshes for a 3D viewer. A preview that cannot be "
-        "made, e.g. without matplotlib, is skipped with a line in the log, not "
-        "an error.\n\n"
-        "After a run that exits with 0 or 3, the window opens the new PNG by "
-        "itself unless this is ticked. Tick it to save the rendering time.\n\n"
+        "Skips the two preview files. Tick it to save the time they take to "
+        "draw.\n\n"
+        "Off (the default), a run writes <tag>_preview.png and "
+        "<tag>_preview.glb. Here <tag> is the Tag (file prefix). "
+        "The PNG shows the parts in their colours, looking straight down on "
+        "the print bed and from a slant. With Pads it adds a view from below "
+        "the bed. The GLB holds the parts as coloured meshes for a 3D "
+        "viewer.\n\n"
+        "After a run that writes its files (exit code 0 or 3), the window opens "
+        "the new PNG. With this box ticked, nothing opens. A "
+        "preview that cannot be made, for example when the matplotlib package "
+        "is not installed, is skipped with a line in the log. That is not an "
+        "error.\n\n"
         "Command line: --no-preview.",
         None,
     ),
     "voxel_step": (
         "Voxel step 1 (fixed)",
-        "Every surface, the whole and each part field at every level and K, is "
-        "contoured at voxel step 1, i.e. at every grid point. The tool sets "
-        "step 1 on each surface and checks it before anything is exported; a "
-        "surface at any other step stops the run instead of being written. The "
-        "log says \"every surface exported at step 1x1x1\", and the report "
-        "repeats it.\n\n"
-        "It is not adjustable because a coarser step contours only every "
-        "second or third grid point, which is the same as a coarser grid: the "
-        "colour interface could no longer be placed finer than that. "
-        "To trade detail for speed, change Grid spacing instead; the K rule "
-        "accounts for it. Level scan step is a different thing: a step in "
-        "contour level, not in voxels.\n\n"
+        "Every surface is computed from the map's value at every grid point. In "
+        "ChimeraX terms, this is volume step 1. It is fixed and cannot be "
+        "changed.\n\n"
+        "A coarser voxel step would skip grid points. That has the same effect as a "
+        "coarser grid. Colour boundaries would be placed less finely. To trade "
+        "detail for speed, raise Grid spacing instead. With K blank, K adjusts to "
+        "the new spacing.\n\n"
+        "Level scan step is a different setting. It is a step in contour level, not "
+        "in grid points.\n\n"
+        "The log line \"every surface exported at step 1x1x1\" and the report's "
+        "PARAMETERS section confirm this for each run.\n\n"
         "Command line: none; there is no option for it.",
         None,
     ),
     "run": (
         "Run split, Stop and the other buttons",
-        "Run split checks the fields, remembers the ChimeraX and Chimera "
-        "paths, and runs "
-        "the split as a separate process with the options Show command "
-        "prints; its output streams into the log below and the status line at "
-        "the right says how it ended.\n\n"
-        "A run writes into the output folder: one STL per part (a part that "
-        "comes out empty is not written, and fails), <tag>_whole.stl for "
-        "reference only (do not print it with the parts), <tag>_report.txt "
-        "and .json (scans, validation, printing notes and a REPRODUCE command "
-        "with everything pinned), the two previews, and <tag>_work/ with the "
-        "ChimeraX jobs, parameters and logs.\n\n"
-        "The STLs, report and previews are first written to a staging folder, "
-        ".<tag>_incoming. Once the report is complete, the previous set of the "
-        "same tag in that folder (the files its report listed, files named "
-        "like this tool's outputs, and <tag>_work/ or <tag>_work_failed/) is "
-        "moved into _previous_<timestamp>/, the new files are moved in, and "
-        "the logs follow into <tag>_work/, so the folder holds one set per "
-        "tag; other files are never touched. A run that exits with 3 replaces "
-        "the previous set too, so read its report before printing (the "
-        "earlier set is in _previous_<timestamp>/).\n\n"
-        "A run that ends with an error or is stopped puts nothing in place and "
-        "leaves the previous set where it was; its logs go to "
-        "<tag>_work_failed/. An error found before ChimeraX starts, such as a "
-        "chain that is not in the file or ChimeraX not found, leaves no logs: "
-        "its message is in the log below.\n\n"
-        "Exit codes: 0 all checks pass (warnings allowed); 3 exported, but a "
-        "check FAILED; 1 error; 2 invalid options; 130 stopped.\n\n"
-        "Stop sends SIGINT to the run: it stops ChimeraX, removes the staging "
-        "folder, keeps the logs and leaves nothing half-written. Closing the "
-        "window during a run asks first.\n\n"
-        "Show command prints the command in the log and copies it to the "
-        "clipboard. Open output folder and Show preview use the folder and tag "
-        "of the last run, or those of the current fields; the preview also "
-        "opens by itself after a run that exits with 0 or 3.\n\n"
-        "Command line: the command Show command prints runs the same split in "
-        "a terminal, with the same exit codes. With Output folder blank it "
-        "writes to ./<tag> of the folder the terminal is in, and a relative "
-        "structure path is read from there too, so run it from the folder "
-        "this window was started in, or fill Output folder first.",
+        "Run split checks the fields, then runs exactly the terminal command "
+        "that Show command puts in the log and on the clipboard. Greyed-out "
+        "fields are left out of that command. The status line at the right "
+        "shows how the run ended.\n\n"
+        "A run writes one STL per part, and <tag>_pads.stl when pads are made. "
+        "Here <tag> is the Tag (file prefix). "
+        "It also writes the report (.txt and .json), the logs in <tag>_work/, "
+        "and two previews unless Skip preview PNG/GLB is ticked. "
+        "<tag>_whole.stl is the whole model, for reference only. Do not print "
+        "it with the parts.\n\n"
+        "Once the new files are ready, the earlier files with the same tag "
+        "move into a folder named _previous_ plus the date and time.\n\n"
+        "A run can end with some checks FAILED (exit code 3), for example "
+        "when a part comes out empty and gets no STL. Such a run still "
+        "replaces the earlier files. Read its report before printing.\n\n"
+        "Stop ends the run and ChimeraX. A stopped run, or one that ends with "
+        "an error, leaves the earlier files as they were. Its logs, if any, go "
+        "to <tag>_work_failed/.\n\n"
+        "Open output folder and Show preview use the folder and tag of the "
+        "last run. Before any run, they follow the Output folder and Tag "
+        "fields. After exit code 0 or 3, the new preview PNG opens by itself "
+        "if one was made.\n\n"
+        "Command line: the command from Show command runs the same split in a "
+        "terminal. With Output folder blank, it writes to ./<tag> in the "
+        "terminal's folder. A relative structure path is read from there "
+        "too.",
         "exit  status line\n"
         "0     done — all checks pass\n"
         "3     done — some checks FAILED (see the report)\n"
         "1     FAILED (exit 1) — read the log\n"
         "2     not run — invalid options (see the log)\n"
         "130   stopped\n"
+        "0 and 3 write the files; a 0 run may still list warnings\n"
         "re-run, same tag: old set -> _previous_20260925-231500/",
     ),
 }
@@ -5472,23 +5541,32 @@ OVERLAP_LABELS = {"first": "earlier part keeps them", "error": "refuse the run"}
 
 # The numeric fields: key, label, default, hint
 GUI_NUMBERS = [
-    ("resolution", "Resolution (Å)", f"{DOC_RESOLUTION:g}", "default 4.0; try 3.7 for more detail, few holes"),
-    ("grid", "Grid spacing (Å)", f"{DOC_GRID:g}", "0.5 resolves the colour interface"),
-    ("dust", "Dust size (Å)", f"{DEFAULT_DUST:g}", "specks below this go; a part's main body never does"),
-    ("k", "K penalty slope", "", "blank = 16 at 4 Å / 0.5; otherwise rescaled + checked"),
-    ("k_list", "K candidates", "", "optional, e.g. 8,12,16 (implies a K scan)"),
-    ("level", "Contour level", "", "blank = scan for a clean level"),
-    ("level_guess", "Level scan centre", "", "blank = molmap's auto level"),
-    ("span", "Level scan span (±)", f"{DEFAULT_SPAN:g}", "contour units"),
-    ("step", "Level scan step", f"{DEFAULT_STEP:g}", "contour increment -- NOT the voxel step"),
-    ("scale", "Scale (mm per Å)", "1", "1 = 1 Å → 1 mm"),
-    ("blob_skin", "Blob skin (Å)", "", f"blank = {DEFAULT_BLOB_SKIN:g}; Blob parts: thinner skins go to the blob"),
+    ("resolution", "Resolution (Å)", f"{DOC_RESOLUTION:g}",
+     f"blank = {DOC_RESOLUTION:g}; how blurred the atoms are; 3.7 = more detail"),
+    ("grid", "Grid spacing (Å)", f"{DOC_GRID:g}",
+     f"blank = {DOC_GRID:g}; map grid spacing; smaller = finer, slower"),
+    ("dust", "Dust size (Å)", f"{DEFAULT_DUST:g}",
+     f"blank = {DEFAULT_DUST:g}; removes bits, fills hollows this small; 0 = off"),
+    ("k", "K penalty slope", "", f"blank = auto ({DOC_K:g} at the defaults); a number = no K scan"),
+    ("k_list", "K candidates", "", "blank = none; e.g. 8,12,16 = the K values to scan"),
+    ("level", "Contour level", "", "blank = scan for a level; a number = use it, no scan"),
+    ("level_guess", "Level scan centre", "", "blank = molmap's auto level; the scan centres here"),
+    ("span", "Level scan span (±)", f"{DEFAULT_SPAN:g}",
+     f"blank = {DEFAULT_SPAN:g}; contour units each side of the centre"),
+    ("step", "Level scan step", f"{DEFAULT_STEP:g}",
+     f"blank = {DEFAULT_STEP:g}; gap between levels, not the voxel step"),
+    ("scale", "Scale (mm per Å)", "1", "blank = 1; mm per Å: 1 = 1 Å → 1 mm"),
+    ("blob_skin", "Blob skin (Å)", "",
+     f"blank = {DEFAULT_BLOB_SKIN:g}; skins thinner than this join the blob"),
     ("support_angle", "Support angle (°)", "",
-     f"blank = {DEFAULT_SUPPORT_ANGLE:g}; Pads: the slicer's support threshold angle"),
-    ("pad_thickness", "Pad thickness (Å)", "", f"blank = {DEFAULT_PAD_THICKNESS:g}; Pads"),
-    ("stick_diameter", "Stick diameter (Å)", "", f"blank = {DEFAULT_STICK_DIAMETER:g}; Sticks"),
-    ("stick_ball", "Stick ball (Å)", "", f"blank = {DEFAULT_STICK_BALL:g}; Sticks: 0 = no ball"),
-    ("stick_wall", "Stick wall (Å)", "", f"blank = {DEFAULT_STICK_WALL:g}; Sticks: blob kept over them"),
+     f"blank = {DEFAULT_SUPPORT_ANGLE:g}; the slicer's support threshold angle"),
+    ("pad_thickness", "Pad thickness (Å)", "",
+     f"blank = {DEFAULT_PAD_THICKNESS:g}; minimum pad thickness (× Scale = mm)"),
+    ("stick_diameter", "Stick diameter (Å)", "",
+     f"blank = {DEFAULT_STICK_DIAMETER:g}; how thick each stick is"),
+    ("stick_ball", "Stick ball (Å)", "",
+     f"blank = {DEFAULT_STICK_BALL:g} (no ball); a ball must be wider than the stick"),
+    ("stick_wall", "Stick wall (Å)", "", f"blank = {DEFAULT_STICK_WALL:g}; thinnest blob wall over a stick"),
 ]
 # A number field used only when this checkbox is ticked
 GUI_NUMBER_NEEDS = {"blob_skin": "blobs", "support_angle": "pads", "pad_thickness": "pads",
@@ -5513,6 +5591,43 @@ GUI_OPTIONS = [
     ("no_preview", "Skip preview PNG/GLB", False),
 ]
 GUI_OFF_FLAGS = {"lay_flat": "--no-lay-flat", "no_hydrogens": "--keep-hydrogens"}
+# A checkbox usable only when this other box is ticked (Sticks also needs the
+# parts given as atom selections)
+GUI_BOX_NEEDS = {"pads": "blobs", "sticks": "blobs"}
+# Boxes ticked whenever they become usable: once there are blob parts, pads and
+# sticks are on unless unticked
+GUI_ON_WHEN_USABLE = ("pads", "sticks")
+
+
+def gui_usable(ticked, parts_by):
+    """The window's checkboxes and number fields that take effect, given the
+    ticked boxes (GUI_OPTIONS keys) and Parts by ("chains" or "selections"):
+    a box in GUI_BOX_NEEDS needs its box ticked, Sticks also needs atom
+    selections, and a field in GUI_NUMBER_NEEDS needs its box usable and
+    ticked.  Every other box and field is always usable."""
+    ticked = set(ticked)
+    off = {key for key, box in GUI_BOX_NEEDS.items() if box not in ticked}
+    if parts_by != "selections":
+        off.add("sticks")
+    off |= {key for key, box in GUI_NUMBER_NEEDS.items() if box in off or box not in ticked}
+    return ({k for k, _, _, _ in GUI_NUMBERS} | {k for k, _, _ in GUI_OPTIONS}) - off
+
+
+def gui_settle(ticked, parts_by, was=None):
+    """(ticked, usable) after a change in the window: a box that is not usable
+    is unticked, and a GUI_ON_WHEN_USABLE box that has just become usable is
+    ticked.  was: the usable set before the change; None when the window
+    opens, which keeps the boxes as given (from the command line) rather than
+    ticking them."""
+    ticked = set(ticked)
+    while True:
+        usable = gui_usable(ticked, parts_by)
+        off = {k for k in ticked if k in GUI_BOX_NEEDS and k not in usable}
+        on = set() if was is None else {k for k in GUI_ON_WHEN_USABLE
+                                        if k in usable and k not in was and k not in ticked}
+        if not off and not on:
+            return ticked, usable
+        ticked = (ticked - off) | on
 
 
 def run_gui(initial_file=None, prefill=None, selftest=None):
@@ -5655,6 +5770,9 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             frm.columnconfigure(1, weight=1)
             self.v = {}
             self.rows = {}              # key -> the widgets of its rows, to show or hide them
+            self.greyable = {}          # key -> the widgets greyed out while it is not usable
+            self.usable = None          # gui_usable() as last applied; None until the window is filled
+            self.settling = False
             self.chain_rows = []        # read_structure()'s chains, for Backbone per chain
             r = 0
 
@@ -5784,10 +5902,14 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             num.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             # columns: 0 label, 1 entry, 2 the ? chip, 3 hint
             for i, (key, label, default, hint) in enumerate(GUI_NUMBERS):
-                ttk.Label(num, text=label).grid(row=i, column=0, sticky=tk.W, pady=1)
+                lab = ttk.Label(num, text=label)
+                lab.grid(row=i, column=0, sticky=tk.W, pady=1)
                 var = tk.StringVar(value=default)
                 self.v[key] = var
-                ttk.Entry(num, textvariable=var, width=10).grid(row=i, column=1, sticky=tk.W, padx=4)
+                ent = ttk.Entry(num, textvariable=var, width=10)
+                ent.grid(row=i, column=1, sticky=tk.W, padx=4)
+                if key in GUI_NUMBER_NEEDS:
+                    self.greyable[key] = (lab, ent)
                 chip(num, key).grid(row=i, column=2, sticky=tk.W, padx=(0, 6))
                 ttk.Label(num, text=hint, foreground="#666").grid(row=i, column=3, sticky=tk.W)
             vf = ttk.Frame(num)
@@ -5801,7 +5923,10 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             for i, (key, label, default) in enumerate(GUI_OPTIONS):
                 var = tk.BooleanVar(value=default)
                 self.v[key] = var
-                ttk.Checkbutton(opt, text=label, variable=var).grid(row=i, column=0, sticky=tk.W)
+                box = ttk.Checkbutton(opt, text=label, variable=var)
+                box.grid(row=i, column=0, sticky=tk.W)
+                if key in GUI_BOX_NEEDS:
+                    self.greyable[key] = (box,)
                 chip(opt, key).grid(row=i, column=1, sticky=tk.W, padx=(6, 0), pady=1)
 
             row_entry("ChimeraX", "chimerax", self.browse_cx)
@@ -5858,6 +5983,9 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
                 self.v[key].trace_add("write", lambda *_: self.update_swatches())
             for key in ("parts_by", "selection_syntax"):
                 self.v[key].trace_add("write", lambda *_: self.show_parts_mode())
+            self.update_usable()
+            for key in set(GUI_BOX_NEEDS) | set(GUI_BOX_NEEDS.values()) | {"parts_by"}:
+                self.v[key].trace_add("write", lambda *_: self.update_usable())
             if self.v["structure"].get():
                 self.detect(fill_parts=not self.v["parts"].get())
             self.update_names()
@@ -6091,8 +6219,9 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             if g["sticks"] and g["parts_by"] != "selections":
                 raise ValueError("Sticks follow the bonds between atom selections: give the parts "
                                  "as atom selections")
+            usable = gui_usable({k for k, _, _ in GUI_OPTIONS if g[k]}, g["parts_by"])
             for key, _, _, _ in GUI_NUMBERS:
-                if g[key] != "" and (key not in GUI_NUMBER_NEEDS or g[GUI_NUMBER_NEEDS[key]]):
+                if g[key] != "" and key in usable:
                     args.append(f"{GUI_FLAG_NAMES.get(key, '--' + key.replace('_', '-'))}={g[key]}")
             for key, _, default in GUI_OPTIONS:
                 if g[key] and not default:
@@ -6124,6 +6253,26 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             if self.sel_text.edit_modified():
                 self.sel_text.edit_modified(False)
                 self.update_swatches()
+
+        def update_usable(self):
+            """Grey out the boxes and fields the ticked boxes leave unused and
+            untick a box that cannot be used; tick Pads and Sticks when they
+            become usable (gui_settle)."""
+            if self.settling:
+                return
+            self.settling = True
+            try:
+                ticked = {k for k, _, _ in GUI_OPTIONS if self.v[k].get()}
+                ticked, usable = gui_settle(ticked, self.v["parts_by"].get(), self.usable)
+                for k, _, _ in GUI_OPTIONS:
+                    if bool(self.v[k].get()) != (k in ticked):
+                        self.v[k].set(k in ticked)
+                for k, widgets in self.greyable.items():
+                    for w in widgets:
+                        w.state(["!disabled"] if k in usable else ["disabled"])
+                self.usable = usable
+            finally:
+                self.settling = False
 
         def show_parts_mode(self, fit=True):
             """Show the Parts row for chains, the Selections rows for atom
@@ -6316,6 +6465,8 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
               flush=True)
         m = re.match(r"(\d+)x(\d+)", root.geometry())
         gw, gh = (int(m.group(1)), int(m.group(2))) if m else app.size
+        print("[selftest] greyed out: " + (" ".join(sorted(set(app.greyable) - app.usable)) or "none"),
+              flush=True)
         print("[selftest] window: %dx%d geometry %dx%d"
               % (root.winfo_reqwidth(), root.winfo_reqheight(), gw, gh), flush=True)
 
@@ -6340,6 +6491,11 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             if selftest == "help":
                 help_popups()
                 return
+            if selftest == "blobs":             # as a click on Blob parts
+                app.v["blobs"].set(not app.v["blobs"].get())
+                print("[selftest] after Blob parts: ticked %s; greyed out %s"
+                      % (" ".join(k for k, _, _ in GUI_OPTIONS if app.v[k].get()) or "none",
+                         " ".join(sorted(set(app.greyable) - app.usable)) or "none"), flush=True)
             if selftest == "fill":
                 app.fill_backbone()
                 print("[selftest] selections: " + " | ".join(app.selection_lines()), flush=True)
@@ -6488,7 +6644,7 @@ def build_parser():
                         "x --scale in mm)")
     g.add_argument("--stick-ball", type=float, default=None,
                    help=f"with --sticks: diameter of the ball capping each stick on the blob's atom, A "
-                        f"(default {DEFAULT_STICK_BALL:g}; larger than the stick's; 0 for no ball)")
+                        f"(default {DEFAULT_STICK_BALL:g}, no ball; a ball must be larger than the stick)")
     g.add_argument("--stick-wall", type=float, default=None,
                    help=f"with --sticks: the least blob, A, between a stick or its ball and the "
                         f"blob-coloured surface (the blob's faces on the outside of the model); a stick "
@@ -6524,7 +6680,7 @@ def build_parser():
     g.add_argument("--chimerax", default=None, help="path to the ChimeraX executable (or its .app)")
     g.add_argument("--chimera", default=None,
                    help="path to UCSF Chimera (or its .app), for --selection-syntax chimera")
-    ap.add_argument("--gui-selftest", choices=("build", "fill", "run", "help"), help=argparse.SUPPRESS)
+    ap.add_argument("--gui-selftest", choices=("build", "fill", "run", "help", "blobs"), help=argparse.SUPPRESS)
     ap.add_argument("--version", action="version", version=__version__)
     return ap
 
