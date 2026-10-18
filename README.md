@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_12`
+Version: `V3_13`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -175,6 +175,25 @@ The GUI **View curve** window can show all parsed components or the currently se
 ## GUI Tools
 
 The GUI has a dedicated **Tools** area for utility tools.
+
+**Reverse Curve It...** recovers a centerline XYZ from a final curved PDB and the original straight PDB template used to make it. It opens with the main window's existing output PDB and straight input PDB selected when available. The tool also works from the command line:
+
+```bash
+python3 reverse_curve_it.py curved.pdb straight_template.pdb -o recovered_curve.xyz
+python3 reverse_curve_it.py curved.pdb straight_template.pdb --path-type closed --points 400
+python3 curve_it.py --reverse-curve-it curved.pdb straight_template.pdb
+python3 reverse_curve_it.py --gui
+```
+
+The default output is `<curved>_curve.xyz`, beside the curved PDB. It contains plain `x y z` rows in Angstrom, in the curved model's coordinate frame, with comments recording the inputs and fit quality. Load it as a curve in Curve It, or use **View curve**. For a loop, select **Path type: closed** when loading it: plain XYZ does not encode closure. Closed outputs omit the duplicate first point.
+
+The tool uses the same principal axis and atom groups as the forward mapper. For every usable group, it fits a rotation and translation between the straight and curved atoms, then transforms the point on the template axis at that group's station. These transformed axis points sample the curve; residue centroids would instead trace the atoms' offsets from the axis. Nucleic acids use phosphate/sugar/base groups; proteins and other residues use whole-residue groups. Samples follow increasing template axis coordinate, so antiparallel strands contribute to one curve rather than separate strand traces. By default all recovered samples are kept; `--points N` optionally resamples their polyline by arc length using the shared corner-preserving resampler.
+
+Use the **complete original straight template**, with its original coordinates and atom set. Atoms are matched by chain, residue number, insertion code, residue name, normalized atom name and alternate location. Changed serial numbers and reordered records are fine. A mismatch stops the run by default. `--allow-missing-atoms` explicitly fits only shared IDs and ignores extra curved atoms, useful after hydrogen removal or solvent addition; the template axis and group centers still come from the complete template. Each fitted group needs at least three noncollinear shared atoms. Underdetermined groups are skipped and reported; CA-only and P-only models cannot determine the needed transforms. Supply one model per PDB; duplicate atom identities and multiple `MODEL` records are rejected.
+
+`--path-type auto` reads Curve It's saved REMARKs, otherwise uses `open`. Extra axial twist is also read from those REMARKs, otherwise assumed zero; use `--twist DEG` to override it if metadata was removed. Global helix phase and frame holonomy are absorbed by the fitted rotations and require no input. A model may be translated or rotated after curving. Refined models can be fitted approximately; the report gives atom-weighted group RMSD and the largest group RMSD, and flags fits above 0.1 A. Axis positions extrapolated from small groups can be sensitive even when their fit errors are small.
+
+This recovers the **occupied, mapped path**, at the groups' stations, rather than the original curve file. PDB rounding limits accuracy. Original vertex locations, sharp bends between groups, unused path sections and endpoints are unobservable. Open outputs run between the first and last fitted stations without extrapolation; closing a loop joins its last sample back to its first. Multiple wraps remain multiple traversals. The tool does not undo the original curve scaling, infer its original seam, or smooth refinement noise. A different straight template can bias the axis even with small residuals. Only NumPy is required beyond the existing Curve It code; Tkinter is needed for the window.
 
 **Get phase** beside the main **Phase (deg)** field opens `curve_it_lib/get_curve_it_phaseV5_1.py`. Its atom-selection area can use a single real PDB atom, the centroid of multiple individually selected real atoms, or a virtual source-space `x,y,z` point that does not exist in the PDB. Choose **Real atom(s)** and set the number of selection rows, or choose **Virtual atom** and enter coordinates in Angstrom. The computed phase transfers back to the main GUI automatically.
 
@@ -528,13 +547,14 @@ Protein PDBs can be handled when the structure has a meaningful roughly straight
 On macOS/Linux, make the script directly executable:
 
 ```bash
-chmod +x curve_it.py plane_it.py
+chmod +x curve_it.py plane_it.py reverse_curve_it.py
 ./curve_it.py --version
 ./curve_it.py input.pdb curve.xyz -o output_curved.pdb
 ./plane_it.py --help
+./reverse_curve_it.py --help
 ```
 
-To run them from anywhere, place this repo folder on your `PATH`, or create small wrapper scripts that call the full paths to `curve_it.py` and `plane_it.py`.
+To run them from anywhere, place this repo folder on your `PATH`, or create small wrapper scripts that call the full paths to these launchers.
 
 ## Build A Standalone Executable
 
@@ -552,6 +572,8 @@ The scripts check for their icons at runtime and continue normally if an icon is
 
 In a one-file build there is no Python interpreter to hand a script to, so Multicolor Split's window runs each split as a child process through `curve_it --multicolor-split ...`, and Curve It forwards everything after that flag to the tool. ChimeraX stays an external program and is never bundled, and `scipy`, `trimesh`, and `manifold3d` must be importable by the Python that runs PyInstaller.
 
+Reverse Curve It also supports the one-file build, through `curve_it --reverse-curve-it ...`; the main window's launcher uses this entry point when frozen.
+
 ## Helper Modules
 
 Supporting scripts live in `curve_it_lib/`:
@@ -568,6 +590,7 @@ Supporting scripts live in `curve_it_lib/`:
 - `svg2xyz.py`
 - `view_xyzV3.py`
 - `xyz2model.py`
+- `reverse_curve_it.py` (recover centerline samples from curved and straight template PDBs; also available through the root launcher of the same name)
 - `vect_io.py` (Geomview VECT reading and writing, shared by every tool above)
 - `multicolor_split.py` (Multicolor Split; reads PDB or mmCIF rather than curve files)
 - `lab_colors.py` (the DiLiuLab figure palette, read from `assets/diliulab_colors.json` and shared by every tool that offers the palette)

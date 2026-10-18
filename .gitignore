@@ -17,7 +17,8 @@ dist/
 output/
 outputs/
 test/
-tests/
+tests/*
+!tests/test_reverse_curve_it.py
 
 *_curved.pdb
 *_rescaled.xyz

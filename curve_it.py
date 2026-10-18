@@ -142,7 +142,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_12"
+APP_VERSION = "V3_13"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -2529,6 +2529,13 @@ def launch_gui() -> None:
             "Output names carry the rod diameter, so curve.xyz at diameter 2.0 writes curve-D2.0.stl and two rod sizes off one curve do not overwrite each other. A mesh input carries the scale factor instead.\n\n"
             "When the main window already has a curve file loaded, it opens with that file selected. Requires the trimesh package."
         ),
+        "reverse_curve_it": (
+            "Reverse Curve It",
+            "Recover a centerline XYZ from a curved PDB and the original straight PDB template.\n\n"
+            "The tool reverses local atom-group transforms, keeping the curve in the curved model's coordinate frame, in Angstrom. It matches atoms by chain, residue, atom name and alternate location, so record order and serial numbers may change.\n\n"
+            "Use the complete original straight template. Curve It's saved REMARKs supply path type and extra twist when available; both can be overridden. Global phase is inferred. The report gives group fit errors for checking refined models.\n\n"
+            "The output samples the occupied path. Original vertices, unused endpoints and gaps cannot be reconstructed from the two models. Closed curves omit the repeated first point; select closed when loading that XYZ into Curve It. Groups need at least three noncollinear matched atoms, so a CA-only or P-only model is insufficient."
+        ),
         "multicolor_split": (
             "Multicolor Split",
             "Open the multicolour 3D-printing splitter.\n\n"
@@ -3763,6 +3770,23 @@ def launch_gui() -> None:
         except Exception as e:
             messagebox.showerror("Tool launch error", f"Failed to launch Curved Connector:\n{e}")
 
+    def launch_reverse_curve_it_tool() -> None:
+        script_path = resource_path(os.path.join("curve_it_lib", "reverse_curve_it.py"))
+        if not getattr(sys, "frozen", False) and not os.path.isfile(script_path):
+            messagebox.showerror("Tool not found", f"Could not find Reverse Curve It:\n{script_path}")
+            return
+        template = (helix_pdb_path or helix_path_var.get()).strip()
+        curved = output_path_var.get().strip()
+        template = os.path.abspath(template) if template and os.path.isfile(template) else ""
+        curved = os.path.abspath(curved) if curved and os.path.isfile(curved) else ""
+        try:
+            import subprocess
+            prefix = ([sys.executable, "--reverse-curve-it"] if getattr(sys, "frozen", False)
+                      else [sys.executable, script_path])
+            subprocess.Popen(prefix + [curved, template, "--gui"])
+        except Exception as e:
+            messagebox.showerror("Tool launch error", f"Failed to launch Reverse Curve It:\n{e}")
+
     def launch_xyz2model_tool() -> None:
         script_path = resource_path(os.path.join("curve_it_lib", "xyz2model.py"))
         if not os.path.isfile(script_path):
@@ -4325,7 +4349,7 @@ def launch_gui() -> None:
         tk.Button(cell, text=label, command=command).pack(side="left")
         help_button(cell, topic_key).pack(side="left", padx=(3, 0))
 
-    # Two rows, grouped by purpose: the first holds the tools that produce a
+    # Rows grouped by purpose: the first holds the tools that produce a
     # curve file, converting one from another format or generating one from
     # parameters; the second the tools that use a curve or a structure, to
     # analyze it, project it, build on it or split it into printable parts.
@@ -4349,6 +4373,7 @@ def launch_gui() -> None:
     add_tool_button(1, 2, "Curved Connector...", launch_curved_connector_tool, "curved_connector")
     add_tool_button(1, 3, "XYZ to 3D Model...", launch_xyz2model_tool, "xyz2model")
     add_tool_button(1, 4, "Multicolor Split...", launch_multicolor_split_tool, "multicolor_split")
+    add_tool_button(2, 0, "Reverse Curve It...", launch_reverse_curve_it_tool, "reverse_curve_it")
 
     # --- Run log frame ---
     log_frame = tk.LabelFrame(root, text="Run log", font=section_font)
@@ -4628,6 +4653,15 @@ def main(argv: Optional[List[str]] = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
 
+    # Pass through before parsing: the helper owns all subsequent options.
+    # This also lets a frozen app launch the tool without a Python interpreter.
+    if argv[:1] == ["--reverse-curve-it"]:
+        try:
+            from curve_it_lib import reverse_curve_it
+        except Exception as exc:
+            raise SystemExit(f"Failed to launch Reverse Curve It: {exc}")
+        sys.exit(reverse_curve_it.main(argv[1:]))
+
     # Multicolor Split runs each split as a child process of its own GUI. In a
     # frozen one-file build sys.executable is this app, not a Python, so that
     # child comes back in through this flag, and everything after it belongs to
@@ -4653,7 +4687,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                      "a rotation-minimizing (parallel transport/Bishop) frame, "
                      "chemistry-aware residue/group mapping, and "
                      "holonomy compensation for closed multi-wrap cases. "
-                     "If no arguments or only --gui are provided, a GUI is launched.")
+                     "If no arguments or only --gui are provided, a GUI is launched."),
+        epilog="Recover a curve: curve_it.py --reverse-curve-it curved.pdb template.pdb -o curve.xyz",
     )
     parser.add_argument(
         "helix_pdb",
