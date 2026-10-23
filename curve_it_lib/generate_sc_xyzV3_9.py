@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate a radius-aware, projection-robust closed plectonemic DNA-axis curve.
 
-Generate SC V3_8 is a standalone successor to generate_sc_xyzV2_2.py and
+Generate SC V3_9 is a standalone successor to generate_sc_xyzV2_2.py and
 Generate SC V3.  Only this SC generator script is required in ``curve_it_lib``;
 it does NOT import or monkey-patch an older Generate SC module.
 
@@ -13,14 +13,14 @@ Two related writhe concepts are kept explicit:
 
 * ``--writhe`` is fitted to the continuous Gauss-integral writhe used by
   Curve It.
-* For nonzero integer writhe, V3_8 also evaluates the *signed* crossing sum in
+* For nonzero integer writhe, V3_9 also evaluates the *signed* crossing sum in
   many deterministic generic orthographic projections.  The default search
   seeks a geometry for which at least 55% of sampled viewing directions have
   signed crossing sum exactly equal to the requested writhe.
 
 Projection-robust integer geometry
 ----------------------------------
-V2.2 used an arm phase sweep ``theta = pi * W``.  V3_8 shortens the phase before
+V2.2 used an arm phase sweep ``theta = pi * W``.  V3_9 shortens the phase before
 attaching the end loops:
 
     theta = sign(W) * pi * (|W| - phase_trim),  0 <= phase_trim < 1
@@ -37,11 +37,11 @@ mirror symmetry under ``z -> -z``, while even integer writhe has central
 symmetry under ``(x, z) -> (-x, -z)``.
 
 Trimming is enabled by default and may be disabled with ``--no-trim``. For
-fractional writhe and W=0, V3_8 uses ``phase_trim = 0`` because a projection
+fractional writhe and W=0, V3_9 uses ``phase_trim = 0`` because a projection
 crossing sum is integer-valued. The equal-lobes formulas account for the active
 centered phase trim, so equal-lobes mode can use the same trimming search.
 
-V3_8 uses ``--minimum-final-radius`` as the default alternative to a requested
+V3_9 uses ``--minimum-final-radius`` as the default alternative to a requested
 qualifying-view percentage. In that mode, the largest phase trim compatible
 with the minimum radius measured from the final serialized central-arm
 coordinates is selected, maximizing the qualifying-view fraction for this
@@ -91,7 +91,7 @@ the distinct ``H0 = 0`` family and repeats every optimization and final check.
 In either mode, endpoint directions are normalized exact derivatives of the
 parametric arm equations and are passed directly to the cubic-Bezier loops;
 they are not estimated from a displayed or sampled polyline. At exactly W=0,
-the arm/loop parameterization degenerates, so V3.8 directly writes a planar
+the arm/loop parameterization degenerates, so V3.9 directly writes a planar
 ring with the requested serialized closed length instead.
 
 The canonical dimensionless curve is fitted first, periodically smoothed once
@@ -109,31 +109,31 @@ Examples
 --------
 Open the GUI::
 
-    python generate_sc_xyzV3_8.py
+    python generate_sc_xyzV3_9.py
 
 Generate the default 1071-Angstrom curve with writhe -3 and final radius >= 13::
 
-    python generate_sc_xyzV3_8.py -L 1071 -w -3 -n 2000
+    python generate_sc_xyzV3_9.py -L 1071 -w -3 -n 2000
 
 Retain a user-provided 25-degree opening angle::
 
-    python generate_sc_xyzV3_8.py -L 1071 -w -3 -a 25 -n 2000
+    python generate_sc_xyzV3_9.py -L 1071 -w -3 -a 25 -n 2000
 
 Choose the angle by the objective of the curve actually written (slower)::
 
-    python generate_sc_xyzV3_8.py -L 714 -w -1 --angle-search accurate -n 2000
+    python generate_sc_xyzV3_9.py -L 714 -w -1 --angle-search accurate -n 2000
 
 Generate the fully reoptimized zero-H0 family::
 
-    python generate_sc_xyzV3_8.py -L 1071 -w -3 --zero-h0 -n 2000
+    python generate_sc_xyzV3_9.py -L 1071 -w -3 --zero-h0 -n 2000
 
 Generate a loosely interwound curve, three nodes and four round lobes::
 
-    python generate_sc_xyzV3_8.py -L 1285.2 -w -2 --family loose -n 2000
+    python generate_sc_xyzV3_9.py -L 1285.2 -w -2 --family loose -n 2000
 
 Generate the direct W = 0 planar-ring limit::
 
-    python generate_sc_xyzV3_8.py -L 1071 -w 0 --zero-h0 -n 2000
+    python generate_sc_xyzV3_9.py -L 1071 -w 0 --zero-h0 -n 2000
 
 The output is plain coordinate XYZ: one ``x y z`` row per point, without an
 atom-count header.  Load it into Curve It as a *closed* curve.
@@ -182,7 +182,7 @@ except Exception as package_exc:
 PointArray = np.ndarray
 
 TOOL_NAME = "Generate SC"
-TOOL_VERSION = "V3_8"
+TOOL_VERSION = "V3_9"
 
 DEFAULT_TOTAL_LENGTH = 1071.0
 DEFAULT_WRITHE = -3.0
@@ -755,7 +755,7 @@ def _set_active_phase_trim(value: float) -> None:
     global _ACTIVE_PHASE_TRIM
     value = float(value)
     if not math.isfinite(value) or value < 0.0 or value >= 1.0:
-        raise ValueError("V3_8 phase trim must satisfy 0 <= trim < 1.")
+        raise ValueError("V3_9 phase trim must satisfy 0 <= trim < 1.")
     _ACTIVE_PHASE_TRIM = value
 
 
@@ -798,7 +798,7 @@ def _phase_sweep(target_writhe: float) -> float:
 def _xz_symmetry_rotation(target_writhe: float) -> float:
     """Return the z-axis rotation that restores the legacy symmetric xz view.
 
-    V3.8 removes equal phase from the two ends of the V2.2 arm sweep. Rotating
+    V3.9 removes equal phase from the two ends of the V2.2 arm sweep. Rotating
     by half of that removed phase places both terminal loops symmetrically
     about their legacy fixed-xz directions. As in V2.2, the projected symmetry
     is z-reflection for odd integer writhe and central inversion for even
@@ -954,7 +954,7 @@ def analyze_contour_landmarks(
     """Locate reproducible tips and interior fixed-xz lobe peaks.
 
     The V2.2 landmarks occur where each arm reaches an x extremum between two
-    neighboring fixed-xz crossings. For phase-trimmed V3.8 geometry, account
+    neighboring fixed-xz crossings. For phase-trimmed V3.9 geometry, account
     for both the shortened arm sweep and the final symmetry rotation before
     finding the nearest serialized output vertices.
     """
@@ -1973,7 +1973,7 @@ def _find_projection_robust_auto_candidate(
 
     if not tested:
         raise RuntimeError(
-            "V3_8 could not find a feasible shortened-phase plectoneme for this integer writhe."
+            "V3_9 could not find a feasible shortened-phase plectoneme for this integer writhe."
         )
     best = min(
         tested,
@@ -2018,7 +2018,7 @@ def _find_projection_robust_manual_candidate(
         if float(stats["target_fraction"]) >= float(qualifying_fraction):
             return float(trim), candidate, stats, evaluations
     if not tested:
-        raise RuntimeError("The provided opening angle is infeasible for all tested V3_8 phase trims.")
+        raise RuntimeError("The provided opening angle is infeasible for all tested V3_9 phase trims.")
     best = min(
         tested,
         key=lambda item: (
@@ -2429,7 +2429,7 @@ def _generate_zero_h0_ring(
     """Return the direct planar-ring limit for exactly W = 0 and H0 = 0.
 
     The ordinary plectoneme parameterization collapses when both the phase
-    sweep and H0 vanish.  V3.8 defines that single limiting case explicitly as
+    sweep and H0 vanish.  V3.9 defines that single limiting case explicitly as
     a regular N-gon sampled from a circle in the xz plane.  Its circumradius
     ``L / (2 N sin(pi/N))`` makes the unrounded closed polygon length exactly
     ``L``; a short radius correction loop preserves that length after decimal
@@ -3276,7 +3276,7 @@ def generate_sc_points(
     ellipse_ratio: Optional[float] = None,
     lobe_aspect: Optional[float] = None,
 ) -> SCGenerationResult:
-    """Generate an optimized/manual plectoneme with V3_8 multi-view screening.
+    """Generate an optimized/manual plectoneme with V3_9 multi-view screening.
 
     ``family="loose"`` instead writes the loosely interwound curve of
     ``_generate_loose_interwound`` from ``nodes``, ``ellipse_ratio`` and ``lobe_aspect``.
@@ -3475,7 +3475,7 @@ def _landmark_line(label: str, landmark: ContourLandmark) -> str:
 
 
 def generation_summary(result: SCGenerationResult) -> str:
-    """Return a compact V3_8 report for the command line and GUI."""
+    """Return a compact V3_9 report for the command line and GUI."""
 
     if result.family == FAMILY_LOOSE:
         return _loose_generation_summary(result)
@@ -3669,7 +3669,7 @@ def generation_summary(result: SCGenerationResult) -> str:
     lines.extend(
         [
             "",
-            "V3_8 projection-robustness diagnostics",
+            "V3_9 projection-robustness diagnostics",
             "Arm phase trimming           = {0}".format(
                 "not applicable (direct ring)"
                 if ring_mode
@@ -3718,11 +3718,11 @@ def generation_summary(result: SCGenerationResult) -> str:
         fraction = float(stats["target_fraction"])
         if result.screening_mode == SCREENING_MODE_MINIMUM_RADIUS:
             screening_result = (
-                "V3_8 final-radius-constrained qualifying views = {0:.2%} "
+                "V3_9 final-radius-constrained qualifying views = {0:.2%} "
                 "(maximum at feasible phase trim)".format(fraction)
             )
         else:
-            screening_result = "V3_8 qualifying-views target (>={0:.6g}%) = {1}".format(
+            screening_result = "V3_9 qualifying-views target (>={0:.6g}%) = {1}".format(
                 100.0 * result.projection_majority_target,
                 "diagnostic only because trimming is disabled"
                 if not result.trim_enabled
@@ -4426,7 +4426,7 @@ def run_gui() -> None:
         "cubic-Bezier closing loops; they are not inferred from plotted or sampled curves. "
         "The full angle, loop-control, writhe, trim, smoothing, scaling, and serialized-"
         "coordinate checks are repeated for nonzero W. At exactly W = 0, the arm/loop "
-        "parameterization collapses, so V3.8 directly writes a regular planar ring with "
+        "parameterization collapses, so V3.9 directly writes a regular planar ring with "
         "the requested closed length; opening-angle, trimming, and screening settings "
         "are then not applicable.\n\n"
         "Default: off (H0 = 2R).",
