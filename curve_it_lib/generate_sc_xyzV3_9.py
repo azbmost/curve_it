@@ -80,7 +80,8 @@ circular) and fits the lobe aspect. A loose node carries less than one unit of
 writhe, so N exceeds |W|: three nodes with round lobes reach |W| from 1.51
 (circular) to 2.89 (nearly flat), and the default N = floor(|W|) + 1 reaches every
 integer |W| up to 10. ``--minimum-final-radius`` then bounds half the closest
-axis-axis approach between points more than half a lobe apart along the contour.
+axis-axis approach between points more than half a lobe apart along the contour,
+and the window holds it at its default, so only L and W need setting there.
 Angle objectives, phase trimming, H0 and projection screening do not apply; the
 signed-crossing histogram over 256 views is reported for information.
 
@@ -3061,7 +3062,8 @@ def _generate_loose_interwound(
         raise RuntimeError(
             "The closest self-approach {0:.6g} is below twice the minimum final measured radius "
             "{1:.6g}: the loose curve's strands come too close at this length. Use a longer L, "
-            "more nodes or a lower |W|, or clear the radius.".format(closest, minimum_final_radius)
+            "more nodes or a lower |W|; on the command line, --minimum-final-radius sets this "
+            "guard.".format(closest, minimum_final_radius)
         )
     total_curvature, maximum_local_curvature, bending_energy_integral = evaluate_curvature_metrics(
         points,
@@ -3876,7 +3878,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help=(
             "Maximize qualifying views while keeping the final measured central-arm "
             "superhelix radius at least this large. Default for eligible integer-W "
-            "trimmed designs: {0:g}.".format(DEFAULT_MINIMUM_FINAL_RADIUS)
+            "trimmed designs: {0:g}. Loose family: only a clash guard, stopping a curve whose "
+            "closest self-approach is under twice this; default {0:g}, which the window "
+            "holds.".format(DEFAULT_MINIMUM_FINAL_RADIUS)
         ),
     )
     parser.add_argument(
@@ -4115,6 +4119,8 @@ def run_gui() -> None:
     trim_enabled_var = tk.BooleanVar(value=True)
     qualifying_views_var = tk.StringVar(value=str(DEFAULT_QUALIFYING_VIEWS_PERCENT))
     minimum_final_radius_var = tk.StringVar(value=str(DEFAULT_MINIMUM_FINAL_RADIUS))
+    # Shown, greyed out, while the loose family holds the default, so the tight value survives.
+    loose_minimum_radius_var = tk.StringVar(value=str(DEFAULT_MINIMUM_FINAL_RADIUS))
     points_var = tk.StringVar(value=str(DEFAULT_NUM_POINTS))
     precision_var = tk.StringVar(value=str(DEFAULT_PRECISION))
     angle_search_var = tk.StringVar(value=DEFAULT_ANGLE_SEARCH)
@@ -4171,7 +4177,10 @@ def run_gui() -> None:
             "trim whose radius, measured from the final serialized central 90% of the "
             "arms, remains at least this value. This maximizes qualifying views within "
             "the phase-trim family. Clear the field to use Qualifying views instead.\n\n"
-            "Default: {0:g} length units.".format(DEFAULT_MINIMUM_FINAL_RADIUS),
+            "Default: {0:g} length units.\n\nLoose family: not a shape setting, so the field "
+            "is greyed out and held at {0:g}. It only stops a curve whose closest self-approach, "
+            "between points more than half a lobe apart along the contour, is under twice this "
+            "value; the report gives that approach.".format(DEFAULT_MINIMUM_FINAL_RADIUS),
         ),
         "Points:": (
             "Points (--num-points)",
@@ -4207,11 +4216,13 @@ def run_gui() -> None:
             "N times (nodes) between N + 1 equal lobes. One shape parameter is root-found so "
             "the written curve has exactly the requested Gauss writhe.\n\nA loose node carries "
             "less than one unit of writhe, so N exceeds |W| (default floor(|W|) + 1): W = -2 "
-            "gives three nodes and four lobes. Opening-angle objectives, angle search, trimming, "
-            "H0 and qualifying views do not apply. Minimum final measured radius then bounds "
-            "half the closest axis-axis approach between points more than half a lobe apart "
-            "along the contour.\n\nThe filename records the nodes and Loose, for example "
-            "sc_L1285p2_Wm2_N3_Loose.xyz.",
+            "gives three nodes and four lobes. Only L and W need setting: Nodes and the shape "
+            "have automatic defaults, and opening-angle objectives, angle search, trimming, H0 "
+            "and qualifying views do not apply. The minimum final measured radius is held at "
+            "{0:g} and only stops a curve whose closest axis-axis approach, between points more "
+            "than half a lobe apart along the contour, is under twice that. Points and Precision "
+            "set the output as for the tight family.\n\nThe filename records the nodes and Loose, "
+            "for example sc_L1285p2_Wm2_N3_Loose.xyz.".format(DEFAULT_MINIMUM_FINAL_RADIUS),
         ),
     )
     family_row = ttk.Frame(family_frame)
@@ -4497,12 +4508,15 @@ def run_gui() -> None:
         trimming_enabled = bool(trim_enabled_var.get()) and not ring_mode and not loose
         radius_mode = bool(minimum_final_radius_var.get().strip())
         qualifying_state = "!disabled" if trimming_enabled and not radius_mode else "disabled"
-        radius_state = "!disabled" if trimming_enabled or loose else "disabled"
+        radius_state = "!disabled" if trimming_enabled else "disabled"
         trim_checkbutton.state(("disabled",) if ring_mode or loose else ("!disabled",))
         qualifying_views_label.state((qualifying_state,))
         qualifying_views_entry.state((qualifying_state,))
         minimum_radius_label.state((radius_state,))
         minimum_radius_entry.state((radius_state,))
+        minimum_radius_entry.configure(
+            textvariable=loose_minimum_radius_var if loose else minimum_final_radius_var
+        )
 
     def automatic_name() -> str:
         if loose_selected():
@@ -4679,13 +4693,12 @@ def run_gui() -> None:
             ellipse_ratio = float(ratio_text) if ratio_text else None
             aspect_text = lobe_aspect_var.get().strip()
             lobe_aspect = None if ellipse_ratio is not None or not aspect_text else float(aspect_text)
-            minimum_radius_text = minimum_final_radius_var.get().strip()
             num_points = int(points_var.get().strip())
             precision = int(precision_var.get().strip())
             output = output_var.get().strip()
             if not output:
                 raise ValueError("Please specify an output file.")
-            minimum_final_radius = float(minimum_radius_text) if minimum_radius_text else None
+            minimum_final_radius = DEFAULT_MINIMUM_FINAL_RADIUS
             validate_inputs(
                 total_length,
                 target_writhe,
