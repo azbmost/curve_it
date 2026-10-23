@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_13`
+Version: `V3_14`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -181,6 +181,8 @@ The GUI has a dedicated **Tools** area for utility tools.
 ```bash
 python3 reverse_curve_it.py curved.pdb straight_template.pdb -o recovered_curve.xyz
 python3 reverse_curve_it.py curved.pdb straight_template.pdb --path-type closed --points 400
+python3 reverse_curve_it.py curved.pdb straight_template.pdb --estimate-twist
+python3 reverse_curve_it.py curved.pdb straight_template.pdb --estimate-twist --twist-range -7200 7200
 python3 curve_it.py --reverse-curve-it curved.pdb straight_template.pdb
 python3 reverse_curve_it.py --gui
 ```
@@ -191,7 +193,13 @@ The tool uses the same principal axis and atom groups as the forward mapper. For
 
 Use the **complete original straight template**, with its original coordinates and atom set. Atoms are matched by chain, residue number, insertion code, residue name, normalized atom name and alternate location. Changed serial numbers and reordered records are fine. A mismatch stops the run by default. `--allow-missing-atoms` explicitly fits only shared IDs and ignores extra curved atoms, useful after hydrogen removal or solvent addition; the template axis and group centers still come from the complete template. Each fitted group needs at least three noncollinear shared atoms. Underdetermined groups are skipped and reported; CA-only and P-only models cannot determine the needed transforms. Supply one model per PDB; duplicate atom identities and multiple `MODEL` records are rejected.
 
-`--path-type auto` reads Curve It's saved REMARKs, otherwise uses `open`. Extra axial twist is also read from those REMARKs, otherwise assumed zero; use `--twist DEG` to override it if metadata was removed. Global helix phase and frame holonomy are absorbed by the fitted rotations and require no input. A model may be translated or rotated after curving. Refined models can be fitted approximately; the report gives atom-weighted group RMSD and the largest group RMSD, and flags fits above 0.1 A. Axis positions extrapolated from small groups can be sensitive even when their fit errors are small.
+`--path-type auto` reads Curve It's saved REMARKs, otherwise uses `open`. Extra axial twist is read from those REMARKs when available; **without saved twist, it is estimated from the two models' atomic coordinates**. `--estimate-twist` forces a geometric estimate even when a saved value exists, and `--twist DEG` uses an explicit known angle instead. These two options are mutually exclusive. The report states the twist's source: `metadata`, `estimated`, or `explicit`. In the GUI, **Extra twist (deg)** takes `auto`, `estimate`, or a number such as `360`.
+
+Twist estimation searches signed **total extra twist in degrees**, retaining whole turns, within `--twist-range MIN MAX` (default `-3600 3600`, ten turns in either direction). Widen that range for larger twists; the GUI's **Twist search range (deg)** takes the same two bounds separated by a comma. Curve It applies a different extra rotation to each atom according to its axial station, before the common group transform. The estimator varies that same per-atom twist and fits each group's rotation and translation at every trial value, minimizing the total squared atomic coordinate residual. This uses the within-group geometry and avoids confusing extra twist with curve bending, global phase, frame holonomy or repeated traversals. It requires only NumPy. The search samples the requested interval and refines each sampled local minimum. The result is a best fit **within that stated interval**, rather than a guarantee against aliases outside it.
+
+An estimate is written into the console/GUI report and the XYZ comments, alongside an **approximate standard error** in degrees. This comes from the curvature of the minimized residual and the residual coordinate variance, with a floor for PDB rounding. It describes local fit noise under the uniform extra-twist model; refinement, nonuniform twist or a different template can bias it beyond that error. The tool stops instead of writing an arbitrary estimate when the geometry is uninformative, competing twist values fit within the noise, or the best fit/its uncertainty reaches a search bound. If a group has no internal axial span, its twist can be absorbed entirely by its fitted rigid rotation; a model consisting only of such groups cannot be estimated by this method. Enter a known `--twist` to bypass estimation, or narrow an ambiguous search using independent knowledge of the model. A failed estimate does not overwrite an existing output XYZ.
+
+Global helix phase and frame holonomy are absorbed by the fitted rotations and require no input. A model may be translated or rotated after curving. Refined models can be fitted approximately; the report gives atom-weighted group RMSD and the largest group RMSD, and flags fits above 0.1 A. Axis positions extrapolated from small groups can be sensitive even when their fit errors are small.
 
 This recovers the **occupied, mapped path**, at the groups' stations, rather than the original curve file. PDB rounding limits accuracy. Original vertex locations, sharp bends between groups, unused path sections and endpoints are unobservable. Open outputs run between the first and last fitted stations without extrapolation; closing a loop joins its last sample back to its first. Multiple wraps remain multiple traversals. The tool does not undo the original curve scaling, infer its original seam, or smooth refinement noise. A different straight template can bias the axis even with small residuals. Only NumPy is required beyond the existing Curve It code; Tkinter is needed for the window.
 

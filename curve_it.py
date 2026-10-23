@@ -142,7 +142,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_13"
+APP_VERSION = "V3_14"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -2533,7 +2533,7 @@ def launch_gui() -> None:
             "Reverse Curve It",
             "Recover a centerline XYZ from a curved PDB and the original straight PDB template.\n\n"
             "The tool reverses local atom-group transforms, keeping the curve in the curved model's coordinate frame, in Angstrom. It matches atoms by chain, residue, atom name and alternate location, so record order and serial numbers may change.\n\n"
-            "Use the complete original straight template. Curve It's saved REMARKs supply path type and extra twist when available; both can be overridden. Global phase is inferred. The report gives group fit errors for checking refined models.\n\n"
+            "Use the complete original straight template. Curve It's saved REMARKs supply path type and extra twist when available. Without saved twist, the tool estimates it from the atomic coordinates; enter estimate to force this fit, or a number to use a known angle. The report gives the estimated signed total twist, an approximate standard error and group fit errors. Global phase needs no input.\n\n"
             "The output samples the occupied path. Original vertices, unused endpoints and gaps cannot be reconstructed from the two models. Closed curves omit the repeated first point; select closed when loading that XYZ into Curve It. Groups need at least three noncollinear matched atoms, so a CA-only or P-only model is insufficient."
         ),
         "multicolor_split": (

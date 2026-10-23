@@ -312,6 +312,149 @@ class FileAndCliTests(unittest.TestCase):
             self.assertIn(text, run.stderr)
 
 
+def without_remarks(text):
+    return "\n".join(line for line in text.splitlines() if not line.startswith("REMARK"))
+
+
+class TwistEstimationTests(unittest.TestCase):
+    def test_signed_multiturn_twist_is_estimated_when_metadata_is_missing(self):
+        for nucleic in (True, False):
+            template = template_pdb(nucleic)
+            for path in ("open", "closed"):
+                for twist in (-2345.0, -360.0, 0.0, 137.5, 720.0, 1800.0):
+                    with self.subTest(nucleic=nucleic, path=path, twist=twist):
+                        curved, mapped = forward(template, path, twist=twist,
+                                                 phase=128, start=.37)
+                        result = reverse.recover_curve(without_remarks(curved), template,
+                                                       path_type=path)
+                        self.assertEqual(result.twist_source, "estimated")
+                        self.assertAlmostEqual(result.twist, twist, delta=.7)
+                        estimate = result.twist_estimate
+                        self.assertGreater(estimate.standard_error, 0)
+                        self.assertLess(estimate.standard_error, .4)
+                        self.assertLess(abs(result.twist - twist), 4 * estimate.standard_error)
+                        expected = expected_samples(result, template, mapped)
+                        self.assertLess(np.linalg.norm(result.points - expected, axis=1).max(), .02)
+                        self.assertIn("Estimated --twist:", reverse.describe(result))
+
+    def test_saved_and_explicit_twist_keep_precedence_unless_estimation_requested(self):
+        template = template_pdb()
+        curved, _ = forward(template, "closed", twist=720, phase=217)
+        stale = curved.replace("twist=720 deg", "twist=-360 deg")
+        recorded = reverse.recover_curve(stale, template)
+        self.assertEqual((recorded.twist, recorded.twist_source), (-360, "metadata"))
+        self.assertIsNone(recorded.twist_estimate)
+        explicit = reverse.recover_curve(stale, template, twist=720)
+        self.assertEqual((explicit.twist, explicit.twist_source), (720, "explicit"))
+        inferred = reverse.recover_curve(stale, template, estimate_twist=True)
+        self.assertAlmostEqual(inferred.twist, 720, delta=.3)
+        self.assertEqual(inferred.twist_source, "estimated")
+        with self.assertRaisesRegex(ValueError, "either"):
+            reverse.recover_curve(curved, template, twist=720, estimate_twist=True)
+
+    def test_estimation_is_invariant_to_rigid_motion_and_record_order(self):
+        template = template_pdb()
+        curved, _ = forward(template, "closed", twist=-1080, phase=137, start=.31)
+        theta = .7
+        rotation = np.array([[np.cos(theta), 0, np.sin(theta)], [0, 1, 0],
+                             [-np.sin(theta), 0, np.cos(theta)]])
+        moved = "\n".join(curve_it.update_pdb_line_coords(a.line,
+            a.coord @ rotation + np.array([52, -31, 17]))
+            for a in reversed(curve_it.parse_pdb_atoms(curved)))
+        result = reverse.recover_curve(moved, template, path_type="closed")
+        self.assertAlmostEqual(result.twist, -1080, delta=.4)
+
+    def test_estimation_with_missing_atoms_and_native_spacing_multiwrap(self):
+        template = template_pdb()
+        curved, _ = forward(template, "closed", twist=1137, scale_mode="60", start=.2)
+        edited = "\n".join(a.line for a in curve_it.parse_pdb_atoms(curved)
+                            if a.atom_name_norm != "C1'")
+        result = reverse.recover_curve(edited, template, path_type="closed",
+                                       allow_missing_atoms=True)
+        self.assertEqual(result.missing_atoms, 80)
+        self.assertAlmostEqual(result.twist, 1137, delta=.4)
+
+    def test_refinement_noise_increases_reported_uncertainty(self):
+        template = template_pdb()
+        curved, _ = forward(template, twist=450, phase=83)
+        clean = reverse.recover_curve(curved, template, estimate_twist=True)
+        rng = np.random.default_rng(23)
+        noisy = "\n".join(curve_it.update_pdb_line_coords(a.line,
+            a.coord + rng.normal(0, .01, 3)) for a in curve_it.parse_pdb_atoms(curved))
+        result = reverse.recover_curve(noisy, template)
+        self.assertGreater(result.twist_estimate.standard_error,
+                           10 * clean.twist_estimate.standard_error)
+        self.assertAlmostEqual(result.twist, 450, delta=4 * result.twist_estimate.standard_error)
+
+    def test_twist_range_can_be_expanded_beyond_ten_turns(self):
+        template = template_pdb()
+        curved, _ = forward(template, twist=4320)
+        with self.assertRaisesRegex(ValueError, "search bound"):
+            reverse.recover_curve(curved, template, estimate_twist=True)
+        result = reverse.recover_curve(curved, template, estimate_twist=True,
+                                       twist_range=(-7200, 7200))
+        self.assertAlmostEqual(result.twist, 4320, delta=.3)
+        self.assertEqual(result.twist_estimate.search_range, (-7200, 7200))
+
+    def test_bad_ranges_are_rejected_before_output_is_touched(self):
+        template = template_pdb(False)
+        curved, _ = forward(template)
+        with tempfile.TemporaryDirectory() as tmp:
+            straight, bent, output = (Path(tmp) / name for name in ("s.pdb", "c.pdb", "out.xyz"))
+            straight.write_text(template)
+            bent.write_text(curved)
+            output.write_text("keep this\n")
+            for bounds in ((10, -10), (0, 0), (float("nan"), 100), (0, float("inf")), (1,)):
+                with self.subTest(bounds=bounds), self.assertRaisesRegex(ValueError, "bounds"):
+                    reverse.recover_files(str(bent), str(straight), str(output),
+                                           estimate_twist=True, twist_range=bounds)
+                self.assertEqual(output.read_text(), "keep this\n")
+
+    def test_same_station_geometry_is_unidentifiable(self):
+        x = np.array([[1, 0, 0], [0, 2, 0], [-1, 0, 0], [0, -1, 0]], dtype=float)
+        with self.assertRaisesRegex(ValueError, "same axial station"):
+            reverse.estimate_extra_twist([x, x], [x, x + [1, 2, 3]], 10)
+
+    def test_ambiguous_angles_require_a_narrower_range(self):
+        # Three atoms with parallel radial directions have the same pairwise
+        # distances for positive and negative twist. Each triangle can rotate
+        # rigidly onto its mirror, so this geometry cannot determine the sign.
+        x = np.array([[1, 0, -1], [2, 0, 0], [1.5, 0, 1]], dtype=float)
+        phi = np.deg2rad(300) * x[:, 2] / 10
+        y = x.copy()
+        y[:, 0], y[:, 1] = np.cos(phi) * x[:, 0], np.sin(phi) * x[:, 0]
+        with self.assertRaisesRegex(ValueError, "Multiple twist values"):
+            reverse.estimate_extra_twist([x, x], [y, y + [4, 3, 2]], 10, (-500, 500))
+        inferred = reverse.estimate_extra_twist([x, x], [y, y + [4, 3, 2]], 10, (0, 500))
+        self.assertAlmostEqual(inferred.degrees, 300, delta=.001)
+
+    def test_all_cli_launchers_can_force_an_estimate_and_report_it(self):
+        template = template_pdb(False)
+        curved, _ = forward(template, "closed", twist=-720, phase=217)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            straight, bent = folder / "s.pdb", folder / "c.pdb"
+            straight.write_text(template)
+            bent.write_text(curved.replace("twist=-720 deg", "twist=0 deg"))
+            for command in (("reverse_curve_it.py",), ("curve_it_lib/reverse_curve_it.py",),
+                            ("curve_it.py", "--reverse-curve-it")):
+                run = subprocess.run([sys.executable, str(REPO / command[0]), *command[1:],
+                    str(bent), str(straight), "--estimate-twist", "--twist-range", "-1200", "1200"],
+                    cwd=folder, text=True, capture_output=True)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                self.assertIn("Twist source: estimated", run.stdout)
+                self.assertIn("approximate standard error:", run.stdout)
+                output = folder / "c_curve.xyz"
+                self.assertIn("Estimated --twist:", output.read_text())
+                estimated = float(run.stdout.split("Estimated --twist: ")[1].split()[0])
+                self.assertAlmostEqual(estimated, -720, delta=.7)
+
+    def test_cli_rejects_conflicting_twist_modes(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            reverse.build_parser().parse_args(["--twist", "720", "--estimate-twist"])
+        self.assertEqual(caught.exception.code, 2)
+
+
 def descendants(widget):
     for child in widget.winfo_children():
         yield child
@@ -321,6 +464,55 @@ def descendants(widget):
 @unittest.skipUnless(os.environ.get("CURVE_IT_GUI_TESTS") == "1",
                      "Set CURVE_IT_GUI_TESTS=1 with access to a Tk display.")
 class GuiTests(unittest.TestCase):
+    def test_estimation_mode_and_explicit_override_in_the_window(self):
+        import tkinter as tk
+
+        with tempfile.TemporaryDirectory() as tmp:
+            straight, curved, output = (Path(tmp) / name for name in ("s.pdb", "c.pdb", "out.xyz"))
+            straight.write_text(template_pdb(False))
+            body, _ = forward(straight.read_text(), "closed", twist=-720, phase=217)
+            curved.write_text(body.replace("twist=-720 deg", "twist=0 deg"))
+            args = reverse.build_parser().parse_args([str(curved), str(straight),
+                "--estimate-twist", "--twist-range", "-1200", "1200", "-o", str(output), "--gui"])
+            root = tk.Tk()
+            root.withdraw()
+
+            def exercise():
+                entries = {int(w.grid_info()["row"]): w for w in root.winfo_children()
+                           if w.winfo_class() == "TEntry"}
+                twist, bounds = entries[5], entries[6]
+                button = [w for w in descendants(root) if w.winfo_class() == "TButton"
+                          and w.cget("text") == "Recover curve"][0]
+                self.assertEqual(twist.get(), "estimate")
+                self.assertEqual(bounds.get(), "-1200, 1200")
+                button.invoke()
+                self.assertTrue(output.is_file(), showerror.call_args)
+                self.assertIn("Twist source: estimated", output.read_text())
+                value = float(output.read_text().split("Estimated --twist: ")[1].split()[0])
+                self.assertAlmostEqual(value, -720, delta=.7)
+                twist.delete(0, "end")
+                twist.insert(0, "-720")
+                self.assertEqual(str(bounds.cget("state")), "disabled")
+                root.setvar(str(bounds.cget("textvariable")), "unused")
+                button.invoke()
+                self.assertIn("Twist source: explicit", output.read_text())
+                twist.delete(0, "end")
+                twist.insert(0, "auto")
+                self.assertEqual(str(bounds.cget("state")), "normal")
+                root.setvar(str(bounds.cget("textvariable")), "-1200, 1200")
+                curved.write_text(without_remarks(curved.read_text()))
+                button.invoke()
+                self.assertIn("Twist source: estimated", output.read_text())
+
+            try:
+                with mock.patch("tkinter.Tk", return_value=root), \
+                        mock.patch.object(root, "mainloop", side_effect=exercise), \
+                        mock.patch("tkinter.messagebox.showerror") as showerror:
+                    reverse.run_gui(args)
+                showerror.assert_not_called()
+            finally:
+                root.destroy()
+
     def test_generation_and_all_field_help_buttons(self):
         import tkinter as tk
 
@@ -339,7 +531,7 @@ class GuiTests(unittest.TestCase):
                 root.update_idletasks()
                 buttons = [w for w in descendants(root) if w.winfo_class() == "TButton"]
                 helps = [w for w in buttons if w.cget("text") == "?"]
-                self.assertEqual(len(helps), 7)
+                self.assertEqual(len(helps), 8)
                 for button in helps:
                     button.invoke()
                 [w for w in buttons if w.cget("text") == "Recover curve"][0].invoke()
@@ -355,7 +547,7 @@ class GuiTests(unittest.TestCase):
                         mock.patch("tkinter.messagebox.showinfo") as showinfo:
                     reverse.run_gui(args)
                 showerror.assert_not_called()
-                self.assertEqual(showinfo.call_count, 7)
+                self.assertEqual(showinfo.call_count, 8)
             finally:
                 root.destroy()
 

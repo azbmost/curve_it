@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 import re
 import sys
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -29,7 +29,16 @@ if __package__ in (None, ""):
 import curve_it
 
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
+DEFAULT_TWIST_RANGE = (-3600.0, 3600.0)
+
+
+@dataclass
+class TwistEstimate:
+    degrees: float
+    standard_error: float
+    search_range: Tuple[float, float]
+    fitted_groups: int
 
 
 @dataclass
@@ -47,6 +56,8 @@ class RecoveryResult:
     extra_atoms: int
     skipped_groups: int
     notes: List[str]
+    twist_source: str = "explicit"
+    twist_estimate: Optional[TwistEstimate] = None
 
     @property
     def rmsd(self) -> float:
@@ -135,9 +146,140 @@ def _fit_axis_point(source: np.ndarray, target: np.ndarray):
     return origin, rmsd
 
 
+class _TwistFit:
+    """Profile out each group's rigid motion for a trial total axial twist.
+
+    Use relative atom stations within a group: the omitted rotation at the
+    group station is absorbed by its free rigid rotation. This makes the fit
+    independent of curve shape, helix phase, frame holonomy and wrap count.
+    Ragged groups are padded/masked to batch the small SVDs with NumPy alone.
+    """
+
+    def __init__(self, pairs, axis_length):
+        count = len(pairs)
+        width = max(len(x) for x, _ in pairs)
+        self.source = np.zeros((count, width, 3))
+        self.target = np.zeros_like(self.source)
+        self.mask = np.zeros((count, width, 1))
+        self.sizes = np.array([len(x) for x, _ in pairs])[:, None, None]
+        for i, (x, y) in enumerate(pairs):
+            self.source[i, :len(x)] = x
+            self.target[i, :len(x)] = y
+            self.mask[i, :len(x)] = 1
+        self.target -= self.target.sum(axis=1, keepdims=True) / self.sizes
+        self.target *= self.mask
+        self.fraction = self.source[:, :, 2] / axis_length
+        self.dof = max(1, int(np.sum(3 * self.sizes - 6)) - 1)
+
+    def __call__(self, degrees):
+        phi = np.deg2rad(degrees) * self.fraction
+        c, s = np.cos(phi), np.sin(phi)
+        trial = self.source.copy()
+        x, y = self.source[:, :, 0], self.source[:, :, 1]
+        trial[:, :, 0] = c * x - s * y
+        trial[:, :, 1] = s * x + c * y
+        trial -= trial.sum(axis=1, keepdims=True) / self.sizes
+        trial *= self.mask
+        u, _, vt = np.linalg.svd(np.einsum("gni,gnj->gij", trial, self.target))
+        sign = np.where(np.linalg.det(u @ vt) < 0, -1.0, 1.0)
+        u[:, :, -1] *= sign[:, None]
+        residual = trial @ (u @ vt) - self.target
+        return float(np.sum(residual ** 2))
+
+
+def _golden_minimum(objective, left, right):
+    ratio = (np.sqrt(5.0) - 1.0) / 2.0
+    a = right - ratio * (right - left)
+    b = left + ratio * (right - left)
+    fa, fb = objective(a), objective(b)
+    for _ in range(96):
+        if right - left < 1e-5:
+            break
+        if fa < fb:
+            right, b, fb = b, a, fa
+            a = right - ratio * (right - left)
+            fa = objective(a)
+        else:
+            left, a, fa = a, b, fb
+            b = left + ratio * (right - left)
+            fb = objective(b)
+    return (a, fa) if fa < fb else (b, fb)
+
+
+def estimate_extra_twist(source_groups, target_groups, axis_length,
+                         twist_range=DEFAULT_TWIST_RANGE) -> TwistEstimate:
+    """Fit Curve It's per-atom --twist without curve or parameter metadata.
+
+    Minimize coordinate residuals after fitting each group's proper rigid
+    transform. Search all sampled basins in the stated bounded range. The
+    local standard error profiles out rigid motions and assumes independent,
+    equal coordinate errors; refinement/systematic changes can bias this fit.
+    """
+    if (len(twist_range) != 2 or not np.isfinite(twist_range).all()
+            or twist_range[0] >= twist_range[1]
+            or not np.isfinite(float(twist_range[1]) - float(twist_range[0]))):
+        raise ValueError("Twist search range needs two finite increasing bounds in degrees.")
+    if not np.isfinite(axis_length) or axis_length <= 1e-6:
+        raise ValueError("Template axis length must be finite and positive for twist estimation.")
+    low, high = map(float, twist_range)
+    pairs = [(x, y) for x, y in zip(source_groups, target_groups)
+             if _fit_axis_point(x, y) is not None]
+    if len(pairs) < 2:
+        raise ValueError("Twist estimation needs at least two groups with three "
+                         "noncollinear matched atoms each. CA-only and P-only models "
+                         "are insufficient.")
+    span = max(float(np.ptp(x[:, 2])) for x, _ in pairs)
+    if span <= 1e-8:
+        raise ValueError("Extra twist is unidentifiable: atoms within each group have "
+                         "the same axial station. Supply --twist explicitly.")
+    # Resolve at most 15 degrees of relative rotation across the widest group
+    # per grid step, then refine each local minimum, not just the best grid row.
+    steps = (high - low) * (span / axis_length) / 15
+    if not np.isfinite(steps) or steps > 2048:
+        raise ValueError("Twist search range is too broad for this template. "
+                         "Choose a narrower --twist-range.")
+    count = max(65, int(np.ceil(steps)) + 1)
+    objective = _TwistFit(pairs, axis_length)
+    grid = np.linspace(low, high, count)
+    scores = np.array([objective(w) for w in grid])
+    minima = np.flatnonzero((scores[1:-1] <= scores[:-2])
+                           & (scores[1:-1] <= scores[2:])) + 1
+    candidates = [(low, scores[0]), (high, scores[-1])]
+    candidates += [_golden_minimum(objective, grid[i-1], grid[i+1]) for i in minima]
+    best, score = min(candidates, key=lambda pair: pair[1])
+    # A floor reflects standard PDB's 0.001 A coordinate precision. This also
+    # avoids claiming zero uncertainty when serialized points happen to fit exactly.
+    variance = max(score / objective.dof, 0.001 ** 2 / 12)
+    if np.ptp(scores) <= 9 * variance:
+        raise ValueError("Extra twist is poorly constrained by these coordinates over "
+                         "the search range. Supply --twist explicitly.")
+    edge = min(best - low, high - best)
+    if edge < max(1e-4, (high - low) * 1e-6):
+        raise ValueError("Twist estimate reaches a search bound. Widen --twist-range "
+                         "or supply --twist explicitly.")
+    h = min(max(0.01, (high - low) * 1e-6), edge / 2)
+    information = (objective(best + h) + objective(best - h) - 2 * score) / (2 * h * h)
+    if information <= 0:
+        raise ValueError("Extra twist is unidentifiable from the group fits. "
+                         "Supply --twist explicitly.")
+    error = float(np.sqrt(variance / information))
+    if error > (high - low) / 6:
+        raise ValueError("Extra twist is poorly constrained by these coordinates. "
+                         "Supply --twist explicitly.")
+    if edge < 3 * error:
+        raise ValueError("Twist estimate uncertainty overlaps a search bound. "
+                         "Widen --twist-range or supply --twist explicitly.")
+    if any(abs(w - best) > 0.01 and q <= score + 9 * variance
+           for w, q in candidates):
+        raise ValueError("Multiple twist values fit these coordinates within the fit "
+                         "uncertainty. Narrow --twist-range or supply --twist explicitly.")
+    return TwistEstimate(float(best), error, (low, high), len(pairs))
+
+
 def recover_curve(curved_text: str, template_text: str,
                   path_type: str = "auto", twist: Optional[float] = None,
-                  allow_missing_atoms: bool = False) -> RecoveryResult:
+                  allow_missing_atoms: bool = False, estimate_twist: bool = False,
+                  twist_range: Tuple[float, float] = DEFAULT_TWIST_RANGE) -> RecoveryResult:
     """Recover axis samples in the curved PDB's coordinates, in Angstrom.
 
     Atom identity, PCA, group membership, and group stations all come from the
@@ -168,13 +310,13 @@ def recover_curve(curved_text: str, template_text: str,
                          "choose closed if the model follows a loop.")
     if path_type not in ("open", "closed"):
         raise ValueError("path_type must be auto, open, or closed.")
-    if twist is None:
-        twist = float(metadata.get("twist", "0"))
-        if "twist" not in metadata:
-            notes.append("No Curve It twist metadata: assuming 0 degrees; "
-                         "supply --twist if extra axial twist was used.")
-    twist = float(twist)
-    if not np.isfinite(twist):
+    if estimate_twist and twist is not None:
+        raise ValueError("Choose either --estimate-twist or an explicit --twist, not both.")
+    twist_source = "explicit"
+    if twist is None and not estimate_twist and "twist" in metadata:
+        twist = float(metadata["twist"])
+        twist_source = "metadata"
+    if twist is not None and not np.isfinite(twist):
         raise ValueError("Twist must be a finite number of degrees.")
 
     coords = np.array([atom.coord for atom in template])
@@ -184,6 +326,25 @@ def recover_curve(curved_text: str, template_text: str,
     if axis_length <= 1e-6:
         raise ValueError("Straight template axis length is too small or degenerate.")
     groups, group_s = curve_it.build_atom_groups(template, s)
+
+    estimate = None
+    if twist is None:
+        source_groups, target_groups = [], []
+        for indices, station in zip(groups, group_s):
+            shared = [i for i in indices if _atom_key(template[i]) in target_index]
+            source = local[shared].copy()
+            source[:, 2] = s[shared] - station
+            target = np.array([curved[target_index[_atom_key(template[i])]].coord
+                               for i in shared]).reshape(-1, 3)
+            source_groups.append(source)
+            target_groups.append(target)
+        estimate = estimate_extra_twist(source_groups, target_groups, axis_length, twist_range)
+        twist = estimate.degrees
+        twist_source = "estimated"
+        notes.append("Twist was estimated from atomic coordinates under Curve It's "
+                     "uniform extra-twist model. The approximate standard error describes "
+                     "local fit noise; refinement or a different template can bias it.")
+    twist = float(twist)
 
     # The forward mapper twists *each atom* before applying the common group
     # frame. A global phase is a common rotation and needs no separate option.
@@ -257,7 +418,7 @@ def recover_curve(curved_text: str, template_text: str,
                  "Multiple wraps remain multiple traversals in the output.")
     return RecoveryResult(points, stations, errors, sizes, axis_length, path_type,
                           twist, len(source_index) - len(missing), len(missing),
-                          len(extra), skipped, notes)
+                          len(extra), skipped, notes, twist_source, estimate)
 
 
 def default_output_path(curved_path: str) -> str:
@@ -269,6 +430,15 @@ def describe(result: RecoveryResult, points: Optional[np.ndarray] = None) -> str
     points = result.points if points is None else points
     line = np.vstack([points, points[:1]]) if result.path_type == "closed" else points
     length = np.linalg.norm(np.diff(line, axis=0), axis=1).sum()
+    estimate_report = []
+    if result.twist_estimate is not None:
+        estimate = result.twist_estimate
+        estimate_report = [
+            f"Estimated --twist: {estimate.degrees:.6f} deg; approximate standard "
+            f"error: {estimate.standard_error:.6f} deg",
+            f"Twist search range: {estimate.search_range[0]:g} to "
+            f"{estimate.search_range[1]:g} deg; fitted groups: {estimate.fitted_groups}",
+        ]
     return "\n".join([
         f"Reverse Curve It {VERSION}",
         f"Matched atoms: {result.matched_atoms}",
@@ -279,6 +449,8 @@ def describe(result: RecoveryResult, points: Optional[np.ndarray] = None) -> str
         f"Sampled template stations: {result.stations[0]:.6f} to "
         f"{result.stations[-1]:.6f} A",
         f"Path type: {result.path_type}; extra twist: {result.twist:g} deg",
+        f"Twist source: {result.twist_source}",
+    ] + estimate_report + [
         f"Output: {len(points)} points; polyline length: {length:.6f} A",
         "Coordinates are in the curved PDB's frame, in Angstrom.",
     ] + result.notes)
@@ -286,7 +458,9 @@ def describe(result: RecoveryResult, points: Optional[np.ndarray] = None) -> str
 
 def recover_files(curved_path: str, template_path: str, output_path: Optional[str] = None,
                   path_type: str = "auto", twist: Optional[float] = None,
-                  points: Optional[int] = None, allow_missing_atoms: bool = False):
+                  points: Optional[int] = None, allow_missing_atoms: bool = False,
+                  estimate_twist: bool = False,
+                  twist_range: Tuple[float, float] = DEFAULT_TWIST_RANGE):
     curved = Path(curved_path).expanduser().resolve()
     template = Path(template_path).expanduser().resolve()
     output = Path(output_path or default_output_path(str(curved))).expanduser().resolve()
@@ -294,7 +468,7 @@ def recover_files(curved_path: str, template_path: str, output_path: Optional[st
         if output == source or (output.exists() and os.path.samefile(output, source)):
             raise ValueError("Output XYZ must not overwrite either input PDB.")
     result = recover_curve(curved.read_text(), template.read_text(), path_type,
-                           twist, allow_missing_atoms)
+                           twist, allow_missing_atoms, estimate_twist, twist_range)
     out_points = result.points
     if points is not None:
         out_points = curve_it.apply_curve_interpolation(
@@ -325,9 +499,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--path-type", choices=("auto", "open", "closed"), default="auto",
                         help="Auto reads Curve It REMARKs, otherwise open. XYZ does not "
                              "store closure; select this path type when reloading it.")
-    parser.add_argument("--twist", type=float, default=None,
-                        help="Extra axial twist used by Curve It, in degrees. Default: "
-                             "read REMARKs, otherwise 0. Global phase is inferred.")
+    twist_mode = parser.add_mutually_exclusive_group()
+    twist_mode.add_argument("--twist", type=float, default=None,
+                            help="Use this extra axial twist, in degrees. Default: read "
+                                 "REMARKs, otherwise estimate from atomic coordinates.")
+    twist_mode.add_argument("--estimate-twist", action="store_true",
+                            help="Estimate --twist from coordinates, ignoring saved twist "
+                                 "REMARKs. Reports an approximate standard error.")
+    parser.add_argument("--twist-range", type=float, nargs=2, metavar=("MIN", "MAX"),
+                        default=DEFAULT_TWIST_RANGE,
+                        help="Bounded search for estimated total twist, in degrees "
+                             "(default: -3600 3600). Increase for more than ten turns.")
     parser.add_argument("-n", "--points", type=int,
                         help="Optionally resample to this many points by arc length, "
                              "preserving corners. Default: keep recovered samples.")
@@ -347,14 +529,16 @@ def run_gui(args=None) -> int:
     root = tk.Tk()
     root.title("Reverse Curve It - recover a curve from a PDB model")
     root.columnconfigure(1, weight=1)
-    root.rowconfigure(9, weight=1)
+    root.rowconfigure(10, weight=1)
     values = {
         "curved": tk.StringVar(value=args.curved_pdb or ""),
         "template": tk.StringVar(value=args.template_pdb or ""),
         "output": tk.StringVar(value=args.output or (
             default_output_path(args.curved_pdb) if args.curved_pdb else "")),
         "path": tk.StringVar(value=args.path_type),
-        "twist": tk.StringVar(value="auto" if args.twist is None else str(args.twist)),
+        "twist": tk.StringVar(value="estimate" if args.estimate_twist else
+                              "auto" if args.twist is None else str(args.twist)),
+        "range": tk.StringVar(value=f"{args.twist_range[0]:g}, {args.twist_range[1]:g}"),
         "points": tk.StringVar(value="keep" if args.points is None else str(args.points)),
         "missing": tk.BooleanVar(value=args.allow_missing_atoms),
     }
@@ -369,9 +553,18 @@ def run_gui(args=None) -> int:
         "path": "Auto reads Curve It's path_type REMARK, otherwise uses open. Choose "
                 "closed for a loop; its first point is not repeated. When loading the "
                 "XYZ into Curve It, select the same path type there.",
-        "twist": "Extra axial twist in degrees used to make the curved model. Auto "
-                 "reads Curve It's REMARK, otherwise assumes 0. For example, enter 360 "
-                 "if Curve It applied one extra turn. Phase needs no input.",
+        "twist": "Enter auto to read Curve It's saved twist, or estimate it from the "
+                 "two models when it was not saved. Enter estimate to always fit the "
+                 "atomic coordinates, even if a saved twist exists. The report gives "
+                 "the signed total angle in degrees and an approximate standard error. "
+                 "Enter a number, such as 360, to use a known value instead. "
+                 "Phase needs no input.",
+        "range": "Smallest and largest total twist to search, in degrees, separated "
+                 "by a comma. The default -3600, 3600 covers ten extra turns in either "
+                 "direction. For example, -7200, 7200 covers twenty. This is used only "
+                 "when estimating twist. A fit at a bound needs a wider range. "
+                 "If multiple angles fit equally well, narrow the range using what "
+                 "you know about the model or enter a known twist explicitly.",
         "points": "Keep preserves recovered group samples. Enter a whole number, such "
                   "as 400, to resample by arc length while preserving corners. This "
                   "does not recover any missing detail or smooth a refined model.",
@@ -414,21 +607,31 @@ def run_gui(args=None) -> int:
         ttk.Button(root, text="Browse...", command=browse).grid(row=row, column=2, padx=6)
         help_button(key, row)
     for row, key, label in ((4, "path", "Path type"), (5, "twist", "Extra twist (deg)"),
-                            (6, "points", "Output points")):
+                            (6, "range", "Twist search range (deg)"),
+                            (7, "points", "Output points")):
         ttk.Label(root, text=label).grid(row=row, column=0, sticky="w", padx=10)
         if key == "path":
             widget = ttk.Combobox(root, textvariable=values[key], state="readonly",
                                   values=("auto", "open", "closed"), width=12)
         else:
-            widget = ttk.Entry(root, textvariable=values[key], width=14)
+            widget = ttk.Entry(root, textvariable=values[key], width=24 if key == "range" else 14)
+            if key == "range":
+                range_entry = widget
         widget.grid(row=row, column=1, sticky="w", pady=4)
         help_button(key, row)
     ttk.Checkbutton(root, text="Allow missing / extra atoms (fit shared IDs)",
-                    variable=values["missing"]).grid(row=7, column=0, columnspan=3,
+                    variable=values["missing"]).grid(row=8, column=0, columnspan=3,
                                                      sticky="w", padx=10, pady=4)
-    help_button("missing", 7)
+    help_button("missing", 8)
+
+    def update_range_state(*_):
+        estimated = values["twist"].get().strip().lower() in ("", "auto", "estimate")
+        range_entry.configure(state="normal" if estimated else "disabled")
+
+    values["twist"].trace_add("write", update_range_state)
+    update_range_state()
     log = tk.Text(root, width=94, height=15, wrap="word", state="disabled")
-    log.grid(row=9, column=0, columnspan=4, sticky="nsew", padx=10, pady=(0, 10))
+    log.grid(row=10, column=0, columnspan=4, sticky="nsew", padx=10, pady=(0, 10))
     status = tk.StringVar(value="Ready.")
 
     def generate():
@@ -438,14 +641,22 @@ def run_gui(args=None) -> int:
                 raise ValueError("Select both the curved PDB and its straight template.")
             twist_text = values["twist"].get().strip().lower()
             point_text = values["points"].get().strip().lower()
+            estimate = twist_text == "estimate"
+            automatic = twist_text in ("", "auto", "estimate")
+            search_range = DEFAULT_TWIST_RANGE
+            if automatic:
+                search_range = tuple(float(word.strip())
+                                     for word in values["range"].get().split(","))
+                if len(search_range) != 2:
+                    raise ValueError("Twist search range needs MIN, MAX in degrees.")
             status.set("Recovering curve...")
             root.update_idletasks()
             _, output, report = recover_files(
                 curved, template, values["output"].get().strip() or None,
                 values["path"].get(),
-                None if twist_text in ("", "auto") else float(twist_text),
+                None if automatic else float(twist_text),
                 None if point_text in ("", "keep") else int(point_text),
-                values["missing"].get())
+                values["missing"].get(), estimate, search_range)
             values["output"].set(output)
             log.configure(state="normal")
             log.delete("1.0", "end")
@@ -457,7 +668,7 @@ def run_gui(args=None) -> int:
             messagebox.showerror("Reverse Curve It", str(exc), parent=root)
 
     bar = ttk.Frame(root)
-    bar.grid(row=8, column=0, columnspan=4, sticky="ew", padx=10, pady=8)
+    bar.grid(row=9, column=0, columnspan=4, sticky="ew", padx=10, pady=8)
     ttk.Button(bar, text="Recover curve", command=generate).pack(side="left")
     ttk.Label(bar, textvariable=status).pack(side="left", padx=12)
     root.mainloop()
@@ -475,7 +686,8 @@ def main(argv=None) -> int:
     try:
         _, output, report = recover_files(
             args.curved_pdb, args.template_pdb, args.output, args.path_type,
-            args.twist, args.points, args.allow_missing_atoms)
+            args.twist, args.points, args.allow_missing_atoms,
+            args.estimate_twist, args.twist_range)
         print(report)
         print(f"Wrote: {output}")
         return 0
