@@ -70,20 +70,21 @@ Loosely interwound family
 -------------------------
 ``--family tight`` (default) is the slender plectoneme described here, whose
 fixed-xz view shows |W| crossings. ``--family loose`` writes the open "twisted
-ring" of textbook drawings instead: a stadium in xz is given ``--nodes`` N smooth
+ring" of textbook drawings instead: a stadium in xz is given ``--crossings`` N smooth
 half-twists about z, so the front view crosses itself N times between N + 1 equal
 lobes, and one shape parameter is root-found so that the written polyline has
 exactly the requested Gauss writhe. By default the lobes are round
 (``--lobe-aspect`` 1) and the ellipse ratio of the end-on cross-section (depth /
 width) is fitted; ``--ellipse-ratio R`` holds the cross-section instead (1 =
-circular) and fits the lobe aspect. A loose node carries less than one unit of
-writhe, so N exceeds |W|: three nodes with round lobes reach |W| from 1.51
+circular) and fits the lobe aspect. A loose crossing carries less than one unit
+of writhe, so N exceeds |W|: three crossings with round lobes reach |W| from 1.51
 (circular) to 2.89 (nearly flat), and the default N = floor(|W|) + 1 reaches every
 integer |W| up to 10. ``--minimum-final-radius`` then bounds half the closest
 axis-axis approach between points more than half a lobe apart along the contour,
 and the window holds it at its default, so only L and W need setting there.
 Angle objectives, phase trimming, H0 and projection screening do not apply; the
-signed-crossing histogram over 256 views is reported for information.
+signed-crossing histogram over 256 views is reported for information. A crossing
+count that cannot reach W stops the run, which names the counts that can.
 
 Arm-height H0 selection
 -----------------------
@@ -128,7 +129,7 @@ Generate the fully reoptimized zero-H0 family::
 
     python generate_sc_xyzV3_9.py -L 1071 -w -3 --zero-h0 -n 2000
 
-Generate a loosely interwound curve, three nodes and four round lobes::
+Generate a loosely interwound curve, three crossings and four round lobes::
 
     python generate_sc_xyzV3_9.py -L 1285.2 -w -2 --family loose -n 2000
 
@@ -277,7 +278,7 @@ DEFAULT_LOOSE_LOBE_ASPECT = 1.0
 LOOSE_ELLIPSE_RATIO_BOUNDS = (0.05, 1.0)
 LOOSE_LOBE_ASPECT_MINIMUM = 0.5
 LOOSE_LOBE_ASPECT_MAXIMUM = 8.0
-LOOSE_MAXIMUM_NODES = 20
+LOOSE_MAXIMUM_CROSSINGS = 20
 LOOSE_DENSE_FACTOR = 40
 LOOSE_SMOOTHING_REFERENCE_POINTS = 2000
 LOOSE_SMOOTHING_SIGMA = 70.0
@@ -316,7 +317,7 @@ def automatic_output_filename(
     zero_h0: bool = DEFAULT_ZERO_H0,
     angle_search: str = DEFAULT_ANGLE_SEARCH,
     family: str = DEFAULT_FAMILY,
-    nodes: Optional[int] = None,
+    crossings: Optional[int] = None,
     ellipse_ratio: Optional[float] = None,
     lobe_aspect: Optional[float] = None,
 ) -> str:
@@ -335,14 +336,16 @@ def automatic_output_filename(
     length_token = "L{0}".format(_filename_number(total_length))
     writhe_token = "W{0}".format(_filename_number(target_writhe))
     if str(family) == FAMILY_LOOSE:
-        node_count = _loose_default_nodes(target_writhe) if nodes is None else int(nodes)
+        crossing_count = (
+            _loose_default_crossings(target_writhe) if crossings is None else int(crossings)
+        )
         shape_suffix = ""
         if ellipse_ratio is not None:
             shape_suffix = "_ER{0}".format(_filename_number(ellipse_ratio))
         elif lobe_aspect is not None and abs(float(lobe_aspect) - DEFAULT_LOOSE_LOBE_ASPECT) > 1.0e-12:
             shape_suffix = "_LA{0}".format(_filename_number(lobe_aspect))
         return "sc_{0}_{1}_N{2}_{3}{4}.xyz".format(
-            length_token, writhe_token, node_count, LOOSE_FILENAME_TOKEN, shape_suffix
+            length_token, writhe_token, crossing_count, LOOSE_FILENAME_TOKEN, shape_suffix
         )
     nearest_writhe = int(round(float(target_writhe)))
     integer_nonzero_writhe = (
@@ -543,7 +546,7 @@ def validate_inputs(
     zero_h0: bool = DEFAULT_ZERO_H0,
     angle_search: str = DEFAULT_ANGLE_SEARCH,
     family: str = DEFAULT_FAMILY,
-    nodes: Optional[int] = None,
+    crossings: Optional[int] = None,
     ellipse_ratio: Optional[float] = None,
     lobe_aspect: Optional[float] = None,
 ) -> None:
@@ -581,7 +584,7 @@ def validate_inputs(
         _validate_loose_request(
             target_writhe,
             num_points,
-            nodes,
+            crossings,
             ellipse_ratio,
             lobe_aspect,
             curvature_objective,
@@ -592,8 +595,8 @@ def validate_inputs(
         )
         _require_curve_it_support()
         return
-    if nodes is not None or ellipse_ratio is not None or lobe_aspect is not None:
-        raise ValueError("Nodes, ellipse ratio and lobe aspect apply only to the loose family.")
+    if crossings is not None or ellipse_ratio is not None or lobe_aspect is not None:
+        raise ValueError("Crossings, ellipse ratio and lobe aspect apply only to the loose family.")
     if str(curvature_objective) not in CURVATURE_OBJECTIVES:
         raise ValueError(
             "Automatic opening-angle objective must be one of: {0}.".format(
@@ -673,7 +676,7 @@ def _require_curve_it_support() -> None:
 def _validate_loose_request(
     target_writhe: float,
     num_points: int,
-    nodes: Optional[int],
+    crossings: Optional[int],
     ellipse_ratio: Optional[float],
     lobe_aspect: Optional[float],
     curvature_objective: str,
@@ -698,15 +701,21 @@ def _validate_loose_request(
             "Opening-angle objectives, the angle search, a provided angle and H0 = 0 apply only "
             "to the tight family."
         )
-    node_count = _loose_default_nodes(target_writhe) if nodes is None else nodes
-    if isinstance(node_count, bool) or int(node_count) != node_count or int(node_count) < 1:
-        raise ValueError("Nodes must be a positive integer.")
-    if int(node_count) > LOOSE_MAXIMUM_NODES:
-        raise ValueError("At most {0} nodes are supported.".format(LOOSE_MAXIMUM_NODES))
-    required = minimum_num_points(float(node_count))
+    crossing_count = _loose_default_crossings(target_writhe) if crossings is None else crossings
+    if (
+        isinstance(crossing_count, bool)
+        or int(crossing_count) != crossing_count
+        or int(crossing_count) < 1
+    ):
+        raise ValueError("Crossings must be a positive integer; the sign of W sets the handedness.")
+    if int(crossing_count) > LOOSE_MAXIMUM_CROSSINGS:
+        raise ValueError("At most {0} crossings are supported.".format(LOOSE_MAXIMUM_CROSSINGS))
+    required = minimum_num_points(float(crossing_count))
     if int(num_points) < required:
         raise ValueError(
-            "Number of points must be at least {0} for {1} nodes.".format(required, int(node_count))
+            "Number of points must be at least {0} for {1} crossings.".format(
+                required, int(crossing_count)
+            )
         )
     if ellipse_ratio is not None and lobe_aspect is not None:
         raise ValueError(
@@ -2834,10 +2843,10 @@ def _with_angle_search_note(
     )
 
 
-def _loose_default_nodes(target_writhe: float) -> int:
-    """Default loose node count, floor(|W|) + 1.
+def _loose_default_crossings(target_writhe: float) -> int:
+    """Default loose crossing count, floor(|W|) + 1.
 
-    A loose node carries less than one unit of writhe, so N must exceed |W|; with
+    A loose crossing carries less than one unit of writhe, so N must exceed |W|; with
     round lobes this choice reaches every integer |W| from 1 to 10.
     """
 
@@ -2861,7 +2870,7 @@ def _loose_curve_points(
     target_writhe: float,
     num_points: int,
     precision: int,
-    nodes: int,
+    crossings: int,
     ellipse_ratio: float,
     lobe_aspect: float,
 ) -> PointArray:
@@ -2879,11 +2888,11 @@ def _loose_curve_points(
 
     from scipy.interpolate import PchipInterpolator
 
-    lobes = int(nodes) + 1
+    lobes = int(crossings) + 1
     straight = 2.0 * float(lobe_aspect) * lobes - 2.0
     phi_of = PchipInterpolator(
         np.arange(lobes + 1, dtype=float) / float(lobes),
-        math.pi * np.concatenate(([0.0], np.arange(1, lobes, dtype=float) - 0.5, [float(nodes)])),
+        math.pi * np.concatenate(([0.0], np.arange(1, lobes, dtype=float) - 0.5, [float(crossings)])),
     )
     arc = np.linspace(0.0, 2.0 * straight + 2.0 * math.pi, LOOSE_DENSE_FACTOR * int(num_points), endpoint=False)
     x0, z = np.empty_like(arc), np.empty_like(arc)
@@ -2953,7 +2962,7 @@ def _generate_loose_interwound(
     target_writhe: float,
     num_points: int,
     precision: int,
-    nodes: Optional[int],
+    crossings: Optional[int],
     ellipse_ratio: Optional[float],
     lobe_aspect: Optional[float],
     minimum_final_radius: Optional[float],
@@ -2969,7 +2978,9 @@ def _generate_loose_interwound(
     from scipy.optimize import brentq
 
     _set_active_phase_trim(0.0)
-    node_count = _loose_default_nodes(target_writhe) if nodes is None else int(nodes)
+    crossing_count = (
+        _loose_default_crossings(target_writhe) if crossings is None else int(crossings)
+    )
     target = float(target_writhe)
     evaluations = [0]
     if ellipse_ratio is None:
@@ -2977,18 +2988,18 @@ def _generate_loose_interwound(
         fitted, held = "ellipse ratio", "lobe aspect"
         bounds = LOOSE_ELLIPSE_RATIO_BOUNDS
 
-        def curve_for(value: float) -> PointArray:
+        def curve_for(value: float, count: int = crossing_count) -> PointArray:
             return _loose_curve_points(
-                total_length, target, num_points, precision, node_count, value, held_value
+                total_length, target, num_points, precision, count, value, held_value
             )
     else:
         held_value = float(ellipse_ratio)
         fitted, held = "lobe aspect", "ellipse ratio"
         bounds = (LOOSE_LOBE_ASPECT_MINIMUM, LOOSE_LOBE_ASPECT_MAXIMUM)
 
-        def curve_for(value: float) -> PointArray:
+        def curve_for(value: float, count: int = crossing_count) -> PointArray:
             return _loose_curve_points(
-                total_length, target, num_points, precision, node_count, held_value, value
+                total_length, target, num_points, precision, count, held_value, value
             )
 
     def writhe_for(value: float) -> float:
@@ -3000,19 +3011,58 @@ def _generate_loose_interwound(
     reach_high = max(abs(value) for value in writhe_at_bounds)
     if not min(writhe_at_bounds) <= target <= max(writhe_at_bounds):
         more = abs(target) > reach_high
-        if ellipse_ratio is None:
-            advice = "Use {0} nodes or a {1} lobe aspect.".format(
-                "more" if more else "fewer", "larger" if more else "smaller"
+        # Reach grows with the crossing count: scan away from this count until past |W|.
+        step = 1 if more else -1
+        reaching = []
+        count = crossing_count + step
+        while (
+            1 <= count <= LOOSE_MAXIMUM_CROSSINGS
+            and minimum_num_points(float(count)) <= int(num_points)
+        ):
+            low, high = sorted(
+                abs(evaluate_curve_it_writhe(curve_for(bound, count), smooth=False)) for bound in bounds
+            )
+            if low <= abs(target) <= high:
+                reaching.append(count)
+            elif (low > abs(target)) if more else (high < abs(target)):
+                break
+            count += step
+        reaching.sort()
+        if reaching:
+            counts = (
+                str(reaching[0])
+                if len(reaching) == 1
+                else "{0} or {1}".format(*reaching)
+                if len(reaching) == 2
+                else "{0} to {1}".format(reaching[0], reaching[-1])
+            )
+            advice = "With the {0} held at {1:g}, {2} crossing{3} reach it.".format(
+                held, held_value, counts, "" if reaching == [1] else "s"
             )
         else:
-            advice = "Use {0} nodes or a {1} ellipse ratio.".format(
-                "more" if more else "fewer", "smaller" if more else "larger"
+            change = (
+                ("larger" if more else "smaller")
+                if ellipse_ratio is None
+                else ("smaller" if more else "larger")
+            )
+            advice = "No crossing count reaches it with the {0} held at {1:g}; use a {2} {0}.".format(
+                held, held_value, change
             )
         raise ValueError(
-            "Writhe {0:g} is out of reach for {1} nodes with the {2} held at {3:g}: fitting the "
-            "{4} over {5:g} to {6:g} reaches |W| from {7:.4f} to {8:.4f}. {9}".format(
-                target, node_count, held, held_value, fitted, bounds[0], bounds[1],
-                reach_low, reach_high, advice,
+            "Writhe {0:g} is out of reach for {1} crossing{2}{3} with the {4} held at {5:g}: "
+            "fitting the {6} over {7:g} to {8:g} reaches |W| from {9:.4f} to {10:.4f}. {11}".format(
+                target,
+                crossing_count,
+                "" if crossing_count == 1 else "s",
+                " (the default floor(|W|) + 1)" if crossings is None else "",
+                held,
+                held_value,
+                fitted,
+                bounds[0],
+                bounds[1],
+                reach_low,
+                reach_high,
+                advice,
             )
         )
     solution = brentq(
@@ -3051,18 +3101,18 @@ def _generate_loose_interwound(
             "target={0:.6g}, achieved={1:.6g}. Increase --precision.".format(target, achieved_writhe)
         )
     xz_crossings = count_xz_projection_crossings(points)
-    if xz_crossings != node_count:
+    if xz_crossings != crossing_count:
         raise ValueError(
-            "Serialized-coordinate xz crossing verification failed: expected {0} nodes, "
-            "found {1}.".format(node_count, xz_crossings)
+            "Serialized-coordinate xz crossing verification failed: expected {0} crossing{1}, "
+            "found {2}.".format(crossing_count, "" if crossing_count == 1 else "s", xz_crossings)
         )
-    exclusion = float(total_length) / (2.0 * (node_count + 1))
+    exclusion = float(total_length) / (2.0 * (crossing_count + 1))
     closest, closest_a, closest_b = _loose_closest_approach(points, exclusion)
     if minimum_final_radius is not None and 0.5 * closest < float(minimum_final_radius):
         raise RuntimeError(
             "The closest self-approach {0:.6g} is below twice the minimum final measured radius "
             "{1:.6g}: the loose curve's strands come too close at this length. Use a longer L, "
-            "more nodes or a lower |W|; on the command line, --minimum-final-radius sets this "
+            "more crossings or a lower |W|; on the command line, --minimum-final-radius sets this "
             "guard.".format(closest, minimum_final_radius)
         )
     total_curvature, maximum_local_curvature, bending_energy_integral = evaluate_curvature_metrics(
@@ -3092,8 +3142,8 @@ def _generate_loose_interwound(
     )
     width, depth, height = (float(np.ptp(points[:, axis])) for axis in range(3))
     details = {
-        "nodes": node_count,
-        "nodes_default": nodes is None,
+        "crossings": crossing_count,
+        "crossings_default": crossings is None,
         "fitted_parameter": fitted,
         "held_parameter": held,
         "ellipse_ratio": ratio_value,
@@ -3103,12 +3153,12 @@ def _generate_loose_interwound(
         "width": width,
         "depth": depth,
         "height": height,
-        "lobe_height": height / float(node_count + 1),
+        "lobe_height": height / float(crossing_count + 1),
         "closest_approach": closest,
         "closest_rows": (closest_a + 1, closest_b + 1),
         "closest_exclusion": exclusion,
     }
-    phase_sweep = math.copysign(math.pi * node_count, target)
+    phase_sweep = math.copysign(math.pi * crossing_count, target)
     return SCGenerationResult(
         points=points,
         requested_length=float(total_length),
@@ -3118,7 +3168,7 @@ def _generate_loose_interwound(
         xz_crossings=int(xz_crossings),
         pca_crossings=int(pca_crossings),
         pca_plane=str(pca_plane),
-        plectoneme_phase_turns=node_count / 2.0,
+        plectoneme_phase_turns=crossing_count / 2.0,
         opening_angle_deg=0.0,
         curvature_objective=OPENING_ANGLE_MODE_LOOSE,
         total_curvature=float(total_curvature),
@@ -3142,7 +3192,7 @@ def _generate_loose_interwound(
         phase_trim=0.0,
         phase_sweep_rad=float(phase_sweep),
         phase_sweep_pi=float(phase_sweep / math.pi),
-        phase_factor=node_count / abs(target),
+        phase_factor=crossing_count / abs(target),
         xz_symmetry_rotation_rad=0.0,
         trim_enabled=False,
         projection_stats=final_stats,
@@ -3160,7 +3210,7 @@ def _loose_generation_summary(result: SCGenerationResult) -> str:
     """Report for the loosely interwound family."""
 
     details = result.loose_details or {}
-    nodes = int(details["nodes"])
+    crossings = int(details["crossings"])
     residual = result.achieved_writhe - result.requested_writhe
     minimum_bend_radius = (
         1.0 / result.maximum_local_curvature if result.maximum_local_curvature > 0.0 else math.inf
@@ -3182,13 +3232,13 @@ def _loose_generation_summary(result: SCGenerationResult) -> str:
         "Achieved Gauss writhe  = {0:.10g}".format(result.achieved_writhe),
         "Writhe residual        = {0:+.3e}".format(residual),
         "Curve family           = loosely interwound: a stadium twisted through N half-turns about z",
-        "Nodes N                = {0} ({1})".format(
-            nodes, "default floor(|W|) + 1" if details["nodes_default"] else "requested"
+        "Crossings N            = {0} ({1})".format(
+            crossings, "default floor(|W|) + 1" if details["crossings_default"] else "requested"
         ),
         "Fixed xz projection crossings = {0}".format(result.xz_crossings),
-        "Node crossing check           = PASS (required N = {0})".format(nodes),
-        "Equal lobes along z           = {0}".format(nodes + 1),
-        "Writhe per node               = {0:.6g}".format(abs(result.achieved_writhe) / nodes),
+        "Crossing check                = PASS (required N = {0})".format(crossings),
+        "Equal lobes along z           = {0}".format(crossings + 1),
+        "Writhe per crossing           = {0:.6g}".format(abs(result.achieved_writhe) / crossings),
         "Fitted shape parameter        = {0} (the {1} held at {2:.10g})".format(
             details["fitted_parameter"], details["held_parameter"], held_value
         ),
@@ -3274,14 +3324,14 @@ def generate_sc_points(
     zero_h0: bool = DEFAULT_ZERO_H0,
     angle_search: str = DEFAULT_ANGLE_SEARCH,
     family: str = DEFAULT_FAMILY,
-    nodes: Optional[int] = None,
+    crossings: Optional[int] = None,
     ellipse_ratio: Optional[float] = None,
     lobe_aspect: Optional[float] = None,
 ) -> SCGenerationResult:
     """Generate an optimized/manual plectoneme with V3_9 multi-view screening.
 
     ``family="loose"`` instead writes the loosely interwound curve of
-    ``_generate_loose_interwound`` from ``nodes``, ``ellipse_ratio`` and ``lobe_aspect``.
+    ``_generate_loose_interwound`` from ``crossings``, ``ellipse_ratio`` and ``lobe_aspect``.
 
     ``angle_search`` selects how an automatic opening angle is chosen: ``quick``
     (default) is the V3.7 search, ``accurate`` ranks every candidate angle by the
@@ -3309,7 +3359,7 @@ def generate_sc_points(
         zero_h0,
         angle_search=angle_search,
         family=family,
-        nodes=nodes,
+        crossings=crossings,
         ellipse_ratio=ellipse_ratio,
         lobe_aspect=lobe_aspect,
     )
@@ -3321,7 +3371,7 @@ def generate_sc_points(
             target_writhe=float(target_writhe),
             num_points=num_points,
             precision=int(precision),
-            nodes=nodes,
+            crossings=crossings,
             ellipse_ratio=None if ellipse_ratio is None else float(ellipse_ratio),
             lobe_aspect=None if lobe_aspect is None else float(lobe_aspect),
             minimum_final_radius=minimum_final_radius,
@@ -3888,14 +3938,18 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help=(
             "Curve family. tight (default): the slender plectoneme whose fixed-xz view shows "
             "|W| crossings. loose: a loosely interwound twisted ring whose fixed-xz view crosses "
-            "itself --nodes times between equal lobes, fitted to the exact writhe; a loose node "
-            "carries less than one unit of writhe, so the node count exceeds |W|. Adds "
-            "_N<nodes>_Loose to automatic filenames."
+            "itself --crossings times between equal lobes, fitted to the exact writhe; a loose "
+            "crossing carries less than one unit of writhe, so the crossing count exceeds |W|. "
+            "Adds _N<crossings>_Loose to automatic filenames."
         ),
     )
     parser.add_argument(
-        "--nodes", type=int, default=None,
-        help="Loose family: number of fixed-xz crossings N (N + 1 equal lobes). Default: floor(|W|) + 1.",
+        "--crossings", type=int, default=None,
+        help=(
+            "Loose family: number of fixed-xz crossings N (N + 1 equal lobes). Default: "
+            "floor(|W|) + 1. A count that cannot reach W stops the run, which names the counts "
+            "that can."
+        ),
     )
     loose_shape_group = parser.add_mutually_exclusive_group()
     loose_shape_group.add_argument(
@@ -3949,8 +4003,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ]
         if tight_only:
             parser.error("{0} apply only to --family tight".format(", ".join(tight_only)))
-    elif args.nodes is not None or args.lobe_aspect is not None or args.ellipse_ratio is not None:
-        parser.error("--nodes, --lobe-aspect and --ellipse-ratio apply only to --family loose")
+    elif args.crossings is not None or args.lobe_aspect is not None or args.ellipse_ratio is not None:
+        parser.error("--crossings, --lobe-aspect and --ellipse-ratio apply only to --family loose")
     if args.qualifying_views is None:
         args.qualifying_views = DEFAULT_QUALIFYING_VIEWS_PERCENT
         is_integer, nearest = _integer_request(args.writhe)
@@ -3975,7 +4029,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             zero_h0=args.zero_h0,
             angle_search=args.angle_search,
             family=args.family,
-            nodes=args.nodes,
+            crossings=args.crossings,
             ellipse_ratio=args.ellipse_ratio,
             lobe_aspect=args.lobe_aspect,
         )
@@ -3998,7 +4052,7 @@ def run_cli(args: argparse.Namespace) -> SCGenerationResult:
         zero_h0=args.zero_h0,
         angle_search=args.angle_search,
         family=args.family,
-        nodes=args.nodes,
+        crossings=args.crossings,
         ellipse_ratio=args.ellipse_ratio,
         lobe_aspect=args.lobe_aspect,
     )
@@ -4125,7 +4179,7 @@ def run_gui() -> None:
     precision_var = tk.StringVar(value=str(DEFAULT_PRECISION))
     angle_search_var = tk.StringVar(value=DEFAULT_ANGLE_SEARCH)
     family_var = tk.StringVar(value=DEFAULT_FAMILY)
-    nodes_var = tk.StringVar(value="")
+    crossings_var = tk.StringVar(value="")
     lobe_aspect_var = tk.StringVar(value=str(DEFAULT_LOOSE_LOBE_ASPECT))
     ellipse_ratio_var = tk.StringVar(value="")
     initial_auto_output = automatic_output_filename(
@@ -4161,7 +4215,11 @@ def run_gui() -> None:
             "The requested signed Gauss writhe, supported for |W| <= 10. Positive and "
             "negative values produce mirror-related curves. Projection screening requires "
             "a nonzero integer W.\n\nExample: 3 or -3 requests three signed crossings in "
-            "the qualifying projections.",
+            "the qualifying projections.\n\nLoose family: W is not the crossing count. Each "
+            "loose crossing carries less than one unit of writhe, so N crossings reach about "
+            "0.54 N to 0.96 N; if Crossings and W do not fit, the run stops before anything is "
+            "written and names the crossing counts that do. Leave Crossings blank to have it "
+            "chosen from W.",
         ),
         "Qualifying views (%):": (
             "Qualifying views (--qualifying-views)",
@@ -4213,16 +4271,18 @@ def run_gui() -> None:
             "Curve family: loose (--family loose)",
             "A loosely interwound 'twisted ring', as drawn in textbooks and logos: a stadium "
             "in xz is given N smooth half-twists about z, so the fixed-xz view crosses itself "
-            "N times (nodes) between N + 1 equal lobes. One shape parameter is root-found so "
-            "the written curve has exactly the requested Gauss writhe.\n\nA loose node carries "
+            "N times between N + 1 equal lobes. One shape parameter is root-found so the "
+            "written curve has exactly the requested Gauss writhe.\n\nA loose crossing carries "
             "less than one unit of writhe, so N exceeds |W| (default floor(|W|) + 1): W = -2 "
-            "gives three nodes and four lobes. Only L and W need setting: Nodes and the shape "
-            "have automatic defaults, and opening-angle objectives, angle search, trimming, H0 "
-            "and qualifying views do not apply. The minimum final measured radius is held at "
-            "{0:g} and only stops a curve whose closest axis-axis approach, between points more "
-            "than half a lobe apart along the contour, is under twice that. Points and Precision "
-            "set the output as for the tight family.\n\nThe filename records the nodes and Loose, "
-            "for example sc_L1285p2_Wm2_N3_Loose.xyz.".format(DEFAULT_MINIMUM_FINAL_RADIUS),
+            "gives three crossings and four lobes. Only L and W need setting: Crossings and the "
+            "shape have automatic defaults, and opening-angle objectives, angle search, "
+            "trimming, H0 and qualifying views do not apply. The minimum final measured radius "
+            "is held at {0:g} and only stops a curve whose closest axis-axis approach, between "
+            "points more than half a lobe apart along the contour, is under twice that. Points "
+            "and Precision set the output as for the tight family.\n\nThe filename records the "
+            "crossings and Loose, for example sc_L1285p2_Wm2_N3_Loose.xyz.".format(
+                DEFAULT_MINIMUM_FINAL_RADIUS
+            ),
         ),
     )
     family_row = ttk.Frame(family_frame)
@@ -4240,13 +4300,16 @@ def run_gui() -> None:
         add_help_button(family_row, 0, 2 * column + 1, help_title, family_help)
     loose_fields = (
         (
-            "Nodes",
-            nodes_var,
-            "Nodes (--nodes)",
+            "Crossings",
+            crossings_var,
+            "Crossings (--crossings)",
             "Loose family: the number of fixed-xz crossings N, giving N + 1 equal lobes. Leave "
-            "blank for the default floor(|W|) + 1. With round lobes N nodes reach |W| between "
-            "about 0.54 N (circular cross-section) and 0.96 N (nearly flat); a combination out "
-            "of reach stops with the reachable range.\n\nExample: 3 for W = -2.",
+            "blank for the default floor(|W|) + 1. A loose crossing carries less than one unit "
+            "of writhe, so N is not |W|: with round lobes N crossings reach |W| between about "
+            "0.54 N (circular cross-section) and 0.96 N (nearly flat). A count that cannot reach "
+            "W stops the run before anything is written, naming the counts that can. N is a "
+            "count; the sign of W sets the handedness.\n\nExample: 3 for W = -2; 4 or 5 for "
+            "W = -3.",
         ),
         (
             "Lobe aspect",
@@ -4263,14 +4326,14 @@ def run_gui() -> None:
             "Loose family: the end-on cross-section's depth / width (y / x); 1 is circular and "
             "smaller values are flatter. Blank, the default, fits it to the writhe with the lobe "
             "aspect held. Enter a value to hold it and fit the lobe aspect instead.\n\nExample: "
-            "1 for a circular end-on view; W = -2 with three nodes then gives lobes about 1.47 "
+            "1 for a circular end-on view; W = -2 with three crossings then gives lobes about 1.47 "
             "times taller than wide.",
         ),
     )
     loose_row = ttk.Frame(family_frame)
     loose_row.grid(row=1, column=0, sticky="w", pady=(6, 0))
     loose_widgets = []
-    # Nodes, then the two alternative shape settings stacked: lobe aspect over ellipse ratio.
+    # Crossings, then the two alternative shape settings stacked: lobe aspect over ellipse ratio.
     for (grid_row, column), (label_text, variable, help_title, help_text) in zip(
         ((0, 0), (0, 3), (1, 3)), loose_fields
     ):
@@ -4452,11 +4515,11 @@ def run_gui() -> None:
     def loose_selected() -> bool:
         return family_var.get() == FAMILY_LOOSE
 
-    def parse_nodes_text(text: str) -> Optional[int]:
+    def parse_crossings_text(text: str) -> Optional[int]:
         text = text.strip()
         if not text:
             return None
-        message = "Nodes must be a whole number, or blank for the default floor(|W|) + 1."
+        message = "Crossings must be a whole number, or blank for the default floor(|W|) + 1."
         try:
             value = float(text)
         except ValueError as exc:
@@ -4526,7 +4589,7 @@ def run_gui() -> None:
                 total_length=float(length_var.get().strip()),
                 target_writhe=float(writhe_var.get().strip()),
                 family=FAMILY_LOOSE,
-                nodes=parse_nodes_text(nodes_var.get()),
+                crossings=parse_crossings_text(crossings_var.get()),
                 ellipse_ratio=float(ratio_text) if ratio_text else None,
                 lobe_aspect=None if ratio_text or not aspect_text else float(aspect_text),
             )
@@ -4598,7 +4661,7 @@ def run_gui() -> None:
         minimum_final_radius_var,
         angle_search_var,
         family_var,
-        nodes_var,
+        crossings_var,
         lobe_aspect_var,
         ellipse_ratio_var,
     ):
@@ -4684,11 +4747,11 @@ def run_gui() -> None:
         total_length = float(length_var.get().strip())
         target_writhe = float(writhe_var.get().strip())
         family = family_var.get().strip() or DEFAULT_FAMILY
-        nodes: Optional[int] = None
+        crossings: Optional[int] = None
         ellipse_ratio: Optional[float] = None
         lobe_aspect: Optional[float] = None
         if family == FAMILY_LOOSE:
-            nodes = parse_nodes_text(nodes_var.get())
+            crossings = parse_crossings_text(crossings_var.get())
             ratio_text = ellipse_ratio_var.get().strip()
             ellipse_ratio = float(ratio_text) if ratio_text else None
             aspect_text = lobe_aspect_var.get().strip()
@@ -4706,7 +4769,7 @@ def run_gui() -> None:
                 precision,
                 minimum_final_radius=minimum_final_radius,
                 family=family,
-                nodes=nodes,
+                crossings=crossings,
                 ellipse_ratio=ellipse_ratio,
                 lobe_aspect=lobe_aspect,
             )
@@ -4724,7 +4787,7 @@ def run_gui() -> None:
                 precision,
                 output,
                 family,
-                nodes,
+                crossings,
                 ellipse_ratio,
                 lobe_aspect,
             )
@@ -4805,7 +4868,7 @@ def run_gui() -> None:
             precision,
             output,
             family,
-            nodes,
+            crossings,
             ellipse_ratio,
             lobe_aspect,
         ) = values
@@ -4822,7 +4885,7 @@ def run_gui() -> None:
             num_points,
             precision,
             family,
-            nodes,
+            crossings,
             ellipse_ratio,
             lobe_aspect,
         )
@@ -4851,7 +4914,7 @@ def run_gui() -> None:
                 zero_h0=zero_h0,
                 angle_search=angle_search,
                 family=family,
-                nodes=nodes,
+                crossings=crossings,
                 ellipse_ratio=ellipse_ratio,
                 lobe_aspect=lobe_aspect,
             )
@@ -4881,8 +4944,8 @@ def run_gui() -> None:
                 )
             if result.family == FAMILY_LOOSE:
                 details = result.loose_details or {}
-                shape_line = "Loose: {0} nodes, ellipse ratio {1:.4f}, lobe aspect {2:.4f}\n".format(
-                    details.get("nodes"), details.get("ellipse_ratio"), details.get("lobe_aspect")
+                shape_line = "Loose: {0} crossings, ellipse ratio {1:.4f}, lobe aspect {2:.4f}\n".format(
+                    details.get("crossings"), details.get("ellipse_ratio"), details.get("lobe_aspect")
                 )
             else:
                 shape_line = "Selected angle: {0:.4f} deg\nPhase trim: {1:.3f} pi\n".format(
