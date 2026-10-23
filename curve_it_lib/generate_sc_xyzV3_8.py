@@ -66,6 +66,24 @@ ranks the angles by the objective of the curve that would be written; it is
 exact and much slower. Equal-lobes re-solves its angle at every tested trim in
 either mode.
 
+Loosely interwound family
+-------------------------
+``--family tight`` (default) is the slender plectoneme described here, whose
+fixed-xz view shows |W| crossings. ``--family loose`` writes the open "twisted
+ring" of textbook drawings instead: a stadium in xz is given ``--nodes`` N smooth
+half-twists about z, so the front view crosses itself N times between N + 1 equal
+lobes, and one shape parameter is root-found so that the written polyline has
+exactly the requested Gauss writhe. By default the lobes are round
+(``--lobe-aspect`` 1) and the ellipse ratio of the end-on cross-section (depth /
+width) is fitted; ``--ellipse-ratio R`` holds the cross-section instead (1 =
+circular) and fits the lobe aspect. A loose node carries less than one unit of
+writhe, so N exceeds |W|: three nodes with round lobes reach |W| from 1.51
+(circular) to 2.89 (nearly flat), and the default N = floor(|W|) + 1 reaches every
+integer |W| up to 10. ``--minimum-final-radius`` then bounds half the closest
+axis-axis approach between points more than half a lobe apart along the contour.
+Angle objectives, phase trimming, H0 and projection screening do not apply; the
+signed-crossing histogram over 256 views is reported for information.
+
 Arm-height H0 selection
 -----------------------
 The default remains the V3.6 construction ``H0 = 2R``. ``--zero-h0`` selects
@@ -108,6 +126,10 @@ Choose the angle by the objective of the curve actually written (slower)::
 Generate the fully reoptimized zero-H0 family::
 
     python generate_sc_xyzV3_8.py -L 1071 -w -3 --zero-h0 -n 2000
+
+Generate a loosely interwound curve, three nodes and four round lobes::
+
+    python generate_sc_xyzV3_8.py -L 1285.2 -w -2 --family loose -n 2000
 
 Generate the direct W = 0 planar-ring limit::
 
@@ -238,6 +260,30 @@ ACCURATE_ANGLE_SEARCH_OBJECTIVES = (
 )
 ACCURATE_FILENAME_TOKEN = "Acc"
 
+# Curve family. TIGHT, the default, is the slender plectoneme above, whose fixed-xz
+# view shows |W| crossings. LOOSE twists a stadium through N smooth half-turns about z
+# (N fixed-xz crossings between N + 1 equal lobes) and root-finds one shape parameter,
+# the cross-section's ellipse ratio or the lobe aspect, so the written polyline has
+# exactly the requested writhe. Its smoothing is set at the 2000-point reference so the
+# same physical width applies at any point count.
+FAMILY_TIGHT = "tight"
+FAMILY_LOOSE = "loose"
+FAMILIES = (FAMILY_TIGHT, FAMILY_LOOSE)
+DEFAULT_FAMILY = FAMILY_TIGHT
+OPENING_ANGLE_MODE_LOOSE = "loose-interwound"
+SCREENING_MODE_LOOSE = "not-applicable-loose"
+DEFAULT_LOOSE_LOBE_ASPECT = 1.0
+LOOSE_ELLIPSE_RATIO_BOUNDS = (0.05, 1.0)
+LOOSE_LOBE_ASPECT_MINIMUM = 0.5
+LOOSE_LOBE_ASPECT_MAXIMUM = 8.0
+LOOSE_MAXIMUM_NODES = 20
+LOOSE_DENSE_FACTOR = 40
+LOOSE_SMOOTHING_REFERENCE_POINTS = 2000
+LOOSE_SMOOTHING_SIGMA = 70.0
+LOOSE_SMOOTHING_HALF_WIDTH = 200
+LOOSE_ROOT_TOLERANCE = 1.0e-12
+LOOSE_FILENAME_TOKEN = "Loose"
+
 
 OUTPUT_ANGLE_TOKENS = {
     CURVATURE_OBJECTIVE_BENDING_ENERGY: "ABend",
@@ -268,6 +314,10 @@ def automatic_output_filename(
     minimum_final_radius: Optional[float] = DEFAULT_MINIMUM_FINAL_RADIUS,
     zero_h0: bool = DEFAULT_ZERO_H0,
     angle_search: str = DEFAULT_ANGLE_SEARCH,
+    family: str = DEFAULT_FAMILY,
+    nodes: Optional[int] = None,
+    ellipse_ratio: Optional[float] = None,
+    lobe_aspect: Optional[float] = None,
 ) -> str:
     """Build a deterministic XYZ filename from the curve-defining selections.
 
@@ -276,11 +326,23 @@ def automatic_output_filename(
     ``sc_L1071_Wm3_R13_ABend_H0zero.xyz`` for the opt-in zero-H0 family,
     ``sc_L1071_W0_NoTrim_Ring_H0zero.xyz`` for its direct zero-writhe limit,
     ``sc_L1071_W3_Q60_ALocal.xyz`` for qualifying-view screening, and
-    ``sc_L1071_W3_NoTrim_A25deg.xyz`` for an untrimmed manual-angle curve.
+    ``sc_L1071_W3_NoTrim_A25deg.xyz`` for an untrimmed manual-angle curve. The loose
+    family gives ``sc_L1285p2_Wm2_N3_Loose.xyz``, with ``_ER1`` for a set ellipse
+    ratio or ``_LA1p5`` for a non-default lobe aspect.
     """
 
     length_token = "L{0}".format(_filename_number(total_length))
     writhe_token = "W{0}".format(_filename_number(target_writhe))
+    if str(family) == FAMILY_LOOSE:
+        node_count = _loose_default_nodes(target_writhe) if nodes is None else int(nodes)
+        shape_suffix = ""
+        if ellipse_ratio is not None:
+            shape_suffix = "_ER{0}".format(_filename_number(ellipse_ratio))
+        elif lobe_aspect is not None and abs(float(lobe_aspect) - DEFAULT_LOOSE_LOBE_ASPECT) > 1.0e-12:
+            shape_suffix = "_LA{0}".format(_filename_number(lobe_aspect))
+        return "sc_{0}_{1}_N{2}_{3}{4}.xyz".format(
+            length_token, writhe_token, node_count, LOOSE_FILENAME_TOKEN, shape_suffix
+        )
     nearest_writhe = int(round(float(target_writhe)))
     integer_nonzero_writhe = (
         abs(float(target_writhe) - nearest_writhe) <= 1.0e-10
@@ -412,6 +474,8 @@ class SCGenerationResult:
     angle_search_note: str = ""
     angle_search_candidates: int = 0
     angle_at_search_boundary: bool = False
+    family: str = FAMILY_TIGHT
+    loose_details: Optional[Dict[str, object]] = None
 
 
 @dataclass
@@ -477,6 +541,10 @@ def validate_inputs(
     minimum_final_radius: Optional[float] = None,
     zero_h0: bool = DEFAULT_ZERO_H0,
     angle_search: str = DEFAULT_ANGLE_SEARCH,
+    family: str = DEFAULT_FAMILY,
+    nodes: Optional[int] = None,
+    ellipse_ratio: Optional[float] = None,
+    lobe_aspect: Optional[float] = None,
 ) -> None:
     """Validate user-facing inputs and raise ``ValueError`` when invalid."""
 
@@ -506,6 +574,25 @@ def validate_inputs(
         raise ValueError("Precision must be an integer.")
     if int(precision) < 0 or int(precision) > 15:
         raise ValueError("Precision must be between 0 and 15 decimal places.")
+    if str(family) not in FAMILIES:
+        raise ValueError("Curve family must be one of: {0}.".format(", ".join(FAMILIES)))
+    if str(family) == FAMILY_LOOSE:
+        _validate_loose_request(
+            target_writhe,
+            num_points,
+            nodes,
+            ellipse_ratio,
+            lobe_aspect,
+            curvature_objective,
+            opening_angle_deg,
+            zero_h0,
+            angle_search,
+            minimum_final_radius,
+        )
+        _require_curve_it_support()
+        return
+    if nodes is not None or ellipse_ratio is not None or lobe_aspect is not None:
+        raise ValueError("Nodes, ellipse ratio and lobe aspect apply only to the loose family.")
     if str(curvature_objective) not in CURVATURE_OBJECTIVES:
         raise ValueError(
             "Automatic opening-angle objective must be one of: {0}.".format(
@@ -562,6 +649,12 @@ def validate_inputs(
                 "The equal-lobes objective requires an integer writhe with |W| >= 2 "
                 "so the fixed xz projection has at least one middle lobe."
             )
+    _require_curve_it_support()
+
+
+def _require_curve_it_support() -> None:
+    """Raise when Curve It's SciPy-based curvature and writhe helpers are unavailable."""
+
     if (
         calculate_polyline_writhe is None
         or calculate_writhe is None
@@ -574,6 +667,67 @@ def validate_inputs(
             "Generate SC needs SciPy for curvature and mapped-polyline writhe support. "
             "Install the packages in requirements.txt." + detail
         )
+
+
+def _validate_loose_request(
+    target_writhe: float,
+    num_points: int,
+    nodes: Optional[int],
+    ellipse_ratio: Optional[float],
+    lobe_aspect: Optional[float],
+    curvature_objective: str,
+    opening_angle_deg: Optional[float],
+    zero_h0: bool,
+    angle_search: str,
+    minimum_final_radius: Optional[float],
+) -> None:
+    """Validate the loose family's settings, and reject tight-family settings."""
+
+    if abs(float(target_writhe)) <= 1.0e-12:
+        raise ValueError(
+            "The loose family needs a nonzero writhe; W = 0 is the planar ring (tight family, H0 = 0)."
+        )
+    if (
+        opening_angle_deg is not None
+        or bool(zero_h0)
+        or str(angle_search) != DEFAULT_ANGLE_SEARCH
+        or str(curvature_objective) != DEFAULT_CURVATURE_OBJECTIVE
+    ):
+        raise ValueError(
+            "Opening-angle objectives, the angle search, a provided angle and H0 = 0 apply only "
+            "to the tight family."
+        )
+    node_count = _loose_default_nodes(target_writhe) if nodes is None else nodes
+    if isinstance(node_count, bool) or int(node_count) != node_count or int(node_count) < 1:
+        raise ValueError("Nodes must be a positive integer.")
+    if int(node_count) > LOOSE_MAXIMUM_NODES:
+        raise ValueError("At most {0} nodes are supported.".format(LOOSE_MAXIMUM_NODES))
+    required = minimum_num_points(float(node_count))
+    if int(num_points) < required:
+        raise ValueError(
+            "Number of points must be at least {0} for {1} nodes.".format(required, int(node_count))
+        )
+    if ellipse_ratio is not None and lobe_aspect is not None:
+        raise ValueError(
+            "Set either the ellipse ratio or the lobe aspect: the other is fitted to the writhe."
+        )
+    if ellipse_ratio is not None and (
+        not math.isfinite(float(ellipse_ratio)) or not 0.0 < float(ellipse_ratio) <= 1.0
+    ):
+        raise ValueError("The ellipse ratio must be greater than 0 and at most 1 (1 = circular).")
+    if lobe_aspect is not None and (
+        not math.isfinite(float(lobe_aspect))
+        or not LOOSE_LOBE_ASPECT_MINIMUM <= float(lobe_aspect) <= LOOSE_LOBE_ASPECT_MAXIMUM
+    ):
+        raise ValueError(
+            "The lobe aspect must be between {0:g} and {1:g} (1 = round lobes).".format(
+                LOOSE_LOBE_ASPECT_MINIMUM, LOOSE_LOBE_ASPECT_MAXIMUM
+            )
+        )
+    if minimum_final_radius is not None and (
+        not math.isfinite(float(minimum_final_radius)) or float(minimum_final_radius) <= 0.0
+    ):
+        raise ValueError("Minimum final measured radius must be positive and finite.")
 
 
 def _unit(vector: PointArray) -> PointArray:
@@ -2679,6 +2833,432 @@ def _with_angle_search_note(
     )
 
 
+def _loose_default_nodes(target_writhe: float) -> int:
+    """Default loose node count, floor(|W|) + 1.
+
+    A loose node carries less than one unit of writhe, so N must exceed |W|; with
+    round lobes this choice reaches every integer |W| from 1 to 10.
+    """
+
+    return int(math.floor(abs(float(target_writhe)) + 1.0e-9)) + 1
+
+
+def _loose_spline_curvature(points: PointArray) -> np.ndarray:
+    """Curvature at each point from a periodic arc-length cubic spline; locates row 1."""
+
+    from scipy.interpolate import CubicSpline
+
+    closed = np.vstack([points, points[:1]])
+    arc = np.concatenate(([0.0], np.cumsum(np.linalg.norm(np.diff(closed, axis=0), axis=1))))
+    spline = CubicSpline(arc, closed, bc_type="periodic", axis=0)
+    first, second = spline(arc[:-1], 1), spline(arc[:-1], 2)
+    return np.linalg.norm(np.cross(first, second), axis=1) / np.linalg.norm(first, axis=1) ** 3
+
+
+def _loose_curve_points(
+    total_length: float,
+    target_writhe: float,
+    num_points: int,
+    precision: int,
+    nodes: int,
+    ellipse_ratio: float,
+    lobe_aspect: float,
+) -> PointArray:
+    """Serialized loosely interwound curve for one ellipse ratio and lobe aspect.
+
+    A stadium in xz, half-width 1 with a straight part 2 * aspect * (N + 1) - 2 long so
+    that N + 1 lobes of height ``aspect`` x their width fit along z, is twisted about z by
+    phi(u), a monotone cubic through 0, then (j - 1/2) pi at u = j / (N + 1), then N pi.
+    The fixed-xz view therefore crosses itself at the N lobe boundaries and both end caps
+    stay in the xz plane. y is scaled by the ellipse ratio and mirrored for positive
+    writhe. A periodic Gaussian over ~0.09% of the loop rounds the stadium's four
+    curvature steps; the curve is resampled evenly by arc length, scaled to the
+    requested length, centred, started at its flattest point and rounded as written.
+    """
+
+    from scipy.interpolate import PchipInterpolator
+
+    lobes = int(nodes) + 1
+    straight = 2.0 * float(lobe_aspect) * lobes - 2.0
+    phi_of = PchipInterpolator(
+        np.arange(lobes + 1, dtype=float) / float(lobes),
+        math.pi * np.concatenate(([0.0], np.arange(1, lobes, dtype=float) - 0.5, [float(nodes)])),
+    )
+    arc = np.linspace(0.0, 2.0 * straight + 2.0 * math.pi, LOOSE_DENSE_FACTOR * int(num_points), endpoint=False)
+    x0, z = np.empty_like(arc), np.empty_like(arc)
+    side_a = arc < straight
+    x0[side_a], z[side_a] = 1.0, arc[side_a] - straight / 2.0
+    cap_top = (arc >= straight) & (arc < straight + math.pi)
+    t = arc[cap_top] - straight
+    x0[cap_top], z[cap_top] = np.cos(t), straight / 2.0 + np.sin(t)
+    side_b = (arc >= straight + math.pi) & (arc < 2.0 * straight + math.pi)
+    x0[side_b], z[side_b] = -1.0, straight / 2.0 - (arc[side_b] - straight - math.pi)
+    cap_bottom = arc >= 2.0 * straight + math.pi
+    t = arc[cap_bottom] - 2.0 * straight - math.pi
+    x0[cap_bottom], z[cap_bottom] = -np.cos(t), -straight / 2.0 - np.sin(t)
+    phi = phi_of((z + straight / 2.0 + 1.0) / (straight + 2.0))
+    handedness = 1.0 if float(target_writhe) < 0.0 else -1.0
+    raw = np.column_stack(
+        (x0 * np.cos(phi), float(ellipse_ratio) * x0 * np.sin(phi) * handedness, z)
+    )
+
+    sigma = LOOSE_SMOOTHING_SIGMA * int(num_points) / LOOSE_SMOOTHING_REFERENCE_POINTS
+    half_width = max(1, int(round(
+        LOOSE_SMOOTHING_HALF_WIDTH * int(num_points) / LOOSE_SMOOTHING_REFERENCE_POINTS
+    )))
+    kernel = np.exp(-0.5 * (np.arange(-half_width, half_width + 1) / sigma) ** 2)
+    kernel /= kernel.sum()
+    raw = np.column_stack(
+        [
+            np.convolve(np.concatenate((column[-half_width:], column, column[:half_width])), kernel, "valid")
+            for column in raw.T
+        ]
+    )
+    segment_lengths = np.linalg.norm(np.diff(np.vstack((raw, raw[:1])), axis=0), axis=1)
+    cumulative = np.concatenate(([0.0], np.cumsum(segment_lengths)))
+    queries = np.linspace(0.0, cumulative[-1], int(num_points), endpoint=False)
+    points = np.column_stack(
+        [np.interp(queries, cumulative, np.append(raw[:, axis], raw[0, axis])) for axis in range(3)]
+    )
+    points *= float(total_length) / closed_polyline_length(points)
+    points -= points.mean(axis=0)
+    points = np.roll(points, -int(np.argmin(_loose_spline_curvature(points))), axis=0)
+    return quantize_points_for_xyz(points, precision)
+
+
+def _loose_closest_approach(points: PointArray, exclusion: float) -> Tuple[float, int, int]:
+    """Closest distance between written points more than ``exclusion`` apart along the contour."""
+
+    pts = np.asarray(points, dtype=float)
+    segment_lengths = np.linalg.norm(np.roll(pts, -1, axis=0) - pts, axis=1)
+    total = float(np.sum(segment_lengths))
+    arc = np.concatenate(([0.0], np.cumsum(segment_lengths[:-1])))
+    best = (math.inf, 0, 0)
+    for index in range(len(pts)):
+        separation = np.abs(arc - arc[index])
+        separation = np.minimum(separation, total - separation)
+        candidates = np.nonzero(separation > float(exclusion))[0]
+        if len(candidates) == 0:
+            continue
+        distances = np.linalg.norm(pts[candidates] - pts[index], axis=1)
+        nearest = int(np.argmin(distances))
+        if distances[nearest] < best[0]:
+            best = (float(distances[nearest]), index, int(candidates[nearest]))
+    return best
+
+
+def _generate_loose_interwound(
+    total_length: float,
+    target_writhe: float,
+    num_points: int,
+    precision: int,
+    nodes: Optional[int],
+    ellipse_ratio: Optional[float],
+    lobe_aspect: Optional[float],
+    minimum_final_radius: Optional[float],
+    qualifying_fraction: float,
+) -> SCGenerationResult:
+    """Fit and verify a loosely interwound curve (see ``_loose_curve_points``).
+
+    One shape parameter is root-found so that the written polyline's Gauss writhe
+    equals the target: the ellipse ratio with the lobe aspect held (default, round
+    lobes), or the lobe aspect with a set ellipse ratio held.
+    """
+
+    from scipy.optimize import brentq
+
+    _set_active_phase_trim(0.0)
+    node_count = _loose_default_nodes(target_writhe) if nodes is None else int(nodes)
+    target = float(target_writhe)
+    evaluations = [0]
+    if ellipse_ratio is None:
+        held_value = DEFAULT_LOOSE_LOBE_ASPECT if lobe_aspect is None else float(lobe_aspect)
+        fitted, held = "ellipse ratio", "lobe aspect"
+        bounds = LOOSE_ELLIPSE_RATIO_BOUNDS
+
+        def curve_for(value: float) -> PointArray:
+            return _loose_curve_points(
+                total_length, target, num_points, precision, node_count, value, held_value
+            )
+    else:
+        held_value = float(ellipse_ratio)
+        fitted, held = "lobe aspect", "ellipse ratio"
+        bounds = (LOOSE_LOBE_ASPECT_MINIMUM, LOOSE_LOBE_ASPECT_MAXIMUM)
+
+        def curve_for(value: float) -> PointArray:
+            return _loose_curve_points(
+                total_length, target, num_points, precision, node_count, held_value, value
+            )
+
+    def writhe_for(value: float) -> float:
+        evaluations[0] += 1
+        return evaluate_curve_it_writhe(curve_for(value), smooth=False)
+
+    writhe_at_bounds = (writhe_for(bounds[0]), writhe_for(bounds[1]))
+    reach_low = min(abs(value) for value in writhe_at_bounds)
+    reach_high = max(abs(value) for value in writhe_at_bounds)
+    if not min(writhe_at_bounds) <= target <= max(writhe_at_bounds):
+        more = abs(target) > reach_high
+        if ellipse_ratio is None:
+            advice = "Use {0} nodes or a {1} lobe aspect.".format(
+                "more" if more else "fewer", "larger" if more else "smaller"
+            )
+        else:
+            advice = "Use {0} nodes or a {1} ellipse ratio.".format(
+                "more" if more else "fewer", "smaller" if more else "larger"
+            )
+        raise ValueError(
+            "Writhe {0:g} is out of reach for {1} nodes with the {2} held at {3:g}: fitting the "
+            "{4} over {5:g} to {6:g} reaches |W| from {7:.4f} to {8:.4f}. {9}".format(
+                target, node_count, held, held_value, fitted, bounds[0], bounds[1],
+                reach_low, reach_high, advice,
+            )
+        )
+    solution = brentq(
+        lambda value: writhe_for(value) - target,
+        bounds[0],
+        bounds[1],
+        xtol=LOOSE_ROOT_TOLERANCE,
+        rtol=LOOSE_ROOT_TOLERANCE,
+    )
+    points = curve_for(solution)
+    ratio_value = float(solution) if ellipse_ratio is None else held_value
+    aspect_value = held_value if ellipse_ratio is None else float(solution)
+
+    segment_lengths = np.linalg.norm(np.roll(points, -1, axis=0) - points, axis=1)
+    unique_count = int(len(np.unique(points, axis=0)))
+    if not np.all(np.isfinite(points)) or not np.all(np.isfinite(segment_lengths)):
+        raise ValueError("Serialized curve coordinates are outside the numeric range.")
+    if unique_count != int(num_points) or np.any(segment_lengths <= 0.0):
+        raise ValueError(
+            "Output precision collapses distinct curve samples ({0} of {1} remain unique). "
+            "Increase --precision or use a larger contour length.".format(unique_count, num_points)
+        )
+    achieved_length = closed_polyline_length(points)
+    length_tolerance = max(1.0e-9, float(total_length) * 1.0e-6)
+    if abs(achieved_length - float(total_length)) > length_tolerance:
+        raise ValueError(
+            "Output precision changes the requested contour length too much: "
+            "target={0:.10g}, serialized={1:.10g}. Increase --precision.".format(
+                total_length, achieved_length
+            )
+        )
+    achieved_writhe = evaluate_curve_it_writhe(points, smooth=False)
+    if abs(achieved_writhe - target) > WRITHE_TOLERANCE:
+        raise ValueError(
+            "Serialized-coordinate writhe is outside tolerance: "
+            "target={0:.6g}, achieved={1:.6g}. Increase --precision.".format(target, achieved_writhe)
+        )
+    xz_crossings = count_xz_projection_crossings(points)
+    if xz_crossings != node_count:
+        raise ValueError(
+            "Serialized-coordinate xz crossing verification failed: expected {0} nodes, "
+            "found {1}.".format(node_count, xz_crossings)
+        )
+    exclusion = float(total_length) / (2.0 * (node_count + 1))
+    closest, closest_a, closest_b = _loose_closest_approach(points, exclusion)
+    if minimum_final_radius is not None and 0.5 * closest < float(minimum_final_radius):
+        raise RuntimeError(
+            "The closest self-approach {0:.6g} is below twice the minimum final measured radius "
+            "{1:.6g}: the loose curve's strands come too close at this length. Use a longer L, "
+            "more nodes or a lower |W|, or clear the radius.".format(closest, minimum_final_radius)
+        )
+    total_curvature, maximum_local_curvature, bending_energy_integral = evaluate_curvature_metrics(
+        points,
+        adaptive_total=False,
+        smooth=False,
+    )
+    pca_crossings, pca_plane = analyze_pca_projection(points)
+    vertex_arc = np.concatenate(([0.0], np.cumsum(segment_lengths[:-1])))
+
+    def landmark(index: int) -> ContourLandmark:
+        return ContourLandmark(
+            point_index=int(index),
+            contour_percent=100.0 * float(vertex_arc[index]) / float(np.sum(segment_lengths)),
+        )
+
+    landmarks = ContourLandmarks(
+        top_terminus=landmark(int(np.argmax(points[:, 2]))),
+        bottom_terminus=landmark(int(np.argmin(points[:, 2]))),
+        middle_segment_peaks=(),
+    )
+    is_integer, _nearest = _integer_request(target)
+    final_stats = (
+        projection_statistics(points, target, FINAL_PROJECTION_DIRECTIONS)
+        if is_integer
+        else {"applicable": False, "direction_count": FINAL_PROJECTION_DIRECTIONS}
+    )
+    width, depth, height = (float(np.ptp(points[:, axis])) for axis in range(3))
+    details = {
+        "nodes": node_count,
+        "nodes_default": nodes is None,
+        "fitted_parameter": fitted,
+        "held_parameter": held,
+        "ellipse_ratio": ratio_value,
+        "lobe_aspect": aspect_value,
+        "fit_bounds": (float(bounds[0]), float(bounds[1])),
+        "writhe_at_bounds": writhe_at_bounds,
+        "width": width,
+        "depth": depth,
+        "height": height,
+        "lobe_height": height / float(node_count + 1),
+        "closest_approach": closest,
+        "closest_rows": (closest_a + 1, closest_b + 1),
+        "closest_exclusion": exclusion,
+    }
+    phase_sweep = math.copysign(math.pi * node_count, target)
+    return SCGenerationResult(
+        points=points,
+        requested_length=float(total_length),
+        achieved_length=float(achieved_length),
+        requested_writhe=target,
+        achieved_writhe=float(achieved_writhe),
+        xz_crossings=int(xz_crossings),
+        pca_crossings=int(pca_crossings),
+        pca_plane=str(pca_plane),
+        plectoneme_phase_turns=node_count / 2.0,
+        opening_angle_deg=0.0,
+        curvature_objective=OPENING_ANGLE_MODE_LOOSE,
+        total_curvature=float(total_curvature),
+        maximum_local_curvature=float(maximum_local_curvature),
+        bending_energy_integral=float(bending_energy_integral),
+        top_terminal_lobe_height_xz=None,
+        bottom_terminal_lobe_height_xz=None,
+        terminal_lobe_height_xz=None,
+        middle_lobe_height_xz=None,
+        lobe_height_mismatch_xz=None,
+        opening_angle_evaluations=int(evaluations[0]),
+        loop_control_canonical=0.0,
+        radius_scaled=0.5 * width,
+        final_superhelix_radius=0.5 * closest,
+        stem_height_scaled=0.0,
+        canonical_h0=0.0,
+        h0_scaled=0.0,
+        zero_h0=False,
+        solver_iterations=int(evaluations[0]),
+        landmarks=landmarks,
+        phase_trim=0.0,
+        phase_sweep_rad=float(phase_sweep),
+        phase_sweep_pi=float(phase_sweep / math.pi),
+        phase_factor=node_count / abs(target),
+        xz_symmetry_rotation_rad=0.0,
+        trim_enabled=False,
+        projection_stats=final_stats,
+        search_projection_stats={"applicable": False, "direction_count": SEARCH_PROJECTION_DIRECTIONS},
+        projection_majority_target=float(qualifying_fraction),
+        screening_mode=SCREENING_MODE_LOOSE,
+        minimum_final_radius=None if minimum_final_radius is None else float(minimum_final_radius),
+        projection_search_evaluations=0,
+        family=FAMILY_LOOSE,
+        loose_details=details,
+    )
+
+
+def _loose_generation_summary(result: SCGenerationResult) -> str:
+    """Report for the loosely interwound family."""
+
+    details = result.loose_details or {}
+    nodes = int(details["nodes"])
+    residual = result.achieved_writhe - result.requested_writhe
+    minimum_bend_radius = (
+        1.0 / result.maximum_local_curvature if result.maximum_local_curvature > 0.0 else math.inf
+    )
+    low, high = details["writhe_at_bounds"]
+    held_value = (
+        details["lobe_aspect"] if details["fitted_parameter"] == "ellipse ratio" else details["ellipse_ratio"]
+    )
+    radius_line = (
+        "Minimum final measured radius = not set"
+        if result.minimum_final_radius is None
+        else "Minimum final measured radius = {0:.10g} (PASS: half the closest self-approach "
+        "must be at least this)".format(result.minimum_final_radius)
+    )
+    lines = [
+        "Requested closed contour length = {0:.10g}".format(result.requested_length),
+        "Achieved closed contour length  = {0:.10g}".format(result.achieved_length),
+        "Requested Gauss writhe = {0:.10g}".format(result.requested_writhe),
+        "Achieved Gauss writhe  = {0:.10g}".format(result.achieved_writhe),
+        "Writhe residual        = {0:+.3e}".format(residual),
+        "Curve family           = loosely interwound: a stadium twisted through N half-turns about z",
+        "Nodes N                = {0} ({1})".format(
+            nodes, "default floor(|W|) + 1" if details["nodes_default"] else "requested"
+        ),
+        "Fixed xz projection crossings = {0}".format(result.xz_crossings),
+        "Node crossing check           = PASS (required N = {0})".format(nodes),
+        "Equal lobes along z           = {0}".format(nodes + 1),
+        "Writhe per node               = {0:.6g}".format(abs(result.achieved_writhe) / nodes),
+        "Fitted shape parameter        = {0} (the {1} held at {2:.10g})".format(
+            details["fitted_parameter"], details["held_parameter"], held_value
+        ),
+        "Ellipse ratio (end-on y / x)  = {0:.10g}".format(details["ellipse_ratio"]),
+        "Lobe aspect (xz height / width) = {0:.10g}".format(details["lobe_aspect"]),
+        "Fit range of the {0}  = {1:.6g} to {2:.6g} -> writhe {3:+.6g} to {4:+.6g}".format(
+            details["fitted_parameter"], details["fit_bounds"][0], details["fit_bounds"][1], low, high
+        ),
+        "Writhe evaluations            = {0}".format(result.opening_angle_evaluations),
+        "PCA principal plane    = {0}".format(result.pca_plane),
+        "PCA-plane crossings    = {0}".format(result.pca_crossings),
+        "Size x / y / z (width / depth / height) = {0:.6f} / {1:.6f} / {2:.6f}".format(
+            details["width"], details["depth"], details["height"]
+        ),
+        "Lobe height along z    = {0:.10g}".format(details["lobe_height"]),
+        "Closest self-approach  = {0:.10g} (XYZ rows {1} and {2}; points more than {3:.6g} "
+        "apart along the contour)".format(
+            details["closest_approach"],
+            details["closest_rows"][0],
+            details["closest_rows"][1],
+            details["closest_exclusion"],
+        ),
+        radius_line,
+        "Final measured radius (half the closest self-approach) = {0:.10g}".format(
+            result.final_superhelix_radius
+        ),
+        "Total curvature          = {0:.10g} rad".format(result.total_curvature),
+        "Largest local curvature  = {0:.10g} inverse length".format(result.maximum_local_curvature),
+        "Minimum local bend radius = {0:.10g}".format(minimum_bend_radius),
+        "Reduced bending energy integral = {0:.10g} inverse length".format(
+            result.bending_energy_integral
+        ),
+        "Output geometry          = twisted stadium, Gaussian-smoothed over ~0.09% of the loop, "
+        "resampled, rescaled and centred; row 1 at the flattest point",
+        "Writhe convention        = exact written closed polyline used by Curve It",
+        "Curvature convention     = periodic spline of written coordinates",
+        "Mirror / handedness      = {0}".format(
+            "positive-writhe mirror (y -> -y)" if result.requested_writhe > 0.0 else "negative writhe"
+        ),
+        "Not applicable           = opening-angle objectives and search, phase trimming, H0, "
+        "projection screening",
+        "Contour landmarks: percent of closed length from XYZ row 1",
+        _landmark_line("Top terminus (+z tip)", result.landmarks.top_terminus),
+        _landmark_line("Bottom terminus (-z tip)", result.landmarks.bottom_terminus),
+        "",
+        "Projection diagnostics (information only; loose curves are not screened)",
+    ]
+    stats = result.projection_stats
+    if bool(stats.get("applicable", False)):
+        lines.extend(
+            [
+                "Generic projection directions = {0}".format(stats["direction_count"]),
+                "Projection curve samples      = {0}".format(stats["curve_samples"]),
+                "Target signed crossing sum    = {0:+d}".format(int(stats["target"])),
+                "Views with target signed sum  = {0:.2%}".format(float(stats["target_fraction"])),
+                "Mean signed crossing sum      = {0:+.8g}".format(float(stats["mean"])),
+                "Median / mode                 = {0:+.8g} / {1:+d}".format(
+                    float(stats["median"]), int(stats["mode"])
+                ),
+                "Observed signed-sum range     = {0:+d} to {1:+d}".format(
+                    int(stats["minimum"]), int(stats["maximum"])
+                ),
+                "Signed-sum histogram          = {0}".format(stats["histogram"]),
+                "Projection note               = most views show all N same-signed crossings and side "
+                "views fewer or opposite-signed ones, so the spherical mean approaches the Gauss writhe",
+            ]
+        )
+    else:
+        lines.append("Generic projection statistics = N/A for fractional writhe")
+    return "\n".join(lines)
+
+
 def generate_sc_points(
     total_length: float,
     target_writhe: float,
@@ -2691,8 +3271,15 @@ def generate_sc_points(
     minimum_final_radius: Optional[float] = None,
     zero_h0: bool = DEFAULT_ZERO_H0,
     angle_search: str = DEFAULT_ANGLE_SEARCH,
+    family: str = DEFAULT_FAMILY,
+    nodes: Optional[int] = None,
+    ellipse_ratio: Optional[float] = None,
+    lobe_aspect: Optional[float] = None,
 ) -> SCGenerationResult:
     """Generate an optimized/manual plectoneme with V3_8 multi-view screening.
+
+    ``family="loose"`` instead writes the loosely interwound curve of
+    ``_generate_loose_interwound`` from ``nodes``, ``ellipse_ratio`` and ``lobe_aspect``.
 
     ``angle_search`` selects how an automatic opening angle is chosen: ``quick``
     (default) is the V3.7 search, ``accurate`` ranks every candidate angle by the
@@ -2719,9 +3306,25 @@ def generate_sc_points(
         minimum_final_radius,
         zero_h0,
         angle_search=angle_search,
+        family=family,
+        nodes=nodes,
+        ellipse_ratio=ellipse_ratio,
+        lobe_aspect=lobe_aspect,
     )
     num_points = int(num_points)
     qualifying_fraction = float(qualifying_views_percent) / 100.0
+    if str(family) == FAMILY_LOOSE:
+        return _generate_loose_interwound(
+            total_length=float(total_length),
+            target_writhe=float(target_writhe),
+            num_points=num_points,
+            precision=int(precision),
+            nodes=nodes,
+            ellipse_ratio=None if ellipse_ratio is None else float(ellipse_ratio),
+            lobe_aspect=None if lobe_aspect is None else float(lobe_aspect),
+            minimum_final_radius=minimum_final_radius,
+            qualifying_fraction=qualifying_fraction,
+        )
     if bool(zero_h0) and abs(float(target_writhe)) <= 1.0e-12:
         return _with_angle_search_note(
             _generate_zero_h0_ring(
@@ -2874,6 +3477,8 @@ def _landmark_line(label: str, landmark: ContourLandmark) -> str:
 def generation_summary(result: SCGenerationResult) -> str:
     """Return a compact V3_8 report for the command line and GUI."""
 
+    if result.family == FAMILY_LOOSE:
+        return _loose_generation_summary(result)
     residual = result.achieved_writhe - result.requested_writhe
     ring_mode = result.curvature_objective == OPENING_ANGLE_MODE_RING
     is_integer, nearest = _integer_request(result.requested_writhe)
@@ -3275,6 +3880,37 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--family", choices=FAMILIES, default=DEFAULT_FAMILY,
+        help=(
+            "Curve family. tight (default): the slender plectoneme whose fixed-xz view shows "
+            "|W| crossings. loose: a loosely interwound twisted ring whose fixed-xz view crosses "
+            "itself --nodes times between equal lobes, fitted to the exact writhe; a loose node "
+            "carries less than one unit of writhe, so the node count exceeds |W|. Adds "
+            "_N<nodes>_Loose to automatic filenames."
+        ),
+    )
+    parser.add_argument(
+        "--nodes", type=int, default=None,
+        help="Loose family: number of fixed-xz crossings N (N + 1 equal lobes). Default: floor(|W|) + 1.",
+    )
+    loose_shape_group = parser.add_mutually_exclusive_group()
+    loose_shape_group.add_argument(
+        "--lobe-aspect", type=float, default=None,
+        help=(
+            "Loose family: lobe height / width in the fixed-xz view, held while the ellipse "
+            "ratio is fitted to the writhe. Default: {0:g} (round lobes).".format(
+                DEFAULT_LOOSE_LOBE_ASPECT
+            )
+        ),
+    )
+    loose_shape_group.add_argument(
+        "--ellipse-ratio", type=float, default=None,
+        help=(
+            "Loose family: end-on cross-section depth / width (y / x; 1 = circular), held while "
+            "the lobe aspect is fitted to the writhe instead."
+        ),
+    )
+    parser.add_argument(
         "-n", "--num-points", type=int, default=DEFAULT_NUM_POINTS,
         help="Number of unique periodic output samples. Default: {0}".format(DEFAULT_NUM_POINTS),
     )
@@ -3293,6 +3929,24 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--gui", action="store_true", help="Open the graphical user interface.")
     parser.add_argument("--version", action="version", version="{0} {1}".format(TOOL_NAME, TOOL_VERSION))
     args = parser.parse_args(argv)
+    loose = args.family == FAMILY_LOOSE
+    if loose:
+        tight_only = [
+            flag
+            for flag, given in (
+                ("--opening-angle", args.opening_angle is not None),
+                ("--angle-objective", args.curvature_objective != DEFAULT_CURVATURE_OBJECTIVE),
+                ("--angle-search", args.angle_search != DEFAULT_ANGLE_SEARCH),
+                ("--zero-h0", args.zero_h0),
+                ("--no-trim", not args.trim_enabled),
+                ("--qualifying-views", args.qualifying_views is not None),
+            )
+            if given
+        ]
+        if tight_only:
+            parser.error("{0} apply only to --family tight".format(", ".join(tight_only)))
+    elif args.nodes is not None or args.lobe_aspect is not None or args.ellipse_ratio is not None:
+        parser.error("--nodes, --lobe-aspect and --ellipse-ratio apply only to --family loose")
     if args.qualifying_views is None:
         args.qualifying_views = DEFAULT_QUALIFYING_VIEWS_PERCENT
         is_integer, nearest = _integer_request(args.writhe)
@@ -3303,6 +3957,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             and nearest != 0
         ):
             args.minimum_final_radius = DEFAULT_MINIMUM_FINAL_RADIUS
+    if loose and args.minimum_final_radius is None:
+        args.minimum_final_radius = DEFAULT_MINIMUM_FINAL_RADIUS
     if args.output is None:
         args.output = automatic_output_filename(
             total_length=args.total_length,
@@ -3314,6 +3970,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             minimum_final_radius=args.minimum_final_radius,
             zero_h0=args.zero_h0,
             angle_search=args.angle_search,
+            family=args.family,
+            nodes=args.nodes,
+            ellipse_ratio=args.ellipse_ratio,
+            lobe_aspect=args.lobe_aspect,
         )
     return args
 
@@ -3333,6 +3993,10 @@ def run_cli(args: argparse.Namespace) -> SCGenerationResult:
         minimum_final_radius=args.minimum_final_radius,
         zero_h0=args.zero_h0,
         angle_search=args.angle_search,
+        family=args.family,
+        nodes=args.nodes,
+        ellipse_ratio=args.ellipse_ratio,
+        lobe_aspect=args.lobe_aspect,
     )
     write_plain_xyz(result.points, args.output, args.precision)
     print("Wrote {0} unique periodic points to: {1}".format(len(result.points), args.output))
@@ -3418,7 +4082,8 @@ def run_gui() -> None:
         main,
         text=(
             "Standalone projection-robust plectoneme generator. Integer W is fitted to Gauss writhe "
-            "and screened over generic projections."
+            "and screened over generic projections. The loose family writes a loosely interwound "
+            "twisted ring of equal lobes instead."
         ),
         wraplength=980,
         justify="left",
@@ -3453,6 +4118,10 @@ def run_gui() -> None:
     points_var = tk.StringVar(value=str(DEFAULT_NUM_POINTS))
     precision_var = tk.StringVar(value=str(DEFAULT_PRECISION))
     angle_search_var = tk.StringVar(value=DEFAULT_ANGLE_SEARCH)
+    family_var = tk.StringVar(value=DEFAULT_FAMILY)
+    nodes_var = tk.StringVar(value="")
+    lobe_aspect_var = tk.StringVar(value=str(DEFAULT_LOOSE_LOBE_ASPECT))
+    ellipse_ratio_var = tk.StringVar(value="")
     initial_auto_output = automatic_output_filename(
         total_length=DEFAULT_TOTAL_LENGTH,
         target_writhe=DEFAULT_WRITHE,
@@ -3517,11 +4186,95 @@ def run_gui() -> None:
             "precision can collapse samples or move writhe outside tolerance.\n\nDefault: 8.",
         ),
     }
+    family_frame = ttk.LabelFrame(inputs, text="Curve family", padding=8)
+    family_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+    family_options = (
+        (
+            "Tight (default)",
+            FAMILY_TIGHT,
+            "Curve family: tight (--family tight)",
+            "The default family: two antipodal superhelical arms closed by two end loops, a "
+            "slender, tightly interwound plectoneme whose fixed-xz view shows |W| crossings. "
+            "The opening-angle selection, angle search, trimming, H0 and screening settings "
+            "below all apply to it.",
+        ),
+        (
+            "Loose: N + 1 equal lobes",
+            FAMILY_LOOSE,
+            "Curve family: loose (--family loose)",
+            "A loosely interwound 'twisted ring', as drawn in textbooks and logos: a stadium "
+            "in xz is given N smooth half-twists about z, so the fixed-xz view crosses itself "
+            "N times (nodes) between N + 1 equal lobes. One shape parameter is root-found so "
+            "the written curve has exactly the requested Gauss writhe.\n\nA loose node carries "
+            "less than one unit of writhe, so N exceeds |W| (default floor(|W|) + 1): W = -2 "
+            "gives three nodes and four lobes. Opening-angle objectives, angle search, trimming, "
+            "H0 and qualifying views do not apply. Minimum final measured radius then bounds "
+            "half the closest axis-axis approach between points more than half a lobe apart "
+            "along the contour.\n\nThe filename records the nodes and Loose, for example "
+            "sc_L1285p2_Wm2_N3_Loose.xyz.",
+        ),
+    )
+    family_row = ttk.Frame(family_frame)
+    family_row.grid(row=0, column=0, sticky="w")
+    family_buttons = []
+    for column, (family_text, family_value, help_title, family_help) in enumerate(family_options):
+        family_button = ttk.Radiobutton(
+            family_row,
+            text=family_text,
+            variable=family_var,
+            value=family_value,
+        )
+        family_button.grid(row=0, column=2 * column, sticky="w", padx=(0 if column == 0 else 12, 0))
+        family_buttons.append(family_button)
+        add_help_button(family_row, 0, 2 * column + 1, help_title, family_help)
+    loose_fields = (
+        (
+            "Nodes",
+            nodes_var,
+            "Nodes (--nodes)",
+            "Loose family: the number of fixed-xz crossings N, giving N + 1 equal lobes. Leave "
+            "blank for the default floor(|W|) + 1. With round lobes N nodes reach |W| between "
+            "about 0.54 N (circular cross-section) and 0.96 N (nearly flat); a combination out "
+            "of reach stops with the reachable range.\n\nExample: 3 for W = -2.",
+        ),
+        (
+            "Lobe aspect",
+            lobe_aspect_var,
+            "Lobe aspect (--lobe-aspect)",
+            "Loose family: lobe height / width in the fixed-xz view; 1, the default, makes the "
+            "lobes round. It is held while the ellipse ratio is fitted to the writhe, and is "
+            "disabled when an ellipse ratio is entered, because it is then fitted instead.",
+        ),
+        (
+            "Ellipse ratio",
+            ellipse_ratio_var,
+            "Ellipse ratio (--ellipse-ratio)",
+            "Loose family: the end-on cross-section's depth / width (y / x); 1 is circular and "
+            "smaller values are flatter. Blank, the default, fits it to the writhe with the lobe "
+            "aspect held. Enter a value to hold it and fit the lobe aspect instead.\n\nExample: "
+            "1 for a circular end-on view; W = -2 with three nodes then gives lobes about 1.47 "
+            "times taller than wide.",
+        ),
+    )
+    loose_row = ttk.Frame(family_frame)
+    loose_row.grid(row=1, column=0, sticky="w", pady=(6, 0))
+    loose_widgets = []
+    # Nodes, then the two alternative shape settings stacked: lobe aspect over ellipse ratio.
+    for (grid_row, column), (label_text, variable, help_title, help_text) in zip(
+        ((0, 0), (0, 3), (1, 3)), loose_fields
+    ):
+        label_widget = ttk.Label(loose_row, text=label_text)
+        label_widget.grid(row=grid_row, column=column, sticky="e", padx=(0 if column == 0 else 10, 4), pady=2)
+        entry_widget = ttk.Entry(loose_row, textvariable=variable, width=6)
+        entry_widget.grid(row=grid_row, column=column + 1, sticky="w", pady=2)
+        add_help_button(loose_row, grid_row, column + 2, help_title, help_text)
+        loose_widgets.append((label_widget, entry_widget, variable))
+
     qualifying_views_label = None
     qualifying_views_entry = None
     minimum_radius_label = None
     minimum_radius_entry = None
-    for row, (label, variable) in enumerate(fields):
+    for row, (label, variable) in enumerate(fields, start=1):
         label_widget = ttk.Label(inputs, text=label)
         label_widget.grid(row=row, column=0, sticky="e", padx=(0, 6), pady=5)
         entry_widget = ttk.Entry(inputs, textvariable=variable, width=17)
@@ -3536,7 +4289,7 @@ def run_gui() -> None:
             minimum_radius_entry = entry_widget
 
     objective_frame = ttk.LabelFrame(inputs, text="Opening-angle selection", padding=8)
-    objective_frame.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+    objective_frame.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(10, 0))
     options = (
         (
             "Minimize total bending energy (default)",
@@ -3581,13 +4334,16 @@ def run_gui() -> None:
             "between 0 and 90 degrees. Example: 25.",
         ),
     )
+    objective_buttons = []
     for row, (label, value, explanation) in enumerate(options):
-        ttk.Radiobutton(
+        objective_button = ttk.Radiobutton(
             objective_frame,
             text=label,
             variable=curvature_objective_var,
             value=value,
-        ).grid(row=row, column=0, sticky="w", pady=2)
+        )
+        objective_button.grid(row=row, column=0, sticky="w", pady=2)
+        objective_buttons.append(objective_button)
         add_help_button(
             objective_frame,
             row,
@@ -3653,11 +4409,12 @@ def run_gui() -> None:
         "presentation and |W| fixed-xz crossings for trim < 1. Disable trimming to retain "
         "the legacy pi*W arm phase; projection statistics then become diagnostic only.",
     )
-    ttk.Checkbutton(
+    zero_h0_checkbutton = ttk.Checkbutton(
         objective_frame,
         text="Use H0 = 0 construction (default: H0 = 2R)",
         variable=zero_h0_var,
-    ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(4, 0))
+    )
+    zero_h0_checkbutton.grid(row=7, column=0, columnspan=3, sticky="w", pady=(4, 0))
     add_help_button(
         objective_frame,
         7,
@@ -3681,12 +4438,41 @@ def run_gui() -> None:
         except (TypeError, ValueError):
             return False
 
+    def loose_selected() -> bool:
+        return family_var.get() == FAMILY_LOOSE
+
+    def parse_nodes_text(text: str) -> Optional[int]:
+        text = text.strip()
+        if not text:
+            return None
+        message = "Nodes must be a whole number, or blank for the default floor(|W|) + 1."
+        try:
+            value = float(text)
+        except ValueError as exc:
+            raise ValueError(message) from exc
+        if not value.is_integer():
+            raise ValueError(message)
+        return int(value)
+
+    def update_family_state(*_args) -> None:
+        loose = loose_selected()
+        ratio_given = bool(ellipse_ratio_var.get().strip())
+        for label_widget, entry_widget, variable in loose_widgets:
+            enabled = loose and not (variable is lobe_aspect_var and ratio_given)
+            label_widget.state(("!disabled",) if enabled else ("disabled",))
+            entry_widget.state(("!disabled",) if enabled else ("disabled",))
+        tight_state = ("disabled",) if loose else ("!disabled",)
+        for objective_button in objective_buttons:
+            objective_button.state(tight_state)
+        zero_h0_checkbutton.state(tight_state)
+
     def update_manual_state(*_args) -> None:
         manual_angle_entry.configure(
             state=(
                 "normal"
                 if curvature_objective_var.get() == OPENING_ANGLE_MODE_MANUAL
                 and not zero_h0_ring_selected()
+                and not loose_selected()
                 else "disabled"
             )
         )
@@ -3698,6 +4484,7 @@ def run_gui() -> None:
             "!disabled"
             if curvature_objective_var.get() in ACCURATE_ANGLE_SEARCH_OBJECTIVES
             and nonzero_writhe
+            and not loose_selected()
             else "disabled"
         )
         angle_search_label.state((search_state,))
@@ -3705,48 +4492,63 @@ def run_gui() -> None:
             search_button.state((search_state,))
 
     def update_screening_state(*_args) -> None:
-        ring_mode = zero_h0_ring_selected()
-        trimming_enabled = bool(trim_enabled_var.get()) and not ring_mode
+        loose = loose_selected()
+        ring_mode = zero_h0_ring_selected() and not loose
+        trimming_enabled = bool(trim_enabled_var.get()) and not ring_mode and not loose
         radius_mode = bool(minimum_final_radius_var.get().strip())
         qualifying_state = "!disabled" if trimming_enabled and not radius_mode else "disabled"
-        radius_state = "!disabled" if trimming_enabled else "disabled"
-        trim_checkbutton.state(("disabled",) if ring_mode else ("!disabled",))
+        radius_state = "!disabled" if trimming_enabled or loose else "disabled"
+        trim_checkbutton.state(("disabled",) if ring_mode or loose else ("!disabled",))
         qualifying_views_label.state((qualifying_state,))
         qualifying_views_entry.state((qualifying_state,))
         minimum_radius_label.state((radius_state,))
         minimum_radius_entry.state((radius_state,))
 
+    def automatic_name() -> str:
+        if loose_selected():
+            ratio_text = ellipse_ratio_var.get().strip()
+            aspect_text = lobe_aspect_var.get().strip()
+            return automatic_output_filename(
+                total_length=float(length_var.get().strip()),
+                target_writhe=float(writhe_var.get().strip()),
+                family=FAMILY_LOOSE,
+                nodes=parse_nodes_text(nodes_var.get()),
+                ellipse_ratio=float(ratio_text) if ratio_text else None,
+                lobe_aspect=None if ratio_text or not aspect_text else float(aspect_text),
+            )
+        selection = curvature_objective_var.get().strip()
+        manual_angle = (
+            float(opening_angle_var.get().strip())
+            if selection == OPENING_ANGLE_MODE_MANUAL
+            else None
+        )
+        minimum_radius_text = minimum_final_radius_var.get().strip()
+        minimum_radius = (
+            float(minimum_radius_text)
+            if bool(trim_enabled_var.get()) and minimum_radius_text
+            else None
+        )
+        return automatic_output_filename(
+            total_length=float(length_var.get().strip()),
+            target_writhe=float(writhe_var.get().strip()),
+            curvature_objective=(
+                DEFAULT_CURVATURE_OBJECTIVE
+                if selection == OPENING_ANGLE_MODE_MANUAL
+                else selection
+            ),
+            opening_angle_deg=manual_angle,
+            trim_enabled=bool(trim_enabled_var.get()),
+            qualifying_views_percent=float(qualifying_views_var.get().strip()),
+            minimum_final_radius=minimum_radius,
+            zero_h0=bool(zero_h0_var.get()),
+            angle_search=angle_search_var.get().strip() or DEFAULT_ANGLE_SEARCH,
+        )
+
     def update_automatic_output(*_args) -> None:
         """Refresh an automatic basename while preserving a custom user filename."""
 
         try:
-            selection = curvature_objective_var.get().strip()
-            manual_angle = (
-                float(opening_angle_var.get().strip())
-                if selection == OPENING_ANGLE_MODE_MANUAL
-                else None
-            )
-            minimum_radius_text = minimum_final_radius_var.get().strip()
-            minimum_radius = (
-                float(minimum_radius_text)
-                if bool(trim_enabled_var.get()) and minimum_radius_text
-                else None
-            )
-            new_name = automatic_output_filename(
-                total_length=float(length_var.get().strip()),
-                target_writhe=float(writhe_var.get().strip()),
-                curvature_objective=(
-                    DEFAULT_CURVATURE_OBJECTIVE
-                    if selection == OPENING_ANGLE_MODE_MANUAL
-                    else selection
-                ),
-                opening_angle_deg=manual_angle,
-                trim_enabled=bool(trim_enabled_var.get()),
-                qualifying_views_percent=float(qualifying_views_var.get().strip()),
-                minimum_final_radius=minimum_radius,
-                zero_h0=bool(zero_h0_var.get()),
-                angle_search=angle_search_var.get().strip() or DEFAULT_ANGLE_SEARCH,
-            )
+            new_name = automatic_name()
         except (TypeError, ValueError):
             return
 
@@ -3760,6 +4562,10 @@ def run_gui() -> None:
             )
         last_auto_output_name["value"] = new_name
 
+    family_var.trace_add("write", update_family_state)
+    family_var.trace_add("write", update_manual_state)
+    family_var.trace_add("write", update_screening_state)
+    ellipse_ratio_var.trace_add("write", update_family_state)
     curvature_objective_var.trace_add("write", update_manual_state)
     writhe_var.trace_add("write", update_manual_state)
     zero_h0_var.trace_add("write", update_manual_state)
@@ -3777,8 +4583,13 @@ def run_gui() -> None:
         qualifying_views_var,
         minimum_final_radius_var,
         angle_search_var,
+        family_var,
+        nodes_var,
+        lobe_aspect_var,
+        ellipse_ratio_var,
     ):
         filename_input_var.trace_add("write", update_automatic_output)
+    update_family_state()
     update_manual_state()
     update_screening_state()
     update_automatic_output()
@@ -3804,7 +4615,8 @@ def run_gui() -> None:
         "when that opt-in family is selected. A custom typed or browsed filename is "
         "preserved.\n\nExamples: sc_L1071_Wm3_R13_ABend.xyz and "
         "sc_L1071_Wm3_R13_ABend_H0zero.xyz. The direct zero-writhe ring is "
-        "sc_L1071_W0_NoTrim_Ring_H0zero.xyz.",
+        "sc_L1071_W0_NoTrim_Ring_H0zero.xyz, and the loose family writes names such as "
+        "sc_L1285p2_Wm2_N3_Loose.xyz.",
     )
 
     def browse_output() -> None:
@@ -3857,6 +4669,52 @@ def run_gui() -> None:
     def parse_gui_values():
         total_length = float(length_var.get().strip())
         target_writhe = float(writhe_var.get().strip())
+        family = family_var.get().strip() or DEFAULT_FAMILY
+        nodes: Optional[int] = None
+        ellipse_ratio: Optional[float] = None
+        lobe_aspect: Optional[float] = None
+        if family == FAMILY_LOOSE:
+            nodes = parse_nodes_text(nodes_var.get())
+            ratio_text = ellipse_ratio_var.get().strip()
+            ellipse_ratio = float(ratio_text) if ratio_text else None
+            aspect_text = lobe_aspect_var.get().strip()
+            lobe_aspect = None if ellipse_ratio is not None or not aspect_text else float(aspect_text)
+            minimum_radius_text = minimum_final_radius_var.get().strip()
+            num_points = int(points_var.get().strip())
+            precision = int(precision_var.get().strip())
+            output = output_var.get().strip()
+            if not output:
+                raise ValueError("Please specify an output file.")
+            minimum_final_radius = float(minimum_radius_text) if minimum_radius_text else None
+            validate_inputs(
+                total_length,
+                target_writhe,
+                num_points,
+                precision,
+                minimum_final_radius=minimum_final_radius,
+                family=family,
+                nodes=nodes,
+                ellipse_ratio=ellipse_ratio,
+                lobe_aspect=lobe_aspect,
+            )
+            return (
+                total_length,
+                target_writhe,
+                DEFAULT_CURVATURE_OBJECTIVE,
+                None,
+                True,
+                DEFAULT_QUALIFYING_VIEWS_PERCENT,
+                minimum_final_radius,
+                False,
+                DEFAULT_ANGLE_SEARCH,
+                num_points,
+                precision,
+                output,
+                family,
+                nodes,
+                ellipse_ratio,
+                lobe_aspect,
+            )
         selection = curvature_objective_var.get().strip()
         objective = selection
         manual_angle: Optional[float] = None
@@ -3911,6 +4769,10 @@ def run_gui() -> None:
             num_points,
             precision,
             output,
+            family,
+            None,
+            None,
+            None,
         )
 
     def obtain_result():
@@ -3929,6 +4791,10 @@ def run_gui() -> None:
             num_points,
             precision,
             output,
+            family,
+            nodes,
+            ellipse_ratio,
+            lobe_aspect,
         ) = values
         key = (
             total_length,
@@ -3942,10 +4808,16 @@ def run_gui() -> None:
             angle_search,
             num_points,
             precision,
+            family,
+            nodes,
+            ellipse_ratio,
+            lobe_aspect,
         )
         if cached_result is None or cached_key != key:
             status_var.set(
-                "Generating and verifying the direct planar ring..."
+                "Fitting the loosely interwound curve to the exact Gauss writhe..."
+                if family == FAMILY_LOOSE
+                else "Generating and verifying the direct planar ring..."
                 if zero_h0 and abs(target_writhe) <= 1.0e-12
                 else "Accurate angle search: screening and serializing every candidate angle; "
                 "this takes minutes and the window waits until it finishes..."
@@ -3965,6 +4837,10 @@ def run_gui() -> None:
                 minimum_final_radius=minimum_final_radius,
                 zero_h0=zero_h0,
                 angle_search=angle_search,
+                family=family,
+                nodes=nodes,
+                ellipse_ratio=ellipse_ratio,
+                lobe_aspect=lobe_aspect,
             )
             cached_key = key
         set_summary(generation_summary(cached_result))
@@ -3990,19 +4866,26 @@ def run_gui() -> None:
                 projection_line = "{0:.1%} of {1} views".format(
                     float(stats["target_fraction"]), int(stats["direction_count"])
                 )
+            if result.family == FAMILY_LOOSE:
+                details = result.loose_details or {}
+                shape_line = "Loose: {0} nodes, ellipse ratio {1:.4f}, lobe aspect {2:.4f}\n".format(
+                    details.get("nodes"), details.get("ellipse_ratio"), details.get("lobe_aspect")
+                )
+            else:
+                shape_line = "Selected angle: {0:.4f} deg\nPhase trim: {1:.3f} pi\n".format(
+                    result.opening_angle_deg, result.phase_trim
+                )
             messagebox.showinfo(
                 "Generate SC complete",
                 "Wrote {0} points to:\n{1}\n\nAchieved writhe: {2:.6f}\n"
                 "Fixed xz crossings: {3}\nGeneric target projections: {4}\n"
-                "Selected angle: {5:.4f} deg\nPhase trim: {6:.3f} pi\n"
-                "Load it in Curve It as a closed path.".format(
+                "{5}Load it in Curve It as a closed path.".format(
                     len(result.points),
                     output,
                     result.achieved_writhe,
                     result.xz_crossings,
                     projection_line,
-                    result.opening_angle_deg,
-                    result.phase_trim,
+                    shape_line,
                 ),
             )
         except Exception as exc:
