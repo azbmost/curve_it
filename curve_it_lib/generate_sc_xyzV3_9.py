@@ -4279,8 +4279,14 @@ def run_gui() -> None:
             "trimming, H0 and qualifying views do not apply. The minimum final measured radius "
             "is held at {0:g} and only stops a curve whose closest axis-axis approach, between "
             "points more than half a lobe apart along the contour, is under twice that. Points "
-            "and Precision set the output as for the tight family.\n\nThe filename records the "
-            "crossings and Loose, for example sc_L1285p2_Wm2_N3_Loose.xyz.".format(
+            "and Precision set the output as for the tight family.\n\nLogo-style example, a "
+            "378-bp minicircle with four equal round lobes: Length L 1285.2 (378 bp x 3.4 A), "
+            "Writhe W -2, Crossings blank (3), Lobe aspect 1, Ellipse ratio blank (fitted to "
+            "0.524), Points 2000 and Precision 8 write sc_L1285p2_Wm2_N3_Loose.xyz (command "
+            "line: -L 1285.2 -w -2 --family loose). Load it in Curve It with Path type: closed. "
+            "Ellipse ratio 1 instead gives a circular end-on view, with lobes 1.47 times taller "
+            "than wide.\n\nThe filename records the crossing count and Loose, with _ER1 for a "
+            "set ellipse ratio or _LA1p5 for a non-default lobe aspect.".format(
                 DEFAULT_MINIMUM_FINAL_RADIUS
             ),
         ),
