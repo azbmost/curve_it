@@ -385,38 +385,21 @@ def run_gui() -> None:
     """Open a Tkinter GUI for helix generation."""
     try:
         import tkinter as tk
-        from tkinter import filedialog, font, messagebox, ttk
+        from tkinter import filedialog, messagebox, ttk
     except ImportError as exc:
         raise RuntimeError("Tkinter is not available in this Python installation.") from exc
+    try:
+        from curve_it_lib import azbmost_ui as ui
+    except ImportError:
+        import azbmost_ui as ui  # type: ignore[no-redef]
 
     root = tk.Tk()
     root.title(f"{TOOL_NAME} {TOOL_VERSION}")
-    root.geometry("760x680")
-    root.minsize(700, 620)
+    root.geometry("900x780")
 
     set_optional_window_icon(root, tk, ["generate_helix_icon.png", "icon.png"], "_generate_helix_icon_image")
+    header = ui.tool_window(root, TOOL_NAME, tool="generate_helix", version=TOOL_VERSION)
 
-    style = ttk.Style(root)
-    try:
-        style.theme_use("clam")
-    except tk.TclError:
-        pass
-
-    title_font = font.Font(root, family="Helvetica", size=16, weight="bold")
-    equation_font = font.Font(root, family="Helvetica", size=13)
-    mono_font = font.Font(root, family="Menlo", size=11)
-    section_font = ("TkDefaultFont", 10, "bold")
-    style.configure("Tool.TLabelframe.Label", font=section_font)
-    style.configure("Hint.TLabel", foreground="gray35")
-
-    help_button_kwargs = {
-        "text": "?",
-        "width": 2,
-        "bg": "#cfefff",
-        "activebackground": "#aee6ff",
-        "relief": tk.RAISED,
-        "borderwidth": 1,
-    }
     help_texts = {
         "overview": (
             "Generate Helical Curve",
@@ -473,56 +456,63 @@ def run_gui() -> None:
     }
 
     def help_button(parent, title: str, body: str):
-        return tk.Button(parent, command=lambda: messagebox.showinfo(title, body), **help_button_kwargs)
+        return ui.HelpButton(parent, command=lambda: messagebox.showinfo(title, body))
 
-    main = ttk.Frame(root, padding=14)
+    # The overview "?" sits beside the tool name in the header.
+    help_button(header.title_label.master, *help_texts["overview"]).pack(side="left", padx=(10, 0), pady=(2, 0))
+
+    main = ttk.Frame(root, padding=(18, 12, 18, 14))
     main.pack(fill="both", expand=True)
     main.columnconfigure(0, weight=1)
+    main.rowconfigure(1, weight=1)
 
-    header_row = ttk.Frame(main)
-    header_row.grid(row=0, column=0, sticky="ew")
-    header = ttk.Label(header_row, text=TOOL_NAME, font=title_font)
-    header.grid(row=0, column=0, sticky="w")
-    help_button(header_row, *help_texts["overview"]).grid(row=0, column=1, sticky="w", padx=(8, 0))
-
-    equation_frame = ttk.LabelFrame(main, text="Helix definition", style="Tool.TLabelframe")
-    equation_frame.grid(row=1, column=0, sticky="ew", pady=(10, 12))
+    equation_frame = ui.Card(
+        main,
+        "Helix definition",
+        help_command=lambda: messagebox.showinfo(*help_texts["helix_definition"]),
+    )
+    equation_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
     equation_frame.columnconfigure(0, weight=1)
-    equation_frame.columnconfigure(1, weight=0)
 
     equation_var = tk.StringVar()
     equation_label = ttk.Label(
         equation_frame,
         textvariable=equation_var,
-        font=equation_font,
         justify="left",
-        padding=(12, 8),
+        padding=(2, 2),
     )
     equation_label.grid(row=0, column=0, sticky="ew")
-    help_button(equation_frame, *help_texts["helix_definition"]).grid(row=0, column=1, sticky="ne", padx=(4, 8), pady=8)
 
     body = ttk.Frame(main)
-    body.grid(row=2, column=0, sticky="nsew")
-    body.columnconfigure(0, weight=1)
+    body.grid(row=1, column=0, sticky="nsew")
+    body.columnconfigure(0, weight=0)
     body.columnconfigure(1, weight=1)
+    body.rowconfigure(0, weight=1)
 
-    param_frame = ttk.LabelFrame(body, text="Inputs", style="Tool.TLabelframe")
-    param_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+    # Left column: the inputs card, then the two choice cards side by side.
+    left = ttk.Frame(body)
+    left.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+    left.columnconfigure(0, weight=1)
+
+    param_frame = ttk.LabelFrame(left, text="Inputs")
+    param_frame.grid(row=0, column=0, sticky="ew")
     param_frame.columnconfigure(1, weight=1)
 
     entries = {}
 
     def add_row(row: int, label: str, default: str, key: str, tip: str = "") -> None:
         label_text = label if not tip else f"{label}"
-        ttk.Label(param_frame, text=label_text, anchor="w").grid(row=row, column=0, sticky="w", pady=4, padx=(8, 4))
+        ttk.Label(param_frame, text=label_text, anchor="w", style="Field.TLabel").grid(
+            row=row, column=0, sticky="w", pady=3, padx=(0, 12)
+        )
         var = tk.StringVar(value=default)
-        ent = ttk.Entry(param_frame, textvariable=var, width=22)
-        ent.grid(row=row, column=1, sticky="ew", pady=4, padx=(4, 8))
+        ent = ttk.Entry(param_frame, textvariable=var, width=16)
+        ent.grid(row=row, column=1, sticky="ew", pady=3)
         if key in help_texts:
-            help_button(param_frame, *help_texts[key]).grid(row=row, column=2, sticky="w", pady=4, padx=(0, 4))
+            help_button(param_frame, *help_texts[key]).grid(row=row, column=2, sticky="w", pady=3, padx=(8, 0))
         if tip:
             ttk.Label(param_frame, text=tip, style="Hint.TLabel").grid(
-                row=row, column=3, sticky="w", pady=4, padx=(0, 8)
+                row=row, column=3, sticky="w", pady=3, padx=(10, 0)
             )
         entries[key] = var
 
@@ -535,42 +525,53 @@ def run_gui() -> None:
     add_row(6, "z₀", "0.0", "z0")
     add_row(7, "Precision", str(DEFAULT_PRECISION), "precision")
 
+    choices = ttk.Frame(left)
+    choices.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+    choices.columnconfigure(0, weight=1)
+    choices.columnconfigure(1, weight=1)
+
     derive_var = tk.StringVar(value="c-from-R")
-    derive_frame = ttk.LabelFrame(param_frame, text="When α is provided", style="Tool.TLabelframe")
-    derive_frame.grid(row=8, column=0, columnspan=4, sticky="ew", padx=8, pady=(8, 4))
+    derive_frame = ui.Card(
+        choices,
+        "When α is provided",
+        help_command=lambda: messagebox.showinfo(*help_texts["derive"]),
+    )
+    derive_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
     ttk.Radiobutton(derive_frame, text="calculate c from R and α", variable=derive_var, value="c-from-R").grid(
-        row=0, column=0, sticky="w", padx=8, pady=2
+        row=0, column=0, sticky="w", pady=1
     )
     ttk.Radiobutton(derive_frame, text="calculate R from c and α", variable=derive_var, value="R-from-c").grid(
-        row=1, column=0, sticky="w", padx=8, pady=2
+        row=1, column=0, sticky="w", pady=1
     )
     ttk.Radiobutton(derive_frame, text="ignore α; use current R and c", variable=derive_var, value="ignore").grid(
-        row=2, column=0, sticky="w", padx=8, pady=(2, 8)
+        row=2, column=0, sticky="w", pady=1
     )
-    help_button(derive_frame, *help_texts["derive"]).grid(row=0, column=1, sticky="nw", padx=(8, 8), pady=2)
 
     handedness_var = tk.StringVar(value="right")
-    hand_frame = ttk.LabelFrame(param_frame, text="Handedness", style="Tool.TLabelframe")
-    hand_frame.grid(row=9, column=0, columnspan=4, sticky="ew", padx=8, pady=(4, 8))
+    hand_frame = ui.Card(
+        choices,
+        "Handedness",
+        help_command=lambda: messagebox.showinfo(*help_texts["handedness"]),
+    )
+    hand_frame.grid(row=0, column=1, sticky="nsew")
     ttk.Radiobutton(hand_frame, text="right: y = +R sin(t + φ)", variable=handedness_var, value="right").grid(
-        row=0, column=0, sticky="w", padx=8, pady=2
+        row=0, column=0, sticky="w", pady=1
     )
     ttk.Radiobutton(hand_frame, text="left: y = −R sin(t + φ)", variable=handedness_var, value="left").grid(
-        row=1, column=0, sticky="w", padx=8, pady=(2, 8)
+        row=1, column=0, sticky="w", pady=1
     )
-    help_button(hand_frame, *help_texts["handedness"]).grid(row=0, column=1, sticky="nw", padx=(8, 8), pady=2)
 
-    output_frame = ttk.LabelFrame(body, text="Output and derived values", style="Tool.TLabelframe")
-    output_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+    output_frame = ttk.LabelFrame(body, text="Output and derived values")
+    output_frame.grid(row=0, column=1, sticky="nsew")
     output_frame.columnconfigure(0, weight=1)
 
     output_header = ttk.Frame(output_frame)
-    output_header.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 2))
-    ttk.Label(output_header, text="Output file").pack(side="left")
-    help_button(output_header, *help_texts["output"]).pack(side="left", padx=(6, 0))
+    output_header.grid(row=0, column=0, sticky="ew", pady=(2, 4))
+    ttk.Label(output_header, text="Output file", style="Field.TLabel").pack(side="left")
+    help_button(output_header, *help_texts["output"]).pack(side="left", padx=(8, 0))
     output_var = tk.StringVar(value="helix.xyz")
     file_row = ttk.Frame(output_frame)
-    file_row.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+    file_row.grid(row=1, column=0, sticky="ew", pady=(0, 12))
     file_row.columnconfigure(0, weight=1)
     ttk.Entry(file_row, textvariable=output_var).grid(row=0, column=0, sticky="ew")
 
@@ -583,23 +584,29 @@ def run_gui() -> None:
         if filename:
             output_var.set(filename)
 
-    ttk.Button(file_row, text="Browse...", command=browse_output).grid(row=0, column=1, padx=(6, 0))
+    ttk.Button(file_row, text="Browse...", command=browse_output).grid(row=0, column=1, padx=(8, 0))
 
     summary_var = tk.StringVar(value="Derived values will appear here.")
-    summary_label = ttk.Label(output_frame, text="Derived values")
-    summary_label.grid(row=2, column=0, sticky="w", padx=8, pady=(4, 2))
+    summary_label = ttk.Label(output_frame, text="Derived values", style="Field.TLabel")
+    summary_label.grid(row=2, column=0, sticky="w", pady=(0, 4))
+    # Drawn like the theme's log boxes: a hairline frame around a quiet text area.
+    summary_border = tk.Frame(output_frame, background=ui.C.BORDER, borderwidth=0, highlightthickness=0)
+    summary_border.grid(row=3, column=0, sticky="nsew", pady=(0, 10))
     summary_box = tk.Label(
-        output_frame,
+        summary_border,
         textvariable=summary_var,
         anchor="nw",
         justify="left",
-        relief="groove",
-        padx=8,
+        padx=10,
         pady=8,
-        font=mono_font,
-        bg="white",
+        font="AzbMono",
+        background=ui.C.LOG_BG,
+        foreground=ui.C.TEXT,
+        relief="flat",
+        borderwidth=0,
+        highlightthickness=0,
     )
-    summary_box.grid(row=3, column=0, sticky="nsew", padx=8, pady=(0, 8))
+    summary_box.pack(fill="both", expand=True, padx=1, pady=1)
     output_frame.rowconfigure(3, weight=1)
 
     note_text = (
@@ -607,7 +614,7 @@ def run_gui() -> None:
         "No atom names and no molecular-XYZ header are included."
     )
     ttk.Label(output_frame, text=note_text, justify="left", style="Hint.TLabel").grid(
-        row=4, column=0, sticky="ew", padx=8, pady=(0, 8)
+        row=4, column=0, sticky="ew"
     )
 
     def parse_optional_float(value: str, field_name: str) -> Optional[float]:
@@ -715,21 +722,21 @@ def run_gui() -> None:
             summary_var.set(f"Input issue: {exc}")
         update_equation_text()
 
-    button_frame = ttk.Frame(main)
-    button_frame.grid(row=3, column=0, sticky="e", pady=(14, 0))
-    ttk.Button(button_frame, text="Fill α from current R,c", command=fill_pitch_angle_from_current_rc).grid(
-        row=0, column=0, padx=(0, 8)
-    )
-    ttk.Button(button_frame, text="Update derived values", command=lambda: update_summary(True)).grid(
-        row=0, column=1, padx=(0, 8)
-    )
-    ttk.Button(button_frame, text="Generate XYZ", command=generate_file).grid(row=0, column=2)
+    # Run buttons in the footer, packed before the form so they always stay visible.
+    button_frame = ui.Footer(root)
+    button_frame.pack(side="bottom", fill="x", before=main)
+    button_frame.add_button("Fill α from current R,c", fill_pitch_angle_from_current_rc)
+    button_frame.add_button("Update derived values", lambda: update_summary(True))
+    button_frame.add_button("Generate XYZ", generate_file, primary=True)
 
     for var in list(entries.values()) + [handedness_var, derive_var]:
         var.trace_add("write", lambda *_args: update_equation_text())
 
     update_equation_text()
     update_summary(write_back=False)
+    # Never smaller than the form, so no field is cut off.
+    root.update_idletasks()
+    root.minsize(root.winfo_reqwidth(), root.winfo_reqheight())
     root.mainloop()
 
 

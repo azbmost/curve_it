@@ -1869,6 +1869,10 @@ def default_gui_outdir():
 def run_gui(initial_outdir=None, initial_palette="default"):
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
+    try:
+        from curve_it_lib import azbmost_ui as ui
+    except ImportError:
+        import azbmost_ui as ui
 
     root = tk.Tk()
     root.title("kp2xyz  -  KnotPlot knots and links  ->  XYZ curves   v%s"
@@ -1876,6 +1880,8 @@ def run_gui(initial_outdir=None, initial_palette="default"):
     root.minsize(940, 620)
     set_optional_window_icon(
         root, tk, ["kp2xyz_icon.png", "icon.png"], "_kp2xyz_icon_image")
+    ui.tool_window(root, TOOL_NAME, tool="kp2xyz", version="v%s" % __version__)
+    C = ui.C
 
     # "explicit" remembers the path chosen with Locate KnotPlot..., so that
     # Re-check re-runs both the search and the launch check with it instead
@@ -1914,19 +1920,19 @@ def run_gui(initial_outdir=None, initial_palette="default"):
         open_help["win"] = top
         top.title(title)
         top.transient(root)
-        top.configure(bg="#f4f9ff")
-        frm = tk.Frame(top, bg="#f4f9ff", padx=16, pady=14)
+        top.configure(bg=C.BG)
+        frm = tk.Frame(top, bg=C.BG, padx=20, pady=16)
         frm.pack(fill="both", expand=True)
-        tk.Label(frm, text=title, font=("Helvetica", 14, "bold"),
-                 bg="#f4f9ff", fg="#0b4d80", anchor="w",
+        tk.Label(frm, text=title, font="AzbTitle",
+                 bg=C.BG, fg=C.TEXT, anchor="w",
                  justify="left").pack(fill="x", pady=(0, 8))
         tk.Label(frm, text=prose, wraplength=470, justify="left",
-                 bg="#f4f9ff", fg="#1a1a1a", font=("Helvetica", 12),
+                 bg=C.BG, fg=C.TEXT, font="AzbBody",
                  anchor="w").pack(fill="x")
         if example:
-            tk.Label(frm, text="Example", font=("Helvetica", 11, "bold"),
-                     bg="#f4f9ff", fg="#0b4d80", anchor="w").pack(fill="x",
-                                                                  pady=(12, 3))
+            tk.Label(frm, text="Example", font="AzbSmallBold",
+                     bg=C.BG, fg=C.TEXT_2, anchor="w").pack(fill="x",
+                                                            pady=(12, 4))
             # Height counted in DISPLAY rows, not in newlines: a line
             # longer than the box wraps, and a height counted in newlines
             # then clips the tail of the block off the bottom.  The two
@@ -1935,13 +1941,14 @@ def run_gui(initial_outdir=None, initial_palette="default"):
             width = 62
             rows = sum(max(1, -(-len(line) // width))
                        for line in example.split("\n"))
-            box = tk.Text(frm, font=("Menlo", 11), height=rows,
-                          width=width, bg="#e8f1fa", relief="flat",
-                          padx=8, pady=6, highlightthickness=0)
+            box = tk.Text(frm, font="AzbMono", height=rows,
+                          width=width, bg=C.SUBTLE, fg=C.TEXT, relief="flat",
+                          padx=10, pady=8, highlightthickness=1,
+                          highlightbackground=C.BORDER, highlightcolor=C.BORDER)
             box.insert("1.0", example)
             box.configure(state="disabled")
             box.pack(fill="x")
-        tk.Button(frm, text="Close", command=top.destroy).pack(pady=(12, 0))
+        ttk.Button(frm, text="Close", command=top.destroy).pack(anchor="e", pady=(14, 0))
         top.bind("<Escape>", lambda e: top.destroy())
         try:
             x = near.winfo_rootx() + 26
@@ -1952,152 +1959,160 @@ def run_gui(initial_outdir=None, initial_palette="default"):
         top.focus_set()
 
     def chip(parent, key):
-        """A small light-blue '?' that opens the explanation for `key`.
-
-        Built from a Label rather than a Button because macOS's native button
-        ignores background colour.
-        """
-        c = tk.Label(parent, text="?", font=("Helvetica", 11, "bold"),
-                     bg="#bcdcf5", fg="#0b4d80", width=2, relief="raised",
-                     borderwidth=1, cursor="hand2")
-        c.bind("<Button-1>", lambda e, k=key, w=c: show_help(k, w))
-        c.bind("<Enter>", lambda e, w=c: w.configure(bg="#8fc7ee"))
-        c.bind("<Leave>", lambda e, w=c: w.configure(bg="#bcdcf5"))
+        """The theme's round '?' that opens the explanation for `key`."""
+        c = ui.HelpButton(parent)
+        c.configure(command=lambda k=key, w=c: show_help(k, w))
         return c
+
+    # The run buttons and the status line sit in the footer, at the bottom
+    # right of the window; packed first, they keep their place when a short
+    # screen cuts the window's height.
+    footer = ui.Footer(root)
+    footer.pack(side="bottom", fill="x")
+    ui.hairline(root).pack(side="bottom", fill="x")
 
     # ---- installation banner ---------------------------------------------
     # This sits above everything else because nothing else in the window can
     # do anything until KnotPlot has been found.
-    head = ttk.Frame(root, padding=(10, 10, 10, 0))
+    head = ttk.Frame(root, padding=(20, 14, 20, 0))
     head.pack(fill="x")
     head.columnconfigure(0, weight=1)
     inst_lbl = tk.Label(head, text="looking for KnotPlot ...", justify="left",
-                        anchor="w", font=("Helvetica", 11), fg="#888",
+                        anchor="w", font="AzbSmall", fg="#888",
                         wraplength=700)
     inst_lbl.grid(row=0, column=0, sticky="ew")
+    # It wraps at the width the window gives it, never wider than it is.
+    inst_lbl.bind("<Configure>", lambda e: inst_lbl.configure(wraplength=max(300, e.width - 4)))
     locate_btn = ttk.Button(head, text="Locate KnotPlot...")
-    locate_btn.grid(row=0, column=1, padx=(8, 0))
-    chip(head, "install").grid(row=0, column=2, padx=(6, 0))
+    locate_btn.grid(row=0, column=1, padx=(12, 0))
+    chip(head, "install").grid(row=0, column=2, padx=(8, 0))
 
-    main = ttk.Frame(root, padding=10)
+    main = ttk.Frame(root, padding=(20, 14, 20, 16))
     main.pack(fill="both", expand=True)
     main.columnconfigure(1, weight=1)
     main.rowconfigure(0, weight=1)
-    left = ttk.Frame(main)
-    left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+    # The settings scroll when the window is too short for all of them.
+    form = ui.ScrollFrame(main)
+    form.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+    left = form.body
+    left.configure(padding=(0, 0, 10, 0))      # room beside the cards for the scrollbar
     right = ttk.Frame(main)
     right.grid(row=0, column=1, sticky="nsew")
-    right.rowconfigure(1, weight=1)
+    right.rowconfigure(0, weight=1)
     right.columnconfigure(0, weight=1)
 
     # targets ---------------------------------------------------------------
-    ft = ttk.LabelFrame(left, text="What to extract", padding=8)
-    ft.pack(fill="x", pady=(0, 8))
+    ft = ttk.LabelFrame(left, text="What to extract")
+    ft.pack(fill="x", pady=(0, 12))
     ft.columnconfigure(0, weight=1)
     targets_entry = ttk.Entry(ft, textvariable=V["targets"], width=34)
     targets_entry.grid(row=0, column=0, columnspan=2, sticky="ew")
-    chip(ft, "targets").grid(row=0, column=2, padx=(6, 0))
-    tk.Label(ft, text="names and commands, space separated: 4.1 6.3.2 torus 2 3",
-             font=("Helvetica", 10), fg="#8a929b").grid(
-                 row=1, column=0, columnspan=3, sticky="w", pady=(3, 0))
+    chip(ft, "targets").grid(row=0, column=2, padx=(8, 0))
+    ttk.Label(ft, text="names and commands, space separated: 4.1 6.3.2 torus 2 3",
+              style="Hint.TLabel").grid(row=1, column=0, columnspan=3, sticky="w",
+                                        pady=(4, 0))
     browse_btn = ttk.Button(ft, text="Browse catalogue...")
-    browse_btn.grid(row=2, column=0, sticky="w", pady=(6, 0))
-    chip(ft, "catalogue").grid(row=2, column=2, padx=(6, 0), pady=(6, 0))
+    browse_btn.grid(row=2, column=0, sticky="w", pady=(8, 0))
+    chip(ft, "catalogue").grid(row=2, column=2, padx=(8, 0), pady=(8, 0))
     all_chk = ttk.Checkbutton(ft, text="Entire catalogue", variable=V["all"])
-    all_chk.grid(row=3, column=0, sticky="w", pady=(6, 0))
-    chip(ft, "all").grid(row=3, column=2, padx=(6, 0), pady=(6, 0))
+    all_chk.grid(row=3, column=0, sticky="w", pady=(8, 0))
+    chip(ft, "all").grid(row=3, column=2, padx=(8, 0), pady=(8, 0))
     dedupe_chk = ttk.Checkbutton(ft, text="drop byte-identical duplicate files",
                                  variable=V["dedupe"])
-    dedupe_chk.grid(row=4, column=0, columnspan=2, sticky="w")
-    tk.Label(ft, text="mirror-image pairs such as 8.19 / 8_19 are always kept",
-             font=("Helvetica", 10), fg="#8a929b").grid(
-                 row=5, column=0, columnspan=3, sticky="w")
-    tk.Label(ft, text="torus p q: p turns about the axis, q about the tube",
-             font=("Helvetica", 10), fg="#8a929b").grid(
-                 row=6, column=0, columnspan=2, sticky="w", pady=(3, 0))
-    chip(ft, "torus").grid(row=6, column=2, padx=(6, 0), pady=(3, 0))
+    dedupe_chk.grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 0))
+    ttk.Label(ft, text="mirror-image pairs such as 8.19 / 8_19 are always kept",
+              style="Hint.TLabel").grid(row=5, column=0, columnspan=3, sticky="w")
+    ttk.Label(ft, text="torus p q: p turns about the axis, q about the tube",
+              style="Hint.TLabel").grid(row=6, column=0, columnspan=2, sticky="w",
+                                        pady=(6, 0))
+    chip(ft, "torus").grid(row=6, column=2, padx=(8, 0), pady=(6, 0))
 
     # extraction ------------------------------------------------------------
-    fe = ttk.LabelFrame(left, text="Extraction", padding=8)
-    fe.pack(fill="x", pady=(0, 8))
+    fe = ttk.LabelFrame(left, text="Extraction")
+    fe.pack(fill="x", pady=(0, 12))
     extraction_rows = [("points per curve", "nbeads", "blank = as shipped"),
                        ("precision", "precision", "decimals per coordinate")]
+    field_labels = []
     for r, (label, key, hint) in enumerate(extraction_rows):
-        ttk.Label(fe, text=label).grid(row=r, column=0, sticky="w")
+        field_labels.append(ttk.Label(fe, text=label, style="Field.TLabel"))
+        field_labels[-1].grid(row=r, column=0, sticky="w", pady=3)
         ttk.Entry(fe, textvariable=V[key], width=10).grid(row=r, column=1,
-                                                          sticky="w", padx=(4, 0))
-        chip(fe, key).grid(row=r, column=2, padx=(6, 0))
-        tk.Label(fe, text=hint, font=("Helvetica", 10), fg="#8a929b").grid(
-            row=r, column=3, sticky="w", padx=(8, 0))
+                                                          sticky="w", padx=(12, 0), pady=3)
+        chip(fe, key).grid(row=r, column=2, padx=(8, 0), pady=3)
+        ttk.Label(fe, text=hint, style="Hint.TLabel").grid(
+            row=r, column=3, sticky="w", padx=(10, 0), pady=3)
     ttk.Checkbutton(fe, text="one file per component",
                     variable=V["split"]).grid(row=2, column=0, columnspan=2,
-                                              sticky="w", pady=(4, 0))
-    chip(fe, "split").grid(row=2, column=2, padx=(6, 0), pady=(4, 0))
+                                              sticky="w", pady=(6, 0))
+    chip(fe, "split").grid(row=2, column=2, padx=(8, 0), pady=(6, 0))
     ttk.Checkbutton(fe, text="mirror image", variable=V["mirror"]).grid(
         row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
-    chip(fe, "mirror").grid(row=3, column=2, padx=(6, 0), pady=(4, 0))
+    chip(fe, "mirror").grid(row=3, column=2, padx=(8, 0), pady=(4, 0))
     mirror_row = ttk.Frame(fe)
-    mirror_row.grid(row=4, column=0, columnspan=4, sticky="w")
-    ttk.Label(mirror_row, text="axis").pack(side="left")
+    mirror_row.grid(row=4, column=0, columnspan=4, sticky="w", pady=(4, 0))
+    ttk.Label(mirror_row, text="axis", style="Field.TLabel").pack(side="left", padx=(24, 0))
     ttk.Combobox(mirror_row, textvariable=V["mirror_axis"],
                  values=list(MIRROR_AXES), width=3, state="readonly"
-                 ).pack(side="left", padx=(4, 12))
+                 ).pack(side="left", padx=(8, 16))
     ttk.Checkbutton(mirror_row, text="write both, original and mirror",
                     variable=V["both"]).pack(side="left")
-    tk.Label(fe, text="negates writhe and linking number; z keeps the "
-                      "projection you see",
-             font=("Helvetica", 10), fg="#8a929b").grid(
-                 row=5, column=0, columnspan=4, sticky="w")
-    tk.Label(fe, text="shapes are the ones KnotPlot ships, exported unchanged",
-             font=("Helvetica", 10), fg="#8a929b").grid(
-                 row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
-    chip(fe, "conformations").grid(row=6, column=2, padx=(6, 0), pady=(6, 0))
+    ttk.Label(fe, text="negates writhe and linking number; z keeps the "
+                       "projection you see",
+              style="Hint.TLabel").grid(row=5, column=0, columnspan=4, sticky="w",
+                                        pady=(4, 0))
+    ttk.Label(fe, text="shapes are the ones KnotPlot ships, exported unchanged",
+              style="Hint.TLabel").grid(row=6, column=0, columnspan=2, sticky="w",
+                                        pady=(6, 0))
+    chip(fe, "conformations").grid(row=6, column=2, padx=(8, 0), pady=(6, 0))
 
     # output ----------------------------------------------------------------
-    fo = ttk.LabelFrame(left, text="Output", padding=8)
+    fo = ttk.LabelFrame(left, text="Output")
     fo.pack(fill="x")
     fo.columnconfigure(1, weight=1)
-    ttk.Label(fo, text="folder").grid(row=0, column=0, sticky="w")
+    field_labels.append(ttk.Label(fo, text="folder", style="Field.TLabel"))
+    field_labels[-1].grid(row=0, column=0, sticky="w", pady=3)
     ttk.Entry(fo, textvariable=V["outdir"], width=24).grid(row=0, column=1,
-                                                           sticky="ew")
+                                                           sticky="ew", padx=(12, 0), pady=3)
     ttk.Button(fo, text="...", width=3,
                command=lambda: V["outdir"].set(filedialog.askdirectory()
                                                or V["outdir"].get())
-               ).grid(row=0, column=2, padx=(4, 0))
-    chip(fo, "output").grid(row=0, column=3, padx=(6, 0))
+               ).grid(row=0, column=2, padx=(8, 0), pady=3)
+    chip(fo, "output").grid(row=0, column=3, padx=(8, 0), pady=3)
     ttk.Checkbutton(fo, text="comment header",
                     variable=V["comments"]).grid(row=1, column=0, columnspan=2,
-                                                 sticky="w", pady=(4, 0))
+                                                 sticky="w", pady=(6, 0))
+    # One label column for Extraction and Output, so their fields line up.
+    label_width = max(label.winfo_reqwidth() for label in field_labels)
+    for frame in (fe, fo):
+        frame.columnconfigure(0, minsize=label_width)
 
-    # right pane ------------------------------------------------------------
-    bar = ttk.Frame(right)
-    bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+    # right pane: the report; the run buttons are in the footer ---------------
+    report = ui.LogView(right, wrap="none", height=26)
+    report.grid(row=0, column=0, sticky="nsew")
+    txt = report.text
+    status = footer.status
+    status.configure(foreground="#0a7")
+    bar = ttk.Frame(footer.buttons, style="Footer.TFrame")
+    bar.pack(side="right")
     # The palette only colours Preview's windows, so it sits on its own line
     # under the buttons: packed first, at the bottom, it leaves the top line
     # to the buttons, and beside them it would widen the window.
-    palette_row = ttk.Frame(bar)
-    palette_row.pack(side="bottom", fill="x", pady=(6, 0))
-    ttk.Label(palette_row, text="preview palette").pack(side="left")
+    palette_row = ttk.Frame(bar, style="Footer.TFrame")
+    palette_row.pack(side="bottom", fill="x", pady=(8, 0))
+    ttk.Label(palette_row, text="preview palette", style="Footer.TLabel").pack(side="left")
     palette_box = ttk.Combobox(palette_row, textvariable=V["palette"],
                                values=palette_choices(), width=14,
                                state="readonly")
-    palette_box.pack(side="left", padx=(4, 0))
-    chip(palette_row, "palette").pack(side="left", padx=(6, 0))
-    recheck_btn = ttk.Button(bar, text="Re-check")
+    palette_box.pack(side="left", padx=(8, 0))
+    chip(palette_row, "palette").pack(side="left", padx=(8, 0))
+    recheck_btn = ttk.Button(bar, text="Re-check", style="Footer.TButton")
     recheck_btn.pack(side="left")
-    list_btn = ttk.Button(bar, text="List catalogue")
-    list_btn.pack(side="left", padx=6)
-    preview_btn = ttk.Button(bar, text="Preview")
-    preview_btn.pack(side="left", padx=(0, 6))
-    extract_btn = ttk.Button(bar, text="Extract")
+    list_btn = ttk.Button(bar, text="List catalogue", style="Footer.TButton")
+    list_btn.pack(side="left", padx=8)
+    preview_btn = ttk.Button(bar, text="Preview", style="Footer.TButton")
+    preview_btn.pack(side="left", padx=(0, 8))
+    extract_btn = ttk.Button(bar, text="Extract", style="Accent.TButton")
     extract_btn.pack(side="left")
-    txt = tk.Text(right, wrap="none", font=("Menlo", 11), height=26)
-    txt.grid(row=1, column=0, sticky="nsew")
-    sb = ttk.Scrollbar(right, orient="vertical", command=txt.yview)
-    sb.grid(row=1, column=1, sticky="ns")
-    txt.configure(yscrollcommand=sb.set)
-    status = ttk.Label(right, text="", foreground="#0a7")
-    status.grid(row=2, column=0, sticky="w", pady=(4, 0))
 
     def show(s):
         txt.delete("1.0", "end")
@@ -2345,12 +2360,12 @@ def run_gui(initial_outdir=None, initial_palette="default"):
         top.title("KnotPlot catalogue")
         top.transient(root)
         top.minsize(320, 460)
-        frm = ttk.Frame(top, padding=8)
+        frm = ttk.Frame(top, padding=(16, 14, 16, 14))
         frm.pack(fill="both", expand=True)
         frm.rowconfigure(2, weight=1)
         frm.columnconfigure(0, weight=1)
-        tk.Label(frm, justify="left", anchor="w", font=("Helvetica", 10),
-                 fg="#8a4b00", bg="#fff2e0", padx=6, pady=3, wraplength=300,
+        tk.Label(frm, justify="left", anchor="w", font="AzbSmall",
+                 fg="#8a4b00", bg="#fff2e0", padx=8, pady=5, wraplength=300,
                  text=("8.19 and 8_19 are mirror images, not duplicates - "
                        "28 of the 30 differing pairs are. Pick the "
                        "handedness you mean. 9.20 / 9_20 and 9.35 / 9_35 "
@@ -2358,16 +2373,16 @@ def run_gui(initial_outdir=None, initial_palette="default"):
                        "slightly different conformations, not one file "
                        "under two names."
                        )).grid(row=0, column=0, columnspan=3,
-                                      sticky="ew", pady=(0, 6))
+                                      sticky="ew", pady=(0, 8))
         query = tk.StringVar(value="")
         ttk.Entry(frm, textvariable=query).grid(row=1, column=0, sticky="ew")
-        tk.Label(frm, text="filter", font=("Helvetica", 10),
-                 fg="#8a929b").grid(row=1, column=1, padx=(6, 0))
-        box = tk.Listbox(frm, selectmode="extended", font=("Menlo", 11),
+        ttk.Label(frm, text="filter", style="Hint.TLabel").grid(row=1, column=1,
+                                                                padx=(8, 0))
+        box = tk.Listbox(frm, selectmode="extended", font="AzbMono",
                          height=22, activestyle="none")
-        box.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(6, 0))
+        box.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
         bsb = ttk.Scrollbar(frm, orient="vertical", command=box.yview)
-        bsb.grid(row=2, column=2, sticky="ns", pady=(6, 0))
+        bsb.grid(row=2, column=2, sticky="ns", pady=(8, 0))
         box.configure(yscrollcommand=bsb.set)
 
         def repopulate(*_args):
@@ -2389,10 +2404,11 @@ def run_gui(initial_outdir=None, initial_palette="default"):
             top.destroy()
 
         row = ttk.Frame(frm)
-        row.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
-        ttk.Button(row, text="Add selected", command=add_selected).pack(side="left")
-        ttk.Button(row, text="Cancel", command=top.destroy).pack(side="left",
-                                                                 padx=6)
+        row.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(12, 0))
+        ttk.Button(row, text="Add selected", command=add_selected,
+                   style="Accent.TButton").pack(side="right")
+        ttk.Button(row, text="Cancel", command=top.destroy).pack(side="right",
+                                                                 padx=8)
         box.bind("<Double-Button-1>", lambda e: add_selected())
         top.bind("<Escape>", lambda e: top.destroy())
         top.focus_set()
@@ -2650,7 +2666,18 @@ def run_gui(initial_outdir=None, initial_palette="default"):
          "negated, which negates writhe and linking number. z is the default\n"
          "axis because it keeps the projection and swaps every crossing.\n\n"
          "Shapes are the ones KnotPlot ships, exported unchanged.\n\n"
-         "Click any light-blue  ?  for an explanation and examples.\n")
+         "Click any  ?  for an explanation and examples.\n")
+
+    # Open as large as the content asks, but at most about 900 points tall
+    # and within the screen: the settings on the left scroll in a shorter
+    # window.  The status line keeps to the button line of the footer.
+    root.update_idletasks()
+    form.canvas.configure(width=left.winfo_reqwidth(), height=left.winfo_reqheight())
+    status.grid_configure(sticky="nwe", pady=(
+        max(0, (extract_btn.winfo_reqheight() - status.winfo_reqheight()) // 2), 0))
+    root.update_idletasks()
+    root.geometry("%dx%d" % (min(root.winfo_reqwidth(), root.winfo_screenwidth() - 40),
+                             min(root.winfo_reqheight(), 900, root.winfo_screenheight() - 90)))
 
     root.after(120, lambda: (root.lift(), root.attributes("-topmost", True),
                              root.after(400, lambda: root.attributes("-topmost", False))))

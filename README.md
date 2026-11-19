@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_14`
+Version: `V3_15`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -324,7 +324,7 @@ The arm-phase revolution count is reported as `plectoneme_phase_turns = |theta_t
 
 In the GUI, **Minimum final measured radius** appears before **Qualifying views** and defaults to 13. The qualifying-views field is dynamically disabled and greyed whenever arm-phase trimming is off or a minimum final radius is entered. Clear the radius field to select qualifying-view screening. The radius field is itself disabled when trimming is off.
 
-Light-blue `?` buttons beside every generation argument and opening-angle option open concise explanations and examples without leaving the GUI.
+Round `?` buttons beside every generation argument and opening-angle option open concise explanations and examples without leaving the GUI.
 
 When `--output` is omitted, V3.9 constructs a filename from the defining selections. The default is `sc_L1071_Wm3_R13_ABend.xyz`. `ABend`, `ALocal`, `ATotal`, and `AEq` identify the four automatic opening-angle objectives; a manual angle uses a token such as `A25deg`. Radius screening uses `R13`, qualifying-view screening uses a token such as `Q60`, and untrimmed geometry uses `NoTrim`. The opt-in zero-H0 family appends `H0zero`, for example `sc_L1071_Wm3_R13_ABend_H0zero.xyz`, and the accurate angle search appends `Acc`, for example `sc_L714_Wm1_R13_ABend_Acc.xyz`. The loose family records its crossing count and `Loose`, for example `sc_L1285p2_Wm2_N3_Loose.xyz`, with `_ER1` for a set ellipse ratio or `_LA1p5` for a non-default lobe aspect. The GUI updates this name dynamically while preserving a custom typed or browsed filename.
 

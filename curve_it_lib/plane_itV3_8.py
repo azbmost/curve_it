@@ -4078,6 +4078,13 @@ def run_gui() -> int:
     except Exception as exc:
         print("ERROR: Tkinter GUI is not available in this Python environment: {0}".format(exc), file=sys.stderr)
         return 1
+    # The shared AZBMOST look. plane_it.py loads this file by path, with the
+    # repository rather than curve_it_lib on sys.path, so the package import
+    # comes first.
+    try:
+        from curve_it_lib import azbmost_ui as ui
+    except ImportError:
+        import azbmost_ui as ui  # type: ignore[no-redef]
 
     root = tk.Tk()
     root.title(f"{TOOL_NAME} {TOOL_VERSION}")
@@ -4097,35 +4104,28 @@ def run_gui() -> int:
                 pass
     root.geometry("1240x900")
     root.minsize(1000, 720)
+    # The theme for every widget of this window and its popups; the header
+    # is the first thing on the page (below), since the page itself fills
+    # the window's top row.
+    ui.apply_theme(root, "curve_it")
+    C = ui.C
 
     root.columnconfigure(0, weight=1)
     root.rowconfigure(0, weight=1)
     root.rowconfigure(1, weight=0)          # the page's horizontal scrollbar, shown when needed
     root.rowconfigure(2, weight=0)          # Run, Quit and the tip
 
-    help_bg = "#d8eefc"
-    help_active = "#c5e3f5"
-
     def show_help(title: str, text: str) -> None:
         messagebox.showinfo(title, text)
 
     def help_button(parent, title: str, text: str):
-        return tk.Button(
-            parent,
-            text="?",
-            width=2,
-            padx=2,
-            pady=0,
-            bg=help_bg,
-            activebackground=help_active,
-            relief="raised",
-            command=lambda: show_help(title, text),
-        )
+        """The theme's round '?', which shows the help for `title`."""
+        return ui.HelpButton(parent, command=lambda: show_help(title, text))
 
     def label_with_help(parent, text: str, title: str, help_text: str):
         frame = ttk.Frame(parent)
-        ttk.Label(frame, text=text).pack(side="left")
-        help_button(frame, title, help_text).pack(side="left", padx=(4, 0))
+        ttk.Label(frame, text=text, style="Field.TLabel").pack(side="left")
+        help_button(frame, title, help_text).pack(side="left", padx=(6, 0))
         return frame
 
     def set_widget_state(widget, enabled: bool, readonly: bool = False) -> None:
@@ -4148,7 +4148,7 @@ def run_gui() -> int:
         except Exception:
             pass
         try:
-            widget.configure(foreground="" if enabled else "#888888")
+            widget.configure(foreground="" if enabled else C.DISABLED)
         except Exception:
             pass
         try:
@@ -4289,9 +4289,10 @@ def run_gui() -> int:
     main_hscroll.grid(row=1, column=0, sticky="ew")
     main_hscroll.grid_remove()
 
-    content = ttk.Frame(main_canvas, padding=(12, 10, 12, 8))
+    content = ttk.Frame(main_canvas, padding=(0, 0, 0, 16))
     content_window = main_canvas.create_window((0, 0), window=content, anchor="nw")
     content.columnconfigure(0, weight=1)
+    page_padx = 20                          # the cards' distance from the window's sides
 
     def _fit_content_width(canvas_width: int) -> None:
         # The page fills the canvas, and keeps the width it asks for when the
@@ -4341,8 +4342,12 @@ def run_gui() -> int:
     main_canvas.bind("<Enter>", _bind_main_wheel)
     main_canvas.bind("<Leave>", _unbind_main_wheel)
 
-    title = ttk.Label(content, text=f"{TOOL_NAME} {TOOL_VERSION}", font=("TkDefaultFont", 14, "bold"))
-    title.grid(row=0, column=0, sticky="w", pady=(0, 4))
+    # The window header, the first thing on the page: the window's top row is
+    # the scrolling page itself.
+    title = ttk.Frame(content)
+    title.grid(row=0, column=0, sticky="ew")
+    ui.ToolHeader(title, TOOL_NAME, tool="plane_it", version=TOOL_VERSION).pack(side="top", fill="x")
+    ui.hairline(title).pack(side="top", fill="x")
     ttk.Label(
         content,
         text=(
@@ -4350,7 +4355,8 @@ def run_gui() -> int:
             "Fields are greyed out when they do not apply."
         ),
         wraplength=1100,
-    ).grid(row=1, column=0, sticky="w", pady=(0, 10))
+        style="Hint.TLabel",
+    ).grid(row=1, column=0, sticky="w", padx=page_padx, pady=(12, 12))
 
     pdb_var = tk.StringVar()
     input_format_var = tk.StringVar(value="auto")
@@ -4559,24 +4565,24 @@ def run_gui() -> int:
     page_row = 2
 
     # ---------- Input and filters ----------
-    input_frame = ttk.LabelFrame(content, text="Input and atom filters", padding=10)
-    input_frame.grid(row=page_row, column=0, sticky="ew", pady=(0, 8))
+    input_frame = ttk.LabelFrame(content, text="Input and atom filters")
+    input_frame.grid(row=page_row, column=0, sticky="ew", padx=page_padx, pady=(0, 12))
     page_row += 1
     input_frame.columnconfigure(1, weight=1)
     input_frame.columnconfigure(5, weight=1)
 
-    ttk.Label(input_frame, text="Input file").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=4)
+    ttk.Label(input_frame, text="Input file", style="Field.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=4)
     ttk.Entry(input_frame, textvariable=pdb_var).grid(row=0, column=1, columnspan=4, sticky="ew", pady=4)
     ttk.Button(input_frame, text="Browse", command=browse_pdb).grid(row=0, column=5, sticky="e", padx=(6, 0), pady=4)
 
-    ttk.Label(input_frame, text="Input format").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=4)
+    ttk.Label(input_frame, text="Input format", style="Field.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=4)
     input_format_combo = ttk.Combobox(input_frame, textvariable=input_format_var, values=["auto", "pdb", "xyz", "molecular-xyz", "coordinate-xyz", "vect"], width=14, state="readonly")
     input_format_combo.grid(row=1, column=1, sticky="w", pady=4)
 
     label_with_help(input_frame, "Select by", "Select by", help_texts["select_by"]).grid(row=1, column=2, sticky="w", padx=(18, 6), pady=4)
     ttk.Combobox(input_frame, textvariable=select_by_var, values=["name", "element", "auto"], width=10, state="readonly").grid(row=1, column=3, sticky="w", pady=4)
 
-    records_label = ttk.Label(input_frame, text="Records")
+    records_label = ttk.Label(input_frame, text="Records", style="Field.TLabel")
     records_label.grid(row=1, column=4, sticky="w", padx=(18, 6), pady=4)
     records_combo = ttk.Combobox(input_frame, textvariable=records_var, values=["all", "ATOM", "HETATM"], width=10, state="readonly")
     records_combo.grid(row=1, column=5, sticky="w", pady=4)
@@ -4590,14 +4596,14 @@ def run_gui() -> int:
     state_widgets["model"] = model_entry
     state_widgets["model_label"] = model_label_frame
 
-    chain_label_widget = ttk.Label(input_frame, text="Chain filter")
+    chain_label_widget = ttk.Label(input_frame, text="Chain filter", style="Field.TLabel")
     chain_label_widget.grid(row=2, column=2, sticky="w", padx=(18, 6), pady=4)
     chain_entry = ttk.Entry(input_frame, textvariable=chain_var, width=10)
     chain_entry.grid(row=2, column=3, sticky="w", pady=4)
     state_widgets["chain"] = chain_entry
     state_widgets["chain_label"] = chain_label_widget
 
-    resname_label_widget = ttk.Label(input_frame, text="Residue filter")
+    resname_label_widget = ttk.Label(input_frame, text="Residue filter", style="Field.TLabel")
     resname_label_widget.grid(row=2, column=4, sticky="w", padx=(18, 6), pady=4)
     resname_entry = ttk.Entry(input_frame, textvariable=resname_var, width=10)
     resname_entry.grid(row=2, column=5, sticky="w", pady=4)
@@ -4614,20 +4620,20 @@ def run_gui() -> int:
     # Coordinate-only XYZ note is shown in the Atom type 1 title line.
 
     # ---------- Output paths ----------
-    output_frame = ttk.LabelFrame(content, text="Output files", padding=10)
-    output_frame.grid(row=page_row, column=0, sticky="ew", pady=(0, 8))
+    output_frame = ttk.LabelFrame(content, text="Output files")
+    output_frame.grid(row=page_row, column=0, sticky="ew", padx=page_padx, pady=(0, 12))
     page_row += 1
     output_frame.columnconfigure(1, weight=1)
 
-    ttk.Label(output_frame, text="SVG output").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=3)
+    ttk.Label(output_frame, text="SVG output", style="Field.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=3)
     ttk.Entry(output_frame, textvariable=output_var).grid(row=0, column=1, sticky="ew", pady=3)
     ttk.Button(output_frame, text="Save as", command=lambda: browse_save(output_var, "Choose SVG output", ".svg", [("SVG files", "*.svg"), ("All files", "*")])).grid(row=0, column=2, padx=(6, 0), pady=3)
 
-    ttk.Label(output_frame, text="JSON output").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=3)
+    ttk.Label(output_frame, text="JSON output", style="Field.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=3)
     ttk.Entry(output_frame, textvariable=json_output_var).grid(row=1, column=1, sticky="ew", pady=3)
     ttk.Button(output_frame, text="Save as", command=lambda: browse_save(json_output_var, "Choose JSON output", ".json", [("JSON files", "*.json"), ("All files", "*")])).grid(row=1, column=2, padx=(6, 0), pady=3)
 
-    ttk.Label(output_frame, text="Optional CSV").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=3)
+    ttk.Label(output_frame, text="Optional CSV", style="Field.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=3)
     ttk.Entry(output_frame, textvariable=csv_output_var).grid(row=2, column=1, sticky="ew", pady=3)
     ttk.Button(output_frame, text="Save as", command=lambda: browse_save(csv_output_var, "Choose CSV output", ".csv", [("CSV files", "*.csv"), ("All files", "*")])).grid(row=2, column=2, padx=(6, 0), pady=3)
 
@@ -4645,25 +4651,28 @@ def run_gui() -> int:
         output_frame,
         text="Leave output paths blank to use default filenames based on the input file and selected atom types.",
         wraplength=1000,
+        style="Hint.TLabel",
     ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     # ---------- Atom types ----------
-    atom_frame = ttk.LabelFrame(content, text="Atom types and drawing style", padding=10)
-    atom_frame.grid(row=page_row, column=0, sticky="ew", pady=(0, 8))
+    atom_frame = ttk.LabelFrame(content, text="Atom types and drawing style")
+    atom_frame.grid(row=page_row, column=0, sticky="ew", padx=page_padx, pady=(0, 12))
     page_row += 1
     atom_frame.columnconfigure(0, weight=1)
 
     atom_control = ttk.Frame(atom_frame)
     atom_control.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-    ttk.Label(atom_control, text="Number of atom types").pack(side="left")
+    ttk.Label(atom_control, text="Number of atom types", style="Field.TLabel").pack(side="left")
     spin = ttk.Spinbox(atom_control, from_=1, to=20, textvariable=n_types_var, width=5)
     spin.pack(side="left", padx=(6, 12))
-    ttk.Label(atom_control, text="Rows update automatically. Up to 20 atom types.").pack(side="left")
+    ttk.Label(atom_control, text="Rows update automatically. Up to 20 atom types.", style="Hint.TLabel").pack(side="left")
     label_with_help(atom_control, "Fill and line Color", "Fill and line Color", help_texts["color_fields"]).pack(side="left", padx=(18, 0))
 
     type_rows_frame = ttk.Frame(atom_frame)
     type_rows_frame.grid(row=1, column=0, sticky="ew")
     type_rows_frame.columnconfigure(0, weight=1)
+    # An atom type's box is a card without a title, so no room is kept for one.
+    ttk.Style(root).configure("AtomRow.TLabelframe", labelmargins=0)
 
     default_type_names = ["P", "C1'", "O3'", "CA", "N", "O", "C", "S"]
 
@@ -4703,8 +4712,8 @@ def run_gui() -> int:
             pass
 
     def label_entry(parent, label: str, variable, width: int, row_num: int, col_num: int, widget_key: Optional[str] = None, row_info: Optional[dict] = None):
-        label_widget = ttk.Label(parent, text=label)
-        label_widget.grid(row=row_num, column=col_num, sticky="w", padx=(0, 4), pady=3)
+        label_widget = ttk.Label(parent, text=label, style="Field.TLabel")
+        label_widget.grid(row=row_num, column=col_num, sticky="w", padx=(0, 6), pady=3)
         entry = ttk.Entry(parent, textvariable=variable, width=width)
         entry.grid(row=row_num, column=col_num + 1, sticky="w", padx=(0, 14), pady=3)
         if widget_key and row_info is not None:
@@ -4715,15 +4724,15 @@ def run_gui() -> int:
     def color_entry(parent, label: str, row_info: dict, key: str, row_num: int, col_num: int):
         """label_entry for a Fill or line Color field, with a small square beside
         it that shows the color the field gives and opens the picker."""
-        label_widget = ttk.Label(parent, text=label)
-        label_widget.grid(row=row_num, column=col_num, sticky="w", padx=(0, 4), pady=3)
+        label_widget = ttk.Label(parent, text=label, style="Field.TLabel")
+        label_widget.grid(row=row_num, column=col_num, sticky="w", padx=(0, 6), pady=3)
         holder = ttk.Frame(parent)
         holder.grid(row=row_num, column=col_num + 1, sticky="w", padx=(0, 14), pady=3)
         # Wide enough for the longest lab name, MintGreenT100.
         entry = ttk.Entry(holder, textvariable=row_info[key], width=12)
         entry.pack(side="left")
         # A Canvas rather than a Button, whose background macOS ignores.
-        square = tk.Canvas(holder, width=16, height=16, highlightthickness=1, highlightbackground="#9ca3af", borderwidth=0)
+        square = tk.Canvas(holder, width=16, height=16, highlightthickness=1, highlightbackground=C.BORDER_HOVER, borderwidth=0)
         square.pack(side="left", padx=(3, 0))
         square.bind("<Button-1>", lambda _event: open_field_picker(row_info, key, square))
         # A cleared field returns to its default when the user leaves it, not while typing.
@@ -5052,11 +5061,11 @@ def run_gui() -> int:
         for swatch in candidates[shown:]:
             swatch.destroy()
         if len(items) > shown:
-            more = ttk.Label(strip_box, text="+{0} more".format(len(items) - shown), foreground="#1d4ed8", cursor="hand2")
+            more = ttk.Label(strip_box, text="+{0} more".format(len(items) - shown), foreground=C.ACCENT, cursor="hand2")
             more.pack(side="left", padx=(2, 0))
             more.bind("<Button-1>", lambda _event: open_strip_popup(more))
         if hint:
-            hint_label = ttk.Label(strip_box, text=hint, foreground="#666666")
+            hint_label = ttk.Label(strip_box, text=hint, foreground=C.MUTED)
 
             def hint_width(text: str) -> int:
                 hint_label.configure(text=text)
@@ -5138,7 +5147,7 @@ def run_gui() -> int:
         color_picker.update(win=top, row=row_info, chain=chain)
         top.title(title)
         top.transient(root)
-        body = ttk.Frame(top, padding=10)
+        body = ttk.Frame(top, padding=(16, 14, 16, 14))
         body.pack(fill="both", expand=True)
         idle_text = "Current: {0}".format(current.strip() or "Palette default")
         status = ttk.Label(body, text=idle_text)
@@ -5159,7 +5168,7 @@ def run_gui() -> int:
                     swatch.bind("<Enter>", lambda _event, name=name, code=code: status.configure(text="{0}  {1}".format(name, code)))
                     swatch.bind("<Leave>", lambda _event: status.configure(text=idle_text))
                     swatch.bind("<Button-1>", lambda _event, name=name: choose(name))
-        status.pack(anchor="w", pady=(6, 6))
+        status.pack(anchor="w", pady=(8, 10))
 
         def other_color() -> None:
             try:
@@ -5274,12 +5283,12 @@ def run_gui() -> int:
         top = tk.Toplevel(root)
         top.withdraw()                      # placed first, then shown: no flash at 0,0
         top.transient(root)
-        body = ttk.Frame(top, padding=10)
+        body = ttk.Frame(top, padding=(16, 14, 16, 14))
         body.pack(fill="both", expand=True)
         grid = ttk.Frame(body)
         grid.pack(anchor="w")
         status = ttk.Label(body)
-        status.pack(anchor="w", pady=(6, 6))
+        status.pack(anchor="w", pady=(8, 10))
         ttk.Button(body, text="Close", command=close_strip_popup).pack(anchor="w")
         top.bind("<Escape>", lambda _event: close_strip_popup())
         top.protocol("WM_DELETE_WINDOW", close_strip_popup)
@@ -5421,8 +5430,10 @@ def run_gui() -> int:
 
         for i, row_info in enumerate(atom_type_rows, start=1):
             row_info["widgets"] = {}
-            box = ttk.LabelFrame(type_rows_frame, padding=8)
-            box.grid(row=i - 1, column=0, sticky="ew", padx=2, pady=5)
+            # A card without a title: an empty label widget leaves its top border unbroken.
+            box = ttk.LabelFrame(type_rows_frame, padding=(12, 8, 12, 10), style="AtomRow.TLabelframe",
+                                 labelwidget=ttk.Frame(type_rows_frame, width=0, height=0))
+            box.grid(row=i - 1, column=0, sticky="ew", padx=0, pady=(4, 6))
             for col in range(12):
                 box.columnconfigure(col, weight=0)
             box.columnconfigure(11, weight=1)
@@ -5430,15 +5441,15 @@ def run_gui() -> int:
             header = ttk.Frame(box)
             header.grid(row=0, column=0, columnspan=12, sticky="ew", pady=(0, 5))
             header_text = "Atom type 1  (coordinate-only XYZ: use atom type all or X)" if i == 1 else "Atom type {0}".format(i)
-            header_label = ttk.Label(header, text=header_text, font=("TkDefaultFont", 10, "bold"))
+            header_label = ttk.Label(header, text=header_text, font="AzbBodyBold")
             header_label.pack(side="left")
-            ttk.Label(header, text="Type").pack(side="left", padx=(18, 4))
+            ttk.Label(header, text="Type", style="Field.TLabel").pack(side="left", padx=(18, 6))
             type_entry = ttk.Entry(header, textvariable=row_info["atom_type"], width=12)
             type_entry.pack(side="left")
             row_info["widgets"]["atom_type"] = type_entry
             row_info["widgets"]["atom_type_label"] = header_label
 
-            circle_title = ttk.Label(box, text="Circle", font=("TkDefaultFont", 9, "bold"))
+            circle_title = ttk.Label(box, text="Circle", style="Field.TLabel", font="AzbSmallBold")
             circle_title.grid(row=1, column=0, sticky="w", padx=(0, 10), pady=3)
             row_info["widgets"]["circle_title"] = circle_title
             label_entry(box, "Radius", row_info["radius"], 7, 1, 1, "radius", row_info)
@@ -5447,13 +5458,13 @@ def run_gui() -> int:
             label_entry(box, "Stroke", row_info["stroke"], 10, 1, 7, "stroke", row_info)
             label_entry(box, "Stroke width", row_info["stroke_width"], 7, 1, 9, "stroke_width", row_info)
 
-            connection_title = ttk.Label(box, text="Connection", font=("TkDefaultFont", 9, "bold"))
+            connection_title = ttk.Label(box, text="Connection", style="Field.TLabel", font="AzbSmallBold")
             connection_title.grid(row=2, column=0, sticky="w", padx=(0, 10), pady=3)
             row_info["widgets"]["connection_title"] = connection_title
             draw_check = ttk.Checkbutton(box, text="Draw lines", variable=row_info["draw_lines"])
             draw_check.grid(row=2, column=1, columnspan=2, sticky="w", padx=(0, 14), pady=3)
             row_info["widgets"]["draw_lines"] = draw_check
-            mode_label = ttk.Label(box, text="Mode")
+            mode_label = ttk.Label(box, text="Mode", style="Field.TLabel")
             mode_label.grid(row=2, column=3, sticky="w", padx=(0, 4), pady=3)
             conn_combo = ttk.Combobox(box, textvariable=row_info["connection_mode"], values=["smooth", "straight"], width=9, state="readonly")
             conn_combo.grid(row=2, column=4, sticky="w", padx=(0, 14), pady=3)
@@ -5471,7 +5482,7 @@ def run_gui() -> int:
                 box,
                 text="Connections use consecutive selected atoms with the same model, chain, and atom type. For open chains, optional 3' to O3' adds a terminal O3' segment. Line caps are butt in the SVG.",
                 wraplength=1030,
-                foreground="#555555",
+                style="Hint.TLabel",
             ).grid(row=4, column=0, columnspan=12, sticky="w", pady=(4, 0))
 
         update_default_paths()
@@ -5502,8 +5513,8 @@ def run_gui() -> int:
     page_row += 1
 
     # ---------- Projection and SVG options ----------
-    draw_frame = ttk.LabelFrame(content, text="Projection and SVG drawing", padding=10)
-    draw_frame.grid(row=draw_grid_row, column=0, sticky="ew", pady=(0, 8))
+    draw_frame = ttk.LabelFrame(content, text="Projection and SVG drawing")
+    draw_frame.grid(row=draw_grid_row, column=0, sticky="ew", padx=page_padx, pady=(0, 12))
     for col in range(10):
         draw_frame.columnconfigure(col, weight=0)
     draw_frame.columnconfigure(9, weight=1)
@@ -5514,11 +5525,11 @@ def run_gui() -> int:
     label_with_help(draw_frame, "Color", "Color by", help_texts["color_by"]).grid(row=0, column=2, sticky="w", padx=(10, 4), pady=4)
     ttk.Combobox(draw_frame, textvariable=color_by_var, values=["chain", "atom-type"], width=10, state="readonly").grid(row=0, column=3, sticky="w", pady=4)
 
-    ttk.Label(draw_frame, text="Width").grid(row=0, column=4, sticky="w", padx=(10, 3), pady=4)
+    ttk.Label(draw_frame, text="Width", style="Field.TLabel").grid(row=0, column=4, sticky="w", padx=(10, 3), pady=4)
     numeric_entry(draw_frame, width_var, 6).grid(row=0, column=5, sticky="w", pady=4)
-    ttk.Label(draw_frame, text="Height").grid(row=0, column=6, sticky="w", padx=(10, 3), pady=4)
+    ttk.Label(draw_frame, text="Height", style="Field.TLabel").grid(row=0, column=6, sticky="w", padx=(10, 3), pady=4)
     numeric_entry(draw_frame, height_var, 6).grid(row=0, column=7, sticky="w", pady=4)
-    ttk.Label(draw_frame, text="Pad").grid(row=0, column=8, sticky="w", padx=(10, 3), pady=4)
+    ttk.Label(draw_frame, text="Pad", style="Field.TLabel").grid(row=0, column=8, sticky="w", padx=(10, 3), pady=4)
     numeric_entry(draw_frame, padding_var, 6).grid(row=0, column=9, sticky="w", pady=4)
 
     # The palette sits directly under Color by, the other control it colors.
@@ -5529,11 +5540,21 @@ def run_gui() -> int:
     color_strip.grid(row=1, column=4, columnspan=6, sticky="w", padx=(10, 0), pady=4)
     strip_box = ttk.Frame(color_strip)
     strip_box.pack(side="left")
-    strip_reset = tk.Label(color_strip, text="Reset", relief="raised", borderwidth=1, padx=4)
-    strip_reset.pack(side="left", padx=(4, 0))
+    # Reset is a label, for the strip's click binding and the colour that
+    # says whether there is anything to reset; its face is a small button
+    # of the theme, drawn as the label's image.
+    reset_width = int(root.tk.call("font", "measure", "AzbSmall", "Reset")) + 18
+    reset_height = int(root.tk.call("font", "metrics", "AzbSmall", "-linespace")) + 6
+    reset_face = tk.PhotoImage(master=root, width=reset_width, height=reset_height)
+    reset_face.put(C.BORDER_INPUT, to=(0, 0, reset_width, reset_height))
+    reset_face.put(C.SUBTLE, to=(1, 1, reset_width - 1, reset_height - 1))
+    strip_reset = tk.Label(color_strip, text="Reset", image=reset_face, compound="center", font="AzbSmall",
+                           borderwidth=0, highlightthickness=0, padx=0, pady=0)
+    strip_reset.image = reset_face
+    strip_reset.pack(side="left", padx=(6, 0))
     strip_reset.bind("<Button-1>", lambda _event: reset_colors())
     strip_help = help_button(color_strip, "Color swatches", help_texts["color_strip"])
-    strip_help.pack(side="left", padx=(4, 0))
+    strip_help.pack(side="left", padx=(6, 0))
 
     ttk.Checkbutton(draw_frame, text="Flip Y: x,z -> -x,-z", variable=flip_about_y_var).grid(row=2, column=0, columnspan=2, sticky="w", padx=(0, 10), pady=4)
     ttk.Checkbutton(draw_frame, text="Invert SVG y so +proj_y appears upward", variable=invert_y_var).grid(row=2, column=2, columnspan=3, sticky="w", padx=(10, 0), pady=4)
@@ -5581,19 +5602,19 @@ def run_gui() -> int:
     help_button(underlay_frame, "Line underlay", help_texts["line_underlay"]).pack(side="left", padx=(4, 12))
     state_widgets["line_underlay"] = underlay_check
     state_widgets["line_underlay_label"] = underlay_check
-    underlay_color_label = ttk.Label(underlay_frame, text="Color")
+    underlay_color_label = ttk.Label(underlay_frame, text="Color", style="Field.TLabel")
     underlay_color_label.pack(side="left")
     state_widgets["line_underlay_stroke_label"] = underlay_color_label
     underlay_color_entry = ttk.Entry(underlay_frame, textvariable=line_underlay_stroke_var, width=10)
     underlay_color_entry.pack(side="left", padx=(4, 12))
     state_widgets["line_underlay_stroke"] = underlay_color_entry
-    underlay_width_label = ttk.Label(underlay_frame, text="Extra width")
+    underlay_width_label = ttk.Label(underlay_frame, text="Extra width", style="Field.TLabel")
     underlay_width_label.pack(side="left")
     state_widgets["line_underlay_extra_width_label"] = underlay_width_label
     underlay_width_entry = ttk.Entry(underlay_frame, textvariable=line_underlay_extra_width_var, width=7)
     underlay_width_entry.pack(side="left", padx=(4, 12))
     state_widgets["line_underlay_extra_width"] = underlay_width_entry
-    underlay_opacity_label = ttk.Label(underlay_frame, text="Opacity")
+    underlay_opacity_label = ttk.Label(underlay_frame, text="Opacity", style="Field.TLabel")
     underlay_opacity_label.pack(side="left")
     state_widgets["line_underlay_opacity_label"] = underlay_opacity_label
     underlay_opacity_entry = ttk.Entry(underlay_frame, textvariable=line_underlay_opacity_var, width=7)
@@ -5605,25 +5626,25 @@ def run_gui() -> int:
     xy_plane_check = ttk.Checkbutton(xy_plane_frame, text="Draw xy-plane (depth=0)", variable=draw_xy_plane_var)
     xy_plane_check.pack(side="left")
     help_button(xy_plane_frame, "xy-plane layer", help_texts["xy_plane"]).pack(side="left", padx=(4, 12))
-    xy_fill_label = ttk.Label(xy_plane_frame, text="Fill")
+    xy_fill_label = ttk.Label(xy_plane_frame, text="Fill", style="Field.TLabel")
     xy_fill_label.pack(side="left")
     state_widgets["xy_plane_fill_label"] = xy_fill_label
     xy_fill_entry = ttk.Entry(xy_plane_frame, textvariable=xy_plane_fill_var, width=10)
     xy_fill_entry.pack(side="left", padx=(4, 12))
     state_widgets["xy_plane_fill"] = xy_fill_entry
-    xy_stroke_label = ttk.Label(xy_plane_frame, text="Stroke")
+    xy_stroke_label = ttk.Label(xy_plane_frame, text="Stroke", style="Field.TLabel")
     xy_stroke_label.pack(side="left")
     state_widgets["xy_plane_stroke_label"] = xy_stroke_label
     xy_stroke_entry = ttk.Entry(xy_plane_frame, textvariable=xy_plane_stroke_var, width=10)
     xy_stroke_entry.pack(side="left", padx=(4, 12))
     state_widgets["xy_plane_stroke"] = xy_stroke_entry
-    xy_stroke_width_label = ttk.Label(xy_plane_frame, text="Stroke width")
+    xy_stroke_width_label = ttk.Label(xy_plane_frame, text="Stroke width", style="Field.TLabel")
     xy_stroke_width_label.pack(side="left")
     state_widgets["xy_plane_stroke_width_label"] = xy_stroke_width_label
     xy_stroke_width_entry = ttk.Entry(xy_plane_frame, textvariable=xy_plane_stroke_width_var, width=7)
     xy_stroke_width_entry.pack(side="left", padx=(4, 12))
     state_widgets["xy_plane_stroke_width"] = xy_stroke_width_entry
-    xy_opacity_label = ttk.Label(xy_plane_frame, text="Opacity")
+    xy_opacity_label = ttk.Label(xy_plane_frame, text="Opacity", style="Field.TLabel")
     xy_opacity_label.pack(side="left")
     state_widgets["xy_plane_opacity_label"] = xy_opacity_label
     xy_opacity_entry = ttk.Entry(xy_plane_frame, textvariable=xy_plane_opacity_var, width=7)
@@ -5635,31 +5656,31 @@ def run_gui() -> int:
     scale_bar_check = ttk.Checkbutton(scale_bar_frame, text="Draw scale bar", variable=draw_scale_bar_var)
     scale_bar_check.pack(side="left")
     help_button(scale_bar_frame, "Scale bar", help_texts["scale_bar"]).pack(side="left", padx=(4, 12))
-    scale_bar_length_label = ttk.Label(scale_bar_frame, text="Length")
+    scale_bar_length_label = ttk.Label(scale_bar_frame, text="Length", style="Field.TLabel")
     scale_bar_length_label.pack(side="left")
     state_widgets["scale_bar_length_label"] = scale_bar_length_label
     scale_bar_length_entry = ttk.Entry(scale_bar_frame, textvariable=scale_bar_length_var, width=7)
     scale_bar_length_entry.pack(side="left", padx=(4, 12))
     state_widgets["scale_bar_length"] = scale_bar_length_entry
-    scale_bar_unit_label = ttk.Label(scale_bar_frame, text="Unit")
+    scale_bar_unit_label = ttk.Label(scale_bar_frame, text="Unit", style="Field.TLabel")
     scale_bar_unit_label.pack(side="left")
     state_widgets["scale_bar_unit_label_label"] = scale_bar_unit_label
     scale_bar_unit_entry = ttk.Entry(scale_bar_frame, textvariable=scale_bar_unit_label_var, width=5)
     scale_bar_unit_entry.pack(side="left", padx=(4, 12))
     state_widgets["scale_bar_unit_label"] = scale_bar_unit_entry
-    scale_bar_color_label = ttk.Label(scale_bar_frame, text="Color")
+    scale_bar_color_label = ttk.Label(scale_bar_frame, text="Color", style="Field.TLabel")
     scale_bar_color_label.pack(side="left")
     state_widgets["scale_bar_stroke_label"] = scale_bar_color_label
     scale_bar_color_entry = ttk.Entry(scale_bar_frame, textvariable=scale_bar_stroke_var, width=10)
     scale_bar_color_entry.pack(side="left", padx=(4, 12))
     state_widgets["scale_bar_stroke"] = scale_bar_color_entry
-    scale_bar_stroke_width_label = ttk.Label(scale_bar_frame, text="Stroke width")
+    scale_bar_stroke_width_label = ttk.Label(scale_bar_frame, text="Stroke width", style="Field.TLabel")
     scale_bar_stroke_width_label.pack(side="left")
     state_widgets["scale_bar_stroke_width_label"] = scale_bar_stroke_width_label
     scale_bar_stroke_width_entry = ttk.Entry(scale_bar_frame, textvariable=scale_bar_stroke_width_var, width=7)
     scale_bar_stroke_width_entry.pack(side="left", padx=(4, 12))
     state_widgets["scale_bar_stroke_width"] = scale_bar_stroke_width_entry
-    scale_bar_text_size_label = ttk.Label(scale_bar_frame, text="Text size")
+    scale_bar_text_size_label = ttk.Label(scale_bar_frame, text="Text size", style="Field.TLabel")
     scale_bar_text_size_label.pack(side="left")
     state_widgets["scale_bar_text_size_label"] = scale_bar_text_size_label
     scale_bar_text_size_entry = ttk.Entry(scale_bar_frame, textvariable=scale_bar_text_size_var, width=7)
@@ -5674,11 +5695,12 @@ def run_gui() -> int:
             "Radius, opacity, stroke width, and line settings are per atom type."
         ),
         wraplength=1080,
-    ).grid(row=8, column=0, columnspan=10, sticky="w", pady=(6, 0))
+        style="Hint.TLabel",
+    ).grid(row=8, column=0, columnspan=10, sticky="w", pady=(8, 0))
 
     # ---------- DSSR base-pair options ----------
-    basepair_frame = ttk.LabelFrame(content, text="DSSR base-pair interaction lines", padding=10)
-    basepair_frame.grid(row=basepair_grid_row, column=0, sticky="ew", pady=(0, 8))
+    basepair_frame = ttk.LabelFrame(content, text="DSSR base-pair interaction lines")
+    basepair_frame.grid(row=basepair_grid_row, column=0, sticky="ew", padx=page_padx, pady=(0, 12))
     basepair_frame.columnconfigure(1, weight=1)
     basepair_frame.columnconfigure(3, weight=1)
     basepair_frame.columnconfigure(7, weight=1)
@@ -5711,19 +5733,19 @@ def run_gui() -> int:
     bp_atom_combo.grid(row=1, column=1, sticky="w", pady=3)
     state_widgets["base_pair_atom"] = bp_atom_combo
 
-    bp_color_label = ttk.Label(basepair_frame, text="Line color")
+    bp_color_label = ttk.Label(basepair_frame, text="Line color", style="Field.TLabel")
     bp_color_label.grid(row=1, column=2, sticky="w", padx=(18, 6), pady=3)
     state_widgets["base_pair_stroke_label"] = bp_color_label
     bp_color_entry = ttk.Entry(basepair_frame, textvariable=base_pair_stroke_var, width=10)
     bp_color_entry.grid(row=1, column=3, sticky="w", pady=3)
     state_widgets["base_pair_stroke"] = bp_color_entry
-    bp_width_label = ttk.Label(basepair_frame, text="Width")
+    bp_width_label = ttk.Label(basepair_frame, text="Width", style="Field.TLabel")
     bp_width_label.grid(row=1, column=4, sticky="w", padx=(18, 6), pady=3)
     state_widgets["base_pair_width_label"] = bp_width_label
     bp_width_entry = ttk.Entry(basepair_frame, textvariable=base_pair_width_var, width=7)
     bp_width_entry.grid(row=1, column=5, sticky="w", pady=3)
     state_widgets["base_pair_width"] = bp_width_entry
-    bp_opacity_label = ttk.Label(basepair_frame, text="Opacity")
+    bp_opacity_label = ttk.Label(basepair_frame, text="Opacity", style="Field.TLabel")
     bp_opacity_label.grid(row=1, column=6, sticky="w", padx=(18, 6), pady=3)
     state_widgets["base_pair_opacity_label"] = bp_opacity_label
     bp_opacity_entry = ttk.Entry(basepair_frame, textvariable=base_pair_opacity_var, width=7)
@@ -5738,20 +5760,20 @@ def run_gui() -> int:
             "C3' is recommended for B-DNA; C4' is recommended for A-RNA."
         ),
         wraplength=1080,
-    ).grid(row=2, column=0, columnspan=8, sticky="w", pady=(6, 0))
+        style="Hint.TLabel",
+    ).grid(row=2, column=0, columnspan=8, sticky="w", pady=(8, 0))
 
     # ---------- Run log ----------
-    log_frame = ttk.LabelFrame(content, text="Run log", padding=10)
-    log_frame.grid(row=page_row, column=0, sticky="ew", pady=(0, 8))
+    log_frame = ttk.LabelFrame(content, text="Run log")
+    log_frame.grid(row=page_row, column=0, sticky="ew", padx=page_padx, pady=(0, 0))
     page_row += 1
     log_frame.columnconfigure(0, weight=1)
     log_frame.rowconfigure(1, weight=1)
-    ttk.Label(log_frame, text="Click Run to process the input file. Messages and output paths will appear below.").grid(row=0, column=0, sticky="w", pady=(0, 5))
-    output_text = tk.Text(log_frame, width=120, height=9, wrap="word")
-    output_text.grid(row=1, column=0, sticky="ew")
-    log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=output_text.yview)
-    log_scroll.grid(row=1, column=1, sticky="ns")
-    output_text.configure(yscrollcommand=log_scroll.set)
+    ttk.Label(log_frame, text="Click Run to process the input file. Messages and output paths will appear below.", style="Hint.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+    log_view = ui.LogView(log_frame, wrap="word", height=9)
+    log_view.grid(row=1, column=0, columnspan=2, sticky="ew")
+    output_text = log_view.text
+    output_text.configure(width=120)
 
     def gui_style_color(row_info: dict, key: str, where: str) -> str:
         """The fill= or line_stroke= value a row sends: nothing for a field at its
@@ -5925,11 +5947,16 @@ def run_gui() -> int:
     rebuild_type_rows()
     update_gui_state()
 
-    footer = ttk.Frame(root, padding=(12, 6, 12, 10))
+    # The footer of the theme: the tip on the left, Quit and Run at the
+    # bottom right, under a hairline.
+    footer = ttk.Frame(root, style="Footer.TFrame")
     footer.grid(row=2, column=0, columnspan=2, sticky="ew")
-    ttk.Button(footer, text="Run", command=run_from_gui).pack(side="left")
-    ttk.Button(footer, text="Quit", command=root.destroy).pack(side="left", padx=(8, 0))
-    ttk.Label(footer, text="Tip: use command-line mode for batch processing, or run with no arguments for this GUI.").pack(side="left", padx=(18, 0))
+    footer.columnconfigure(0, weight=1)
+    ui.hairline(footer).grid(row=0, column=0, columnspan=3, sticky="ew")
+    ttk.Label(footer, text="Tip: use command-line mode for batch processing, or run with no arguments for this GUI.",
+              style="Footer.Hint.TLabel").grid(row=1, column=0, sticky="w", padx=(20, 12), pady=10)
+    ttk.Button(footer, text="Run", command=run_from_gui, style="Accent.TButton").grid(row=1, column=2, padx=(8, 20), pady=10)
+    ttk.Button(footer, text="Quit", command=root.destroy, style="Footer.TButton").grid(row=1, column=1, pady=10)
 
     # Open as wide as the page asks, 1240 px or not, and never wider than the
     # screen: at 1240 px the drawing frame asked for 18 px more, and on a

@@ -24,7 +24,7 @@ solids that tile the whole molmap surface EXACTLY, for multicolour printing
                                                                # into the blobs, along bonds
 
 This is Curve It's "Multicolor Split..." tool; it also runs on its own.  In the
-GUI every field, checkbox and group of buttons has a light-blue ? that opens an
+GUI every field, checkbox and group of buttons has a round ? that opens an
 explanation of the setting, with an example for every entry field.  The GUI greys
 out what the ticked boxes leave unused: Pads, Sticks and Blob skin until Blob
 parts is ticked (Sticks also until the parts are atom selections), and the pad
@@ -4537,7 +4537,7 @@ def _pipeline(a, c):
 
 
 # ============================================================ GUI help text
-# key -> (title, prose, example or None).  Every light-blue ? in the GUI opens
+# key -> (title, prose, example or None).  Every round ? in the GUI opens
 # one of these; a chip for a key that is missing here fails when it is built.
 # The Convention ?'s table: what a selection selects, then how ChimeraX and
 # how Chimera write it.  Each pair selects the same atoms; a test runs every
@@ -5801,6 +5801,11 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
     import threading
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
+    try:
+        from curve_it_lib import azbmost_ui as ui
+    except ImportError:
+        import azbmost_ui as ui
+    C = ui.C
 
     prefill = dict(prefill or {})
     if initial_file and not prefill.get("structure"):
@@ -5823,42 +5828,47 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
         open_help["win"] = top
         top.title(title)
         top.transient(root)
-        top.configure(bg="#f4f9ff")
-        frm = tk.Frame(top, bg="#f4f9ff", padx=16, pady=14)
+        top.configure(bg=C.BG)
+        frm = tk.Frame(top, bg=C.BG, padx=20, pady=16)
         frm.pack(fill="both", expand=True)
-        tk.Label(frm, text=title, font=("Helvetica", 14, "bold"),
-                 bg="#f4f9ff", fg="#0b4d80", anchor="w",
+        tk.Label(frm, text=title, font="AzbTitle",
+                 bg=C.BG, fg=C.TEXT, anchor="w",
                  justify="left").pack(fill="x", pady=(0, 8))
         text = tk.Label(frm, text=prose, wraplength=470, justify="left",
-                        bg="#f4f9ff", fg="#1a1a1a", font=("Helvetica", 12),
+                        bg=C.BG, fg=C.TEXT, font="AzbBody",
                         anchor="w")
         text.pack(fill="x")
         if example:
             segments = example_segments(example)
             plain = "".join(piece for piece, _ in segments)
-            head = tk.Frame(frm, bg="#f4f9ff")
-            head.pack(fill="x", pady=(12, 3))
-            tk.Label(head, text="Example", font=("Helvetica", 11, "bold"),
-                     bg="#f4f9ff", fg="#0b4d80").pack(side="left")
+            head = tk.Frame(frm, bg=C.BG)
+            head.pack(fill="x", pady=(12, 4))
+            tk.Label(head, text="Example", font="AzbSmallBold",
+                     bg=C.BG, fg=C.TEXT_2).pack(side="left")
             if any(code for _, code in segments):
                 tk.Label(head, text="    bold on white: what you type;  the rest says what it does",
-                         font=("Helvetica", 11), bg="#f4f9ff", fg="#555").pack(side="left")
+                         font="AzbSmall", bg=C.BG, fg=C.MUTED).pack(side="left")
             # Height counted in DISPLAY rows, not in newlines: a line
             # longer than the box wraps, and a height counted in newlines
             # then clips the tail of the block off the bottom.
             width = 62
             rows = sum(max(1, -(-len(line) // width))
                        for line in plain.split("\n"))
-            box = tk.Text(frm, font=("Menlo", 11), height=rows,
-                          width=width, bg="#e8f1fa", relief="flat",
-                          padx=8, pady=6, highlightthickness=0)
-            box.tag_configure("code", font=("Menlo", 11, "bold"), background="#ffffff",
+            # The box a shade darker than the other tools' example boxes, so
+            # that what you type stands out on white within it.
+            box = tk.Text(frm, font="AzbMono", height=rows,
+                          width=width, bg=C.TROUGH, fg=C.TEXT, relief="flat",
+                          padx=10, pady=8, highlightthickness=1,
+                          highlightbackground=C.BORDER, highlightcolor=C.BORDER)
+            mono = box.tk.call("font", "actual", "AzbMono", "-family")
+            size = box.tk.call("font", "actual", "AzbMono", "-size")
+            box.tag_configure("code", font=(mono, size, "bold"), background="#ffffff",
                               foreground="#0b3d66")
             for piece, code in segments:
                 box.insert(tk.END, piece, ("code",) if code else ())
             box.configure(state="disabled")
             box.pack(fill="x")
-        tk.Button(frm, text="Close", command=top.destroy).pack(pady=(12, 0))
+        ttk.Button(frm, text="Close", command=top.destroy).pack(anchor="e", pady=(14, 0))
         top.bind("<Escape>", lambda e: top.destroy())
         # Beside the chip, but kept on the screen: the lowest chips sit far
         # down the window and carry the longest texts, whose Close button
@@ -5886,29 +5896,24 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
         top.focus_set()
 
     def chip(parent, key):
-        """A small light-blue '?' that opens the explanation for `key`.
+        """The theme's round '?' that opens the explanation for `key`.
 
-        Built from a Label rather than a Button because macOS's native button
-        ignores background colour.  A key with no HELP entry fails here, when
-        the window is built, not later when someone clicks it.
+        A key with no HELP entry fails here, when the window is built, not
+        later when someone clicks it.
         """
         if key not in HELP:
             raise KeyError(f"no HELP entry for the ? chip {key!r}")
-        c = tk.Label(parent, text="?", font=("Helvetica", 11, "bold"),
-                     bg="#bcdcf5", fg="#0b4d80", width=2, relief="raised",
-                     borderwidth=1, cursor="hand2")
-        c.bind("<Button-1>", lambda e, k=key, w=c: show_help(k, w))
-        c.bind("<Enter>", lambda e, w=c: w.configure(bg="#8fc7ee"))
-        c.bind("<Leave>", lambda e, w=c: w.configure(bg="#bcdcf5"))
+        c = ui.HelpButton(parent)
+        c.configure(command=lambda k=key, w=c: show_help(k, w))
         chip_keys.append(key)
         chip_widgets.setdefault(key, c)
         return c
 
     class App:
-        GEOMETRY = (1060, 900)          # default window size; grown to fit
+        GEOMETRY = (1060, 900)          # default window size; at most this tall, grown to fit the width
         MINSIZE = (880, 660)
         LOG_LINES = 12                  # the log's natural height; it fills any extra
-        LOG_MIN_LINES = 4               # the log shrinks to this many lines first
+        LOG_MIN_LINES = 4               # the log shrinks to this many lines first, then the settings scroll
 
         def __init__(self, root):
             self.root = root
@@ -5924,45 +5929,78 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             root.geometry("%dx%d" % self.GEOMETRY)
             root.minsize(*self.MINSIZE)
             root.protocol("WM_DELETE_WINDOW", self.on_close)
-            frm = ttk.Frame(root, padding=10)
-            frm.pack(fill=tk.BOTH, expand=True)
-            frm.columnconfigure(1, weight=1)
+            # The run buttons and the status sit in the footer, at the bottom
+            # right of the window; packed first, they keep their place in a
+            # window too short for everything.
+            self.status = tk.StringVar(value="ready")
+            footer = ui.Footer(root, textvariable=self.status)
+            footer.pack(side=tk.BOTTOM, fill=tk.X)
+            ui.hairline(root).pack(side=tk.BOTTOM, fill=tk.X)
+            self.outer = outer = ttk.Frame(root, padding=(20, 14, 20, 14))
+            outer.pack(fill=tk.BOTH, expand=True)
+            outer.columnconfigure(0, weight=1)
+            outer.rowconfigure(1, weight=1)
+            # The settings, in cards, get the height they ask for while the
+            # log keeps LOG_MIN_LINES lines, and scroll in a window too short
+            # for that (share_height).
+            self.form = ui.ScrollFrame(outer)
+            self.form.grid(row=0, column=0, sticky=tk.NSEW)
+            body = self.form.body
+            body.configure(padding=(0, 0, 10, 0))      # room beside the cards for the scrollbar
             self.v = {}
             self.rows = {}              # key -> the widgets of its rows, to show or hide them
             self.greyable = {}          # key -> the widgets greyed out while it is not usable
             self.usable = None          # gui_usable() as last applied; None until the window is filled
             self.settling = False
             self.chain_rows = []        # read_structure()'s chains, for Backbone per chain
-            r = 0
+            field_labels = []           # every card's label column is as wide as the widest label
+            cards = []
+            card_row = {}
+
+            def card(title):
+                frame = ttk.LabelFrame(body, text=title)
+                frame.pack(fill=tk.X, pady=(0, 12))
+                frame.columnconfigure(1, weight=1)
+                cards.append(frame)
+                card_row[frame] = 0
+                return frame
+
+            def field_label(parent, text, row, sticky=tk.W):
+                label = ttk.Label(parent, text=text, style="Field.TLabel")
+                label.grid(row=row, column=0, sticky=sticky, pady=3)
+                field_labels.append(label)
+                return label
 
             # columns: 0 label, 1 entry, 2 Browse…, 3 the ? chip
-            def row_entry(label, key, browse=None, width=70):
-                nonlocal r
-                ws = [ttk.Label(frm, text=label)]
-                ws[-1].grid(row=r, column=0, sticky=tk.W, pady=2)
+            def row_entry(parent, label, key, browse=None, width=70):
+                r = card_row[parent]
+                ws = [field_label(parent, label, r)]
                 var = tk.StringVar()
                 self.v[key] = var
-                ws.append(ttk.Entry(frm, textvariable=var, width=width))
-                ws[-1].grid(row=r, column=1, sticky=tk.EW, pady=2, padx=4)
+                ws.append(ttk.Entry(parent, textvariable=var, width=width))
+                ws[-1].grid(row=r, column=1, sticky=tk.EW, pady=3, padx=(12, 0))
                 if browse:
-                    ws.append(ttk.Button(frm, text="Browse…", command=browse))
-                    ws[-1].grid(row=r, column=2, sticky=tk.W)
-                ws.append(chip(frm, key))
-                ws[-1].grid(row=r, column=3, sticky=tk.W, padx=(6, 0))
+                    ws.append(ttk.Button(parent, text="Browse…", command=browse))
+                    ws[-1].grid(row=r, column=2, sticky=tk.W, padx=(8, 0), pady=3)
+                ws.append(chip(parent, key))
+                ws[-1].grid(row=r, column=3, sticky=tk.W, padx=(8, 0), pady=3)
                 self.rows[key] = ws
-                r += 1
+                card_row[parent] = r + 1
                 return var
 
-            row_entry("Structure (PDB / mmCIF)", "structure", self.browse_pdb)
-            bf = ttk.Frame(frm)
-            bf.grid(row=r, column=1, sticky=tk.W, padx=4)
+            # the structure and its chains
+            sc = card("Structure")
+            row_entry(sc, "Structure (PDB / mmCIF)", "structure", self.browse_pdb)
+            r = card_row[sc]
+            bf = ttk.Frame(sc)
+            bf.grid(row=r, column=1, columnspan=3, sticky=tk.W, padx=(12, 0), pady=3)
             ttk.Button(bf, text="Detect chains", command=self.detect).pack(side=tk.LEFT)
-            chip(bf, "chains").pack(side=tk.LEFT, padx=(6, 0))
+            chip(bf, "chains").pack(side=tk.LEFT, padx=(8, 0))
             self.chain_info = tk.StringVar(value="")
-            ttk.Label(bf, textvariable=self.chain_info, foreground="#666").pack(side=tk.LEFT, padx=8)
+            ttk.Label(bf, textvariable=self.chain_info, style="Hint.TLabel").pack(side=tk.LEFT, padx=10)
             r += 1
-            tf = ttk.Frame(frm)
-            tf.grid(row=r, column=0, columnspan=4, sticky=tk.EW, pady=4)
+            tf = ttk.Frame(sc)
+            tf.grid(row=r, column=0, columnspan=4, sticky=tk.EW, pady=(6, 0))
             self.tree = ttk.Treeview(tf, columns=("atoms", "res", "range", "types"),
                                      height=4, show="tree headings")
             for col, t, w in (("#0", "chain", 70), ("atoms", "atoms", 70), ("res", "residues", 80),
@@ -5973,145 +6011,157 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             self.tree.configure(yscrollcommand=tsb.set)
             self.tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
             tsb.pack(side=tk.LEFT, fill=tk.Y)
-            r += 1
+            card_row[sc] = r + 1
             # the parts: whole chains, or atom selections (one of the two rows below)
-            ttk.Label(frm, text="Parts by").grid(row=r, column=0, sticky=tk.W, pady=2)
-            mf = ttk.Frame(frm)
-            mf.grid(row=r, column=1, columnspan=2, sticky=tk.W, padx=4)
+            pc = card("Parts")
+            r = card_row[pc]
+            field_label(pc, "Parts by", r)
+            mf = ttk.Frame(pc)
+            mf.grid(row=r, column=1, columnspan=2, sticky=tk.W, padx=(12, 0), pady=3)
             self.v["parts_by"] = tk.StringVar(value="chains")
             for value, text in (("chains", "chains"),
                                 ("selections", "atom selections (ChimeraX or Chimera convention)")):
                 ttk.Radiobutton(mf, text=text, value=value, variable=self.v["parts_by"]).pack(
-                    side=tk.LEFT, padx=(0, 12))
-            chip(frm, "parts_by").grid(row=r, column=3, sticky=tk.W, padx=(6, 0))
-            r += 1
-            row_entry("Parts (colour order)", "parts")
-            hint = ttk.Label(frm, text="one token per colour, space-separated; join chains with ','   "
-                                       "e.g.  A C   or   A,B C", foreground="#666")
-            hint.grid(row=r, column=1, sticky=tk.W, padx=4)
+                    side=tk.LEFT, padx=(0, 16))
+            chip(pc, "parts_by").grid(row=r, column=3, sticky=tk.W, padx=(8, 0), pady=3)
+            card_row[pc] = r + 1
+            row_entry(pc, "Parts (colour order)", "parts")
+            r = card_row[pc]
+            hint = ttk.Label(pc, text="one token per colour, space-separated; join chains with ','   "
+                                      "e.g.  A C   or   A,B C", style="Hint.TLabel")
+            hint.grid(row=r, column=1, sticky=tk.W, padx=(12, 0))
             self.rows["parts"].append(hint)
             r += 1
             # one selection per line, then its convention, the rule for atoms
             # two parts share, and a fill for the usual case
-            ws = [ttk.Label(frm, text="Selections\n(colour order)")]
-            ws[-1].grid(row=r, column=0, sticky=tk.NW, pady=2)
-            sf = ttk.Frame(frm)
-            sf.grid(row=r, column=1, columnspan=2, sticky=tk.EW, padx=4, pady=2)
+            ws = [field_label(pc, "Selections\n(colour order)", r, sticky=tk.NW)]
+            sf = ttk.Frame(pc)
+            sf.grid(row=r, column=1, columnspan=2, sticky=tk.EW, padx=(12, 0), pady=3)
             ws.append(sf)
             self.sel_text = tk.Text(sf, height=4, width=70, wrap=tk.NONE, undo=True,
-                                    font=("Menlo", 11))
+                                    font="AzbMono", relief="flat", highlightthickness=1,
+                                    highlightbackground=C.BORDER_INPUT, highlightcolor=C.ACCENT,
+                                    padx=6, pady=4)
             ssb = ttk.Scrollbar(sf, orient=tk.VERTICAL, command=self.sel_text.yview)
             self.sel_text.configure(yscrollcommand=ssb.set)
             self.sel_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
             ssb.pack(side=tk.LEFT, fill=tk.Y)
             self.sel_text.bind("<<Modified>>", self.on_selections_edited)
-            ws.append(chip(frm, "part"))
-            ws[-1].grid(row=r, column=3, sticky=tk.NW, padx=(6, 0), pady=2)
+            ws.append(chip(pc, "part"))
+            ws[-1].grid(row=r, column=3, sticky=tk.NW, padx=(8, 0), pady=3)
             r += 1
-            of = ttk.Frame(frm)
-            of.grid(row=r, column=1, columnspan=3, sticky=tk.W, padx=4, pady=(0, 2))
+            of = ttk.Frame(pc)
+            of.grid(row=r, column=1, columnspan=3, sticky=tk.W, padx=(12, 0), pady=(3, 3))
             ws.append(of)
-            ttk.Label(of, text="Convention").pack(side=tk.LEFT)
+            ttk.Label(of, text="Convention", style="Field.TLabel").pack(side=tk.LEFT)
             self.v["selection_syntax"] = tk.StringVar(value=SYNTAX_LABELS["chimerax"])
             ttk.Combobox(of, textvariable=self.v["selection_syntax"],
                          values=list(SYNTAX_LABELS.values()), state="readonly",
-                         width=9).pack(side=tk.LEFT, padx=(4, 0))
-            chip(of, "selection_syntax").pack(side=tk.LEFT, padx=(6, 14))
-            ttk.Label(of, text="Shared atoms").pack(side=tk.LEFT)
+                         width=9).pack(side=tk.LEFT, padx=(8, 0))
+            chip(of, "selection_syntax").pack(side=tk.LEFT, padx=(8, 16))
+            ttk.Label(of, text="Shared atoms", style="Field.TLabel").pack(side=tk.LEFT)
             self.v["overlap"] = tk.StringVar(value=OVERLAP_LABELS["first"])
             ttk.Combobox(of, textvariable=self.v["overlap"], values=list(OVERLAP_LABELS.values()),
-                         state="readonly", width=21).pack(side=tk.LEFT, padx=(4, 0))
-            chip(of, "overlap").pack(side=tk.LEFT, padx=(6, 14))
+                         state="readonly", width=21).pack(side=tk.LEFT, padx=(8, 0))
+            chip(of, "overlap").pack(side=tk.LEFT, padx=(8, 16))
             ttk.Button(of, text="Backbone per chain", command=self.fill_backbone).pack(side=tk.LEFT)
-            chip(of, "fill_backbone").pack(side=tk.LEFT, padx=(6, 0))
+            chip(of, "fill_backbone").pack(side=tk.LEFT, padx=(8, 0))
             r += 1
-            ws.append(ttk.Label(frm, text="one part per line, P1 first:   NAME = selection   or   "
-                                          "rest      e.g.  bbA = /A & backbone", foreground="#666"))
-            ws[-1].grid(row=r, column=1, columnspan=2, sticky=tk.W, padx=4)
+            ws.append(ttk.Label(pc, text="one part per line, P1 first:   NAME = selection   or   "
+                                         "rest      e.g.  bbA = /A & backbone", style="Hint.TLabel"))
+            ws[-1].grid(row=r, column=1, columnspan=2, sticky=tk.W, padx=(12, 0))
             self.rows["part"] = ws
             r += 1
             # the part colours: a menu, then one swatch per part in its colour
-            ttk.Label(frm, text="Palette").grid(row=r, column=0, sticky=tk.W, pady=2)
-            pf = ttk.Frame(frm)
-            pf.grid(row=r, column=1, columnspan=2, sticky=tk.W, padx=4, pady=2)
+            field_label(pc, "Palette", r)
+            pf = ttk.Frame(pc)
+            pf.grid(row=r, column=1, columnspan=2, sticky=tk.W, padx=(12, 0), pady=3)
             self.v["palette"] = tk.StringVar(value="default")
             ttk.Combobox(pf, textvariable=self.v["palette"], values=palette_choices(),
                          state="readonly", width=14).pack(side=tk.LEFT)
             self.swatch_box = ttk.Frame(pf)
-            self.swatch_box.pack(side=tk.LEFT, padx=(8, 0))
+            self.swatch_box.pack(side=tk.LEFT, padx=(10, 0))
             self.swatches = []          # ("P1 A red", #rrggbb) per swatch, for the self test
-            chip(frm, "palette").grid(row=r, column=3, sticky=tk.W, padx=(6, 0))
-            r += 1
-            row_entry("Output folder", "out", self.browse_out)
-            row_entry("Tag (file prefix)", "tag", width=40)
+            chip(pc, "palette").grid(row=r, column=3, sticky=tk.W, padx=(8, 0), pady=3)
+            card_row[pc] = r + 1
+            # where the files go
+            oc = card("Output")
+            row_entry(oc, "Output folder", "out", self.browse_out)
+            row_entry(oc, "Tag (file prefix)", "tag", width=40)
             self.auto_name = tk.StringVar(value="")
             # A long output path wraps within its cell instead of widening the
             # window: the label asks for a fixed 40 characters of width and
             # wraps at whatever width its cell is given.
-            names = ttk.Label(frm, textvariable=self.auto_name, foreground="#666",
+            names = ttk.Label(oc, textvariable=self.auto_name, style="Hint.TLabel",
                               width=40, wraplength=600)
-            names.grid(row=r, column=1, columnspan=2, sticky=tk.EW, padx=4)
+            names.grid(row=card_row[oc], column=1, columnspan=2, sticky=tk.EW, padx=(12, 0))
             names.bind("<Configure>", lambda e, w=names: w.configure(wraplength=max(200, e.width)))
-            r += 1
+            card_row[oc] += 1
 
-            box = ttk.Frame(frm)
-            box.grid(row=r, column=0, columnspan=4, sticky=tk.EW, pady=6)
-            r += 1
-            num = ttk.LabelFrame(box, text="molmap & split parameters", padding=6)
+            box = ttk.Frame(body)
+            box.pack(fill=tk.X, pady=(0, 12))
+            num = ttk.LabelFrame(box, text="molmap & split parameters")
             num.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             # columns: 0 label, 1 entry, 2 the ? chip, 3 hint
             for i, (key, label, default, hint) in enumerate(GUI_NUMBERS):
-                lab = ttk.Label(num, text=label)
-                lab.grid(row=i, column=0, sticky=tk.W, pady=1)
+                lab = ttk.Label(num, text=label, style="Field.TLabel")
+                lab.grid(row=i, column=0, sticky=tk.W, pady=2)
                 var = tk.StringVar(value=default)
                 self.v[key] = var
                 ent = ttk.Entry(num, textvariable=var, width=10)
-                ent.grid(row=i, column=1, sticky=tk.W, padx=4)
+                ent.grid(row=i, column=1, sticky=tk.W, padx=(12, 0), pady=2)
                 if key in GUI_NUMBER_NEEDS:
                     self.greyable[key] = (lab, ent)
-                chip(num, key).grid(row=i, column=2, sticky=tk.W, padx=(0, 6))
-                ttk.Label(num, text=hint, foreground="#666").grid(row=i, column=3, sticky=tk.W)
+                chip(num, key).grid(row=i, column=2, sticky=tk.W, padx=(8, 8), pady=2)
+                ttk.Label(num, text=hint, style="Hint.TLabel").grid(row=i, column=3, sticky=tk.W,
+                                                                    pady=2)
             vf = ttk.Frame(num)
-            vf.grid(row=len(GUI_NUMBERS), column=0, columnspan=4, sticky=tk.W, pady=(4, 0))
+            vf.grid(row=len(GUI_NUMBERS), column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
             ttk.Label(vf, text="molmap surfaces are always computed at voxel step 1 (every grid "
                                "point) -- not adjustable", foreground="#2a6").pack(side=tk.LEFT)
-            chip(vf, "voxel_step").pack(side=tk.LEFT, padx=(6, 0))
-            opt = ttk.LabelFrame(box, text="options", padding=6)
-            opt.pack(side=tk.LEFT, fill=tk.BOTH, padx=(8, 0))
+            chip(vf, "voxel_step").pack(side=tk.LEFT, padx=(8, 0))
+            opt = ttk.LabelFrame(box, text="options")
+            opt.pack(side=tk.LEFT, fill=tk.BOTH, padx=(12, 0))
             # columns: 0 the checkbox, 1 its ? chip
             for i, (key, label, default) in enumerate(GUI_OPTIONS):
                 var = tk.BooleanVar(value=default)
                 self.v[key] = var
-                box = ttk.Checkbutton(opt, text=label, variable=var)
-                box.grid(row=i, column=0, sticky=tk.W)
+                cbox = ttk.Checkbutton(opt, text=label, variable=var)
+                cbox.grid(row=i, column=0, sticky=tk.W, pady=1)
                 if key in GUI_BOX_NEEDS:
-                    self.greyable[key] = (box,)
-                chip(opt, key).grid(row=i, column=1, sticky=tk.W, padx=(6, 0), pady=1)
+                    self.greyable[key] = (cbox,)
+                chip(opt, key).grid(row=i, column=1, sticky=tk.W, padx=(8, 0), pady=1)
 
-            row_entry("ChimeraX", "chimerax", self.browse_cx)
-            row_entry("Chimera", "chimera", self.browse_chimera)   # the Chimera convention only
-            bar = ttk.Frame(frm)
-            bar.grid(row=r, column=0, columnspan=4, sticky=tk.EW, pady=6)
-            r += 1
-            self.run_btn = ttk.Button(bar, text="Run split", command=self.run)
-            self.run_btn.pack(side=tk.LEFT)
-            self.stop_btn = ttk.Button(bar, text="Stop", command=self.stop, state=tk.DISABLED)
-            self.stop_btn.pack(side=tk.LEFT, padx=4)
-            chip(bar, "run").pack(side=tk.LEFT, padx=(2, 8))
-            ttk.Button(bar, text="Show command", command=self.show_cmd).pack(side=tk.LEFT, padx=4)
-            ttk.Button(bar, text="Open output folder", command=self.open_out).pack(side=tk.LEFT, padx=4)
-            ttk.Button(bar, text="Show preview", command=self.show_preview).pack(side=tk.LEFT, padx=4)
-            self.status = tk.StringVar(value="ready")
-            ttk.Label(bar, textvariable=self.status).pack(side=tk.RIGHT)
+            # the programs that run the job
+            prc = card("Programs")
+            row_entry(prc, "ChimeraX", "chimerax", self.browse_cx)
+            row_entry(prc, "Chimera", "chimera", self.browse_chimera)   # the Chimera convention only
+            prc.pack_configure(pady=(0, 0))
+            label_width = max(label.winfo_reqwidth() for label in field_labels)
+            for frame in cards:
+                frame.columnconfigure(0, minsize=label_width)
 
-            logf = ttk.Frame(frm)
-            logf.grid(row=r, column=0, columnspan=4, sticky=tk.NSEW)
-            frm.rowconfigure(r, weight=1)
-            self.log = tk.Text(logf, wrap=tk.NONE, height=self.LOG_LINES, font=("Menlo", 11))
-            sb = ttk.Scrollbar(logf, orient=tk.VERTICAL, command=self.log.yview)
-            self.log.configure(yscrollcommand=sb.set, state=tk.DISABLED)
-            self.log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-            sb.pack(side=tk.LEFT, fill=tk.Y)
+            # the run buttons, right to left from Run split, and the status (left)
+            ttk.Button(footer.buttons, text="Show command", command=self.show_cmd,
+                       style="Footer.TButton").pack(side=tk.LEFT, padx=(8, 0))
+            ttk.Button(footer.buttons, text="Open output folder", command=self.open_out,
+                       style="Footer.TButton").pack(side=tk.LEFT, padx=(8, 0))
+            ttk.Button(footer.buttons, text="Show preview", command=self.show_preview,
+                       style="Footer.TButton").pack(side=tk.LEFT, padx=(8, 0))
+            chip(footer.buttons, "run").pack(side=tk.LEFT, padx=(16, 0))
+            self.stop_btn = ttk.Button(footer.buttons, text="Stop", command=self.stop, state=tk.DISABLED,
+                                       style="Footer.TButton")
+            self.stop_btn.pack(side=tk.LEFT, padx=(8, 0))
+            self.run_btn = ttk.Button(footer.buttons, text="Run split", command=self.run,
+                                      style="Accent.TButton")
+            self.run_btn.pack(side=tk.LEFT, padx=(8, 0))
+
+            logview = ui.LogView(outer, wrap=tk.NONE, height=self.LOG_LINES)
+            logview.grid(row=1, column=0, sticky=tk.NSEW, pady=(12, 0))
+            self.log = logview.text
+            self.log.configure(state=tk.DISABLED)
+            outer.bind("<Configure>", self.share_height, add="+")
+            body.bind("<Configure>", self.share_height, add="+")
 
             if not selftest:            # a self test must not depend on / touch ~/ prefs
                 self.load_prefs()
@@ -6149,42 +6199,49 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
                 self.detect(fill_parts=not self.v["parts"].get())
             self.update_names()
             self.show_parts_mode(fit=False)
-            self.say("Click any light-blue  ?  for an explanation and examples.\n")
+            self.say("Click any  ?  for an explanation and examples.\n")
             self.fit_window()
             root.after(120, self.poll)
 
         # ---------------------------------------------------------- helpers
         def fit_window(self, initial=True):
-            """Grow the minimum window size (and, when the window is first
-            built, its default size) to what the widgets ask for, so nothing
-            is clipped.  Only the log may get less height than it asks for,
-            down to LOG_MIN_LINES lines: its grid row gives up any shortfall
-            first, and it scrolls.  Called again after Detect chains, whose
-            table grows with the number of chains.  Neither size is ever
-            larger than the screen: on a short screen the chain table, which
-            scrolls too, gives up rows next, down to 3, and on a screen too
-            short even for that (1440x900 with ten chains) the log takes
-            what height is left, below LOG_MIN_LINES."""
+            """Let the settings area ask for all its cards and, when the
+            window is first built, open the window as wide as the widgets
+            ask and as tall as they ask but at most GEOMETRY's 900 points,
+            never larger than the screen.  Called again after Detect chains,
+            whose table grows with the number of chains, and when the rows
+            for the parts change; share_height then divides the height."""
             root = self.root
+            root.update_idletasks()
+            body = self.form.body
+            self.form.canvas.configure(width=body.winfo_reqwidth(), height=body.winfo_reqheight())
             root.update_idletasks()
             sw = root.winfo_screenwidth() - 40
             sh = root.winfo_screenheight() - 90         # menu bar, title bar, Dock
             rw, rh = root.winfo_reqwidth(), root.winfo_reqheight()
-            log_h = self.log.winfo_reqheight()
-            spare = max(0, log_h - log_h * self.LOG_MIN_LINES // self.LOG_LINES)
-            rows = int(self.tree.cget("height"))
-            while rh - spare > sh and rows > 3:
-                rows -= 1
-                self.tree.configure(height=rows)
-                root.update_idletasks()
-                rw, rh = root.winfo_reqwidth(), root.winfo_reqheight()
-            root.minsize(min(max(self.MINSIZE[0], rw), sw),
-                         min(max(self.MINSIZE[1], rh - spare), sh))
+            # never narrower than the widgets ask, so nothing is clipped at the side
+            root.minsize(min(max(self.MINSIZE[0], rw), sw), min(self.MINSIZE[1], sh))
             if initial:
                 gw = min(max(self.GEOMETRY[0], rw), sw)
-                gh = min(max(self.GEOMETRY[1], rh), sh)
+                gh = min(rh, self.GEOMETRY[1], sh)
                 root.geometry(f"{gw}x{gh}")
                 self.size = (gw, gh)
+            self.share_height()
+
+        def share_height(self, _event=None):
+            """Divide the window's height between the settings and the log:
+            the settings get what they ask for as long as the log keeps
+            LOG_MIN_LINES lines, and scroll beyond that; the log takes the
+            rest, and any extra."""
+            outer, body = self.outer, self.form.body
+            if outer.winfo_height() <= 1:
+                return                  # not laid out yet (or a hidden self-test window)
+            line = int(self.log.tk.call("font", "metrics", "AzbMono", "-linespace")) + 2
+            log_min = self.LOG_MIN_LINES * line + 18 + 12      # its padding and border, and the gap above
+            room = outer.winfo_height() - 28 - log_min        # the frame's own padding
+            height = max(60, min(body.winfo_reqheight(), room))
+            if int(float(self.form.canvas.cget("height"))) != height:
+                self.form.canvas.configure(height=height)
 
         def error(self, msg):
             if selftest:
@@ -6319,7 +6376,7 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
             if not tokens:
                 ttk.Label(self.swatch_box, text="each part's colour in the previews "
                                                 "(the STLs carry none)",
-                          foreground="#666").pack(side=tk.LEFT)
+                          style="Hint.TLabel").pack(side=tk.LEFT)
                 return
             for i, tok in enumerate(tokens[:SWATCH_MAX], 1):
                 name, rgb = pal[(i - 1) % len(pal)]
@@ -6327,11 +6384,12 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
                 dark = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2] < 0.55
                 label = f"P{i} {tok if len(tok) <= 8 else tok[:7] + '…'}"
                 tk.Label(self.swatch_box, text=label, bg=code, fg="#fff" if dark else "#000",
-                         relief="solid", borderwidth=1, padx=4).pack(side=tk.LEFT, padx=(0, 3))
+                         relief="solid", borderwidth=1, padx=5, pady=1,
+                         font="AzbSmall").pack(side=tk.LEFT, padx=(0, 4))
                 self.swatches.append((f"{label} {name}", code))
             if len(tokens) > SWATCH_MAX:
                 ttk.Label(self.swatch_box, text=f"+{len(tokens) - SWATCH_MAX} more",
-                          foreground="#666").pack(side=tk.LEFT)
+                          style="Hint.TLabel").pack(side=tk.LEFT)
 
         def build_args(self):
             g = {k: v.get() for k, v in self.v.items()}
@@ -6608,10 +6666,7 @@ def run_gui(initial_file=None, prefill=None, selftest=None):
                              "_multicolor_split_icon_image")
     if selftest:
         root.withdraw()                 # before anything can pop up
-    try:
-        ttk.Style().theme_use("aqua" if sys.platform == "darwin" else "clam")
-    except tk.TclError:
-        pass
+    ui.tool_window(root, TOOL_NAME, tool="multicolor_split", version=f"v{__version__}")
     app = App(root)
     res = {"rc": 0}
     if selftest:

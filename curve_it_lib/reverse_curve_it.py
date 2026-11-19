@@ -524,10 +524,22 @@ def build_parser() -> argparse.ArgumentParser:
 def run_gui(args=None) -> int:
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
+    try:
+        from curve_it_lib import azbmost_ui as ui
+    except ImportError:
+        import azbmost_ui as ui  # type: ignore[no-redef]
 
     args = args or build_parser().parse_args([])
     root = tk.Tk()
     root.title("Reverse Curve It - recover a curve from a PDB model")
+    # The form stays on the window's own grid (rows 1-8), so the header takes
+    # row 0, with its hairline just under it and a gap before the first field.
+    # The tool's own one-line description is the header's subtitle.
+    header = ui.tool_window(
+        root, "Reverse Curve It", tool="reverse_curve_it", version=VERSION, pack=False,
+        subtitle="Recover the model's centerline using its original straight template.")
+    header.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 15))
+    ui.hairline(root).grid(row=0, column=0, columnspan=4, sticky="sew", pady=(0, 14))
     root.columnconfigure(1, weight=1)
     root.rowconfigure(10, weight=1)
     values = {
@@ -575,19 +587,18 @@ def run_gui(args=None) -> int:
     }
 
     def help_button(key, row):
-        ttk.Button(root, text="?", width=2,
-                   command=lambda: messagebox.showinfo("Reverse Curve It", help_text[key],
-                                                       parent=root)).grid(
-                       row=row, column=3, padx=(0, 10), pady=4)
+        ui.HelpButton(root,
+                      command=lambda: messagebox.showinfo("Reverse Curve It", help_text[key],
+                                                          parent=root)).grid(
+                          row=row, column=3, sticky="w", padx=(8, 20), pady=3)
 
-    ttk.Label(root, text="Recover the model's centerline using its original straight template.",
-              wraplength=700).grid(row=0, column=0, columnspan=4, sticky="w", padx=10, pady=10)
     for row, (key, label) in enumerate((("curved", "Curved PDB"),
                                         ("template", "Straight template PDB"),
                                         ("output", "Output curve XYZ")), 1):
-        ttk.Label(root, text=label).grid(row=row, column=0, sticky="w", padx=10)
+        ttk.Label(root, text=label, style="Field.TLabel").grid(
+            row=row, column=0, sticky="w", padx=(20, 12), pady=3)
         ttk.Entry(root, textvariable=values[key], width=60).grid(
-            row=row, column=1, sticky="ew", pady=4)
+            row=row, column=1, sticky="ew", pady=3)
 
         def browse(key=key):
             if key == "output":
@@ -604,12 +615,13 @@ def run_gui(args=None) -> int:
                     values["output"].set(default_output_path(selected))
                 values[key].set(selected)
 
-        ttk.Button(root, text="Browse...", command=browse).grid(row=row, column=2, padx=6)
+        ttk.Button(root, text="Browse...", command=browse).grid(row=row, column=2, padx=(8, 0), pady=3)
         help_button(key, row)
     for row, key, label in ((4, "path", "Path type"), (5, "twist", "Extra twist (deg)"),
                             (6, "range", "Twist search range (deg)"),
                             (7, "points", "Output points")):
-        ttk.Label(root, text=label).grid(row=row, column=0, sticky="w", padx=10)
+        ttk.Label(root, text=label, style="Field.TLabel").grid(
+            row=row, column=0, sticky="w", padx=(20, 12), pady=3)
         if key == "path":
             widget = ttk.Combobox(root, textvariable=values[key], state="readonly",
                                   values=("auto", "open", "closed"), width=12)
@@ -617,11 +629,11 @@ def run_gui(args=None) -> int:
             widget = ttk.Entry(root, textvariable=values[key], width=24 if key == "range" else 14)
             if key == "range":
                 range_entry = widget
-        widget.grid(row=row, column=1, sticky="w", pady=4)
+        widget.grid(row=row, column=1, sticky="w", pady=3)
         help_button(key, row)
     ttk.Checkbutton(root, text="Allow missing / extra atoms (fit shared IDs)",
                     variable=values["missing"]).grid(row=8, column=0, columnspan=3,
-                                                     sticky="w", padx=10, pady=4)
+                                                     sticky="w", padx=(20, 0), pady=(6, 3))
     help_button("missing", 8)
 
     def update_range_state(*_):
@@ -630,8 +642,10 @@ def run_gui(args=None) -> int:
 
     values["twist"].trace_add("write", update_range_state)
     update_range_state()
-    log = tk.Text(root, width=94, height=15, wrap="word", state="disabled")
-    log.grid(row=10, column=0, columnspan=4, sticky="nsew", padx=10, pady=(0, 10))
+    log_view = ui.LogView(root, wrap="word", height=15)
+    log_view.grid(row=10, column=0, columnspan=4, sticky="nsew", padx=20, pady=(14, 16))
+    log = log_view.text
+    log.configure(width=94, state="disabled")
     status = tk.StringVar(value="Ready.")
 
     def generate():
@@ -667,10 +681,10 @@ def run_gui(args=None) -> int:
             status.set("Recovery failed.")
             messagebox.showerror("Reverse Curve It", str(exc), parent=root)
 
-    bar = ttk.Frame(root)
-    bar.grid(row=9, column=0, columnspan=4, sticky="ew", padx=10, pady=8)
-    ttk.Button(bar, text="Recover curve", command=generate).pack(side="left")
-    ttk.Label(bar, textvariable=status).pack(side="left", padx=12)
+    # Status on the left, the run button on the right, along the bottom of the window.
+    bar = ui.Footer(root, textvariable=status)
+    bar.grid(row=11, column=0, columnspan=4, sticky="ew")
+    bar.add_button("Recover curve", generate, primary=True)
     root.mainloop()
     return 0
 

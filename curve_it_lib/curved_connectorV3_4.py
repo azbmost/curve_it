@@ -2320,18 +2320,20 @@ def namespace_to_cli_command(ns: argparse.Namespace, script_name: str = "curved_
 def launch_gui() -> int:
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox, scrolledtext, ttk
+        from tkinter import filedialog, messagebox, ttk
     except Exception as exc:
         eprint(f"[ERROR] GUI mode requires tkinter: {exc}")
         return 1
+    try:
+        from curve_it_lib import azbmost_ui as ui
+    except ImportError:
+        import azbmost_ui as ui  # type: ignore[no-redef]
 
     root = tk.Tk()
     root.title(f"{TOOL_NAME} {TOOL_VERSION}")
-    root.geometry("980x700")
-    root.minsize(920, 620)
+    root.geometry("1060x840")
     set_optional_window_icon(root, tk, ["curved_connector_icon.png", "icon.png"], "_curved_connector_icon_image")
-    root.rowconfigure(0, weight=1)
-    root.columnconfigure(0, weight=1)
+    ui.tool_window(root, TOOL_NAME, tool="curved_connector", version=TOOL_VERSION)
 
     vars_s: Dict[str, tk.StringVar] = {
         "target_pdb": tk.StringVar(value=""),
@@ -2356,8 +2358,8 @@ def launch_gui() -> int:
         "stop_after_first_curvature_fail": tk.StringVar(value="auto"),
     }
 
-    main = ttk.Frame(root, padding=10)
-    main.grid(row=0, column=0, sticky="nsew")
+    main = ttk.Frame(root, padding=(18, 12, 18, 12))
+    main.pack(fill="both", expand=True)
     main.columnconfigure(0, weight=1)
     main.rowconfigure(3, weight=1)
 
@@ -2368,22 +2370,25 @@ def launch_gui() -> int:
             "then click Run. Click any ? button for a short parameter explanation."
         ),
         justify="left",
-        wraplength=940,
+        style="Muted.TLabel",
+        width=1,  # wraps to the window's width (below) and never widens it
     )
-    intro.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+    intro.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+    intro.bind("<Configure>", lambda event: intro.configure(wraplength=max(300, event.width)), add="+")
 
     top = ttk.Frame(main)
     top.grid(row=1, column=0, sticky="ew")
     top.columnconfigure(0, weight=1)
-    top.columnconfigure(1, weight=1)
 
-    files_box = ttk.LabelFrame(top, text="Files and end base-pairs", padding=8)
-    files_box.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+    # Files on top, the fifteen screening options below them in three columns.
+    files_box = ttk.LabelFrame(top, text="Files and end base-pairs")
+    files_box.grid(row=0, column=0, sticky="nsew")
     files_box.columnconfigure(1, weight=1)
 
-    options_box = ttk.LabelFrame(top, text="Screening options", padding=8)
-    options_box.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-    options_box.columnconfigure(1, weight=1)
+    options_box = ttk.LabelFrame(top, text="Screening options")
+    options_box.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+    for options_column in (1, 4, 7):
+        options_box.columnconfigure(options_column, weight=1)
 
     def show_help_dialog(label: str, key: str) -> None:
         messagebox.showinfo(label, GUI_PARAM_HELP[key])
@@ -2396,11 +2401,15 @@ def launch_gui() -> int:
         browse: bool = False,
         is_dir: bool = False,
         width: int = 32,
+        column: int = 0,
+        help_column: Optional[int] = None,
     ) -> None:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=3)
+        ttk.Label(parent, text=label, style="Field.TLabel").grid(
+            row=row, column=column, sticky="w", padx=(0 if column == 0 else 28, 10), pady=3
+        )
         entry = ttk.Entry(parent, textvariable=vars_s[key], width=width)
-        entry.grid(row=row, column=1, sticky="ew", padx=(0, 6), pady=3)
-        col = 2
+        entry.grid(row=row, column=column + 1, sticky="ew", pady=3)
+        col = column + 2
         if browse:
             def _choose() -> None:
                 if is_dir:
@@ -2420,56 +2429,58 @@ def launch_gui() -> int:
                         except Exception as exc:
                             messagebox.showerror("Target PDB parse error", str(exc))
             ttk.Button(parent, text="Browse", width=8, command=_choose).grid(
-                row=row, column=2, sticky="w", padx=(0, 6), pady=3
+                row=row, column=col, sticky="w", padx=(8, 0), pady=3
             )
-            col = 3
-        ttk.Button(
+            col += 1
+        ui.HelpButton(
             parent,
-            text="?",
-            width=3,
             command=lambda lbl=label, kk=key: show_help_dialog(lbl, kk),
-        ).grid(row=row, column=col, sticky="w", pady=3)
+        ).grid(row=row, column=col if help_column is None else help_column, sticky="w", padx=(8, 0), pady=3)
 
+    # Every file-row "?" sits in the same column, Browse or not.
     add_row(files_box, 0, "Target PDB", "target_pdb", browse=True, width=34)
     add_row(files_box, 1, "Template PDB", "template_pdb", browse=True, width=34)
-    add_row(files_box, 2, "Source base-pair", "source_bp", width=18)
-    add_row(files_box, 3, "Destination base-pair", "dest_bp", width=18)
+    add_row(files_box, 2, "Source base-pair", "source_bp", width=18, help_column=3)
+    add_row(files_box, 3, "Destination base-pair", "dest_bp", width=18, help_column=3)
     add_row(files_box, 4, "Output directory", "outdir", browse=True, is_dir=True, width=34)
 
+    # Three columns of five, read down each column in the original order.
     add_row(options_box, 0, "Min bp", "min_bp", width=12)
     add_row(options_box, 1, "Max bp", "max_bp", width=12)
     add_row(options_box, 2, "Top K", "top_k", width=12)
     add_row(options_box, 3, "Centerline method", "centerline_method", width=12)
     add_row(options_box, 4, "Curve points", "curve_points", width=12)
-    add_row(options_box, 5, "Tangent k", "tangent_k", width=12)
-    add_row(options_box, 6, "Length slack (Å)", "length_slack", width=12)
-    add_row(options_box, 7, "Min direction dot", "min_direction_dot", width=12)
-    add_row(options_box, 8, "Max curvature (A^-1)", "max_local_curvature", width=12)
-    add_row(options_box, 9, "Curv opt maxiter", "curvature_opt_maxiter", width=12)
-    add_row(options_box, 10, "Curv opt starts", "curvature_opt_starts", width=12)
-    add_row(options_box, 11, "Curv samples", "curvature_constraint_samples", width=12)
-    add_row(options_box, 12, "Curv timeout sec", "curvature_opt_timeout_sec", width=12)
-    add_row(options_box, 13, "Screen order", "screen_order", width=12)
-    add_row(options_box, 14, "Stop after curv fail", "stop_after_first_curvature_fail", width=12)
-
-    buttons = ttk.Frame(main)
-    buttons.grid(row=2, column=0, sticky="w", pady=(10, 0))
+    add_row(options_box, 0, "Tangent k", "tangent_k", width=12, column=3)
+    add_row(options_box, 1, "Length slack (Å)", "length_slack", width=12, column=3)
+    add_row(options_box, 2, "Min direction dot", "min_direction_dot", width=12, column=3)
+    add_row(options_box, 3, "Max curvature (A^-1)", "max_local_curvature", width=12, column=3)
+    add_row(options_box, 4, "Curv opt maxiter", "curvature_opt_maxiter", width=12, column=3)
+    add_row(options_box, 0, "Curv opt starts", "curvature_opt_starts", width=12, column=6)
+    add_row(options_box, 1, "Curv samples", "curvature_constraint_samples", width=12, column=6)
+    add_row(options_box, 2, "Curv timeout sec", "curvature_opt_timeout_sec", width=12, column=6)
+    add_row(options_box, 3, "Screen order", "screen_order", width=12, column=6)
+    add_row(options_box, 4, "Stop after curv fail", "stop_after_first_curvature_fail", width=12, column=6)
 
     notebook = ttk.Notebook(main)
-    notebook.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
+    notebook.grid(row=3, column=0, sticky="nsew", pady=(14, 0))
 
-    hints_tab = ttk.Frame(notebook, padding=4)
+    # The notebook's own outline frames each text box, so the boxes draw none.
+    hints_tab = ttk.Frame(notebook, padding=1)
     hints_tab.rowconfigure(0, weight=1)
     hints_tab.columnconfigure(0, weight=1)
-    hints_text = scrolledtext.ScrolledText(hints_tab, wrap="word", height=14)
-    hints_text.grid(row=0, column=0, sticky="nsew")
+    hints_view = ui.LogView(hints_tab, wrap="word", height=8)
+    hints_view.grid(row=0, column=0, sticky="nsew")
+    hints_text = hints_view.text
+    hints_text.configure(highlightthickness=0)
     notebook.add(hints_tab, text="Target hints")
 
-    log_tab = ttk.Frame(notebook, padding=4)
+    log_tab = ttk.Frame(notebook, padding=1)
     log_tab.rowconfigure(0, weight=1)
     log_tab.columnconfigure(0, weight=1)
-    log_text = scrolledtext.ScrolledText(log_tab, wrap="word", height=14)
-    log_text.grid(row=0, column=0, sticky="nsew")
+    log_view = ui.LogView(log_tab, wrap="word", height=8)
+    log_view.grid(row=0, column=0, sticky="nsew")
+    log_text = log_view.text
+    log_text.configure(highlightthickness=0)
     notebook.add(log_tab, text="Run log")
 
     run_counter = [0]
@@ -2638,11 +2649,16 @@ def launch_gui() -> int:
                 pass
             messagebox.showerror("Run failed", str(exc))
 
-    ttk.Button(buttons, text="Load target hints", command=load_target_hints).pack(side="left", padx=(0, 6))
-    run_button = ttk.Button(buttons, text="Run", command=run_now)
-    run_button.pack(side="left", padx=(0, 6))
-    ttk.Button(buttons, text="Quit", command=root.destroy).pack(side="left")
+    # Run buttons in the footer, packed before the form so they always stay visible.
+    buttons = ui.Footer(root)
+    buttons.pack(side="bottom", fill="x", before=main)
+    buttons.add_button("Load target hints", load_target_hints)
+    buttons.add_button("Quit", root.destroy)
+    run_button = buttons.add_button("Run", run_now, primary=True)
     root.after(100, drain_log_queue)
+    # Never smaller than the settings, so no field is cut off.
+    root.update_idletasks()
+    root.minsize(root.winfo_reqwidth(), root.winfo_reqheight())
 
     root.mainloop()
     return 0

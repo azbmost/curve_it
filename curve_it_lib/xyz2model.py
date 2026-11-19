@@ -1439,6 +1439,10 @@ def run_cli(args):
 def run_gui(initial_file=None, palette="default"):
     import tkinter as tk
     from tkinter import ttk, filedialog, colorchooser, messagebox
+    try:
+        from curve_it_lib import azbmost_ui as ui
+    except ImportError:
+        import azbmost_ui as ui
 
     root = tk.Tk()
     root.title("xyz2model  -  .xyz curves or a mesh  ->  STL / GLB   v%s"
@@ -1446,6 +1450,8 @@ def run_gui(initial_file=None, palette="default"):
     root.minsize(880, 560)
     set_optional_window_icon(
         root, tk, ["xyz2model_icon.png", "icon.png"], "_xyz2model_icon_image")
+    ui.tool_window(root, TOOL_NAME, tool="xyz2model", version="v%s" % __version__)
+    C = ui.C
 
     state = {"comps": None, "path": None, "kind": None,
              "stated_closure": None, "gap_cache": {}}
@@ -1489,26 +1495,27 @@ def run_gui(initial_file=None, palette="default"):
         open_help["win"] = top
         top.title(title)
         top.transient(root)
-        top.configure(bg="#f4f9ff")
-        frm = tk.Frame(top, bg="#f4f9ff", padx=16, pady=14)
+        top.configure(bg=C.BG)
+        frm = tk.Frame(top, bg=C.BG, padx=20, pady=16)
         frm.pack(fill="both", expand=True)
-        tk.Label(frm, text=title, font=("Helvetica", 14, "bold"),
-                 bg="#f4f9ff", fg="#0b4d80", anchor="w",
+        tk.Label(frm, text=title, font="AzbTitle",
+                 bg=C.BG, fg=C.TEXT, anchor="w",
                  justify="left").pack(fill="x", pady=(0, 8))
         tk.Label(frm, text=prose, wraplength=470, justify="left",
-                 bg="#f4f9ff", fg="#1a1a1a", font=("Helvetica", 12),
+                 bg=C.BG, fg=C.TEXT, font="AzbBody",
                  anchor="w").pack(fill="x")
         if example:
-            tk.Label(frm, text="Example", font=("Helvetica", 11, "bold"),
-                     bg="#f4f9ff", fg="#0b4d80", anchor="w").pack(fill="x",
-                                                                  pady=(12, 3))
-            box = tk.Text(frm, font=("Menlo", 11), height=example.count("\n") + 1,
-                          width=56, bg="#e8f1fa", relief="flat", padx=8, pady=6,
-                          highlightthickness=0)
+            tk.Label(frm, text="Example", font="AzbSmallBold",
+                     bg=C.BG, fg=C.TEXT_2, anchor="w").pack(fill="x",
+                                                            pady=(12, 4))
+            box = tk.Text(frm, font="AzbMono", height=example.count("\n") + 1,
+                          width=56, bg=C.SUBTLE, fg=C.TEXT, relief="flat", padx=10,
+                          pady=8, highlightthickness=1, highlightbackground=C.BORDER,
+                          highlightcolor=C.BORDER)
             box.insert("1.0", example)
             box.configure(state="disabled")
             box.pack(fill="x")
-        tk.Button(frm, text="Close", command=top.destroy).pack(pady=(12, 0))
+        ttk.Button(frm, text="Close", command=top.destroy).pack(anchor="e", pady=(14, 0))
         top.bind("<Escape>", lambda e: top.destroy())
         # Beside the chip, but kept on the screen, as Multicolor Split does:
         # the lower chips carry long texts whose Close button would otherwise
@@ -1529,29 +1536,32 @@ def run_gui(initial_file=None, palette="default"):
         top.focus_set()
 
     def chip(parent, key):
-        """A small light-blue '?' that opens the explanation for `key`.
-
-        Built from a Label rather than a Button because macOS's native button
-        ignores background colour.
-        """
-        c = tk.Label(parent, text="?", font=("Helvetica", 11, "bold"),
-                     bg="#bcdcf5", fg="#0b4d80", width=2, relief="raised",
-                     borderwidth=1, cursor="hand2")
-        c.bind("<Button-1>", lambda e, k=key, w=c: show_help(k, w))
-        c.bind("<Enter>", lambda e, w=c: w.configure(bg="#8fc7ee"))
-        c.bind("<Leave>", lambda e, w=c: w.configure(bg="#bcdcf5"))
+        """The theme's round '?' that opens the explanation for `key`."""
+        c = ui.HelpButton(parent)
+        c.configure(command=lambda k=key, w=c: show_help(k, w))
         return c
 
-    main = ttk.Frame(root, padding=10)
+    # The run buttons and the status line sit in the footer, at the bottom
+    # right of the window; packed first, they keep their place when a short
+    # screen cuts the window's height.
+    footer = ui.Footer(root)
+    footer.pack(side="bottom", fill="x")
+    ui.hairline(root).pack(side="bottom", fill="x")
+
+    main = ttk.Frame(root, padding=(20, 16, 20, 16))
     main.pack(fill="both", expand=True)
     main.columnconfigure(1, weight=1)
     main.rowconfigure(0, weight=1)
-    left = ttk.Frame(main); left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+    # The settings scroll when the window is too short for all of them.
+    form = ui.ScrollFrame(main)
+    form.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+    left = form.body
+    left.configure(padding=(0, 0, 10, 0))      # room beside the cards for the scrollbar
     right = ttk.Frame(main); right.grid(row=0, column=1, sticky="nsew")
-    right.rowconfigure(1, weight=1); right.columnconfigure(0, weight=1)
+    right.rowconfigure(0, weight=1); right.columnconfigure(0, weight=1)
 
     # input -----------------------------------------------------------------
-    fi = ttk.LabelFrame(left, text="Input", padding=8); fi.pack(fill="x", pady=(0, 8))
+    fi = ttk.LabelFrame(left, text="Input"); fi.pack(fill="x", pady=(0, 12))
     fi.columnconfigure(0, weight=1)
     ttk.Entry(fi, textvariable=V["file"], width=40).grid(row=0, column=0, sticky="ew")
 
@@ -1568,42 +1578,44 @@ def run_gui(initial_file=None, palette="default"):
             V["file"].set(p)
             do_load()
 
-    ttk.Button(fi, text="Browse...", command=browse).grid(row=0, column=1, padx=(6, 0))
-    chip(fi, "file").grid(row=0, column=2, padx=(6, 0))
-    lbl = ttk.Label(fi, text="no file loaded", foreground="#888")
+    ttk.Button(fi, text="Browse...", command=browse).grid(row=0, column=1, padx=(8, 0))
+    chip(fi, "file").grid(row=0, column=2, padx=(8, 0))
+    lbl = ttk.Label(fi, text="no file loaded", foreground=C.MUTED)
     lbl.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
     modebar = tk.Frame(fi, bg="#f4f9ff")
-    modebar.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+    modebar.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
     mode_lbl = tk.Label(modebar, text="mode: -", bg="#f4f9ff", fg="#0b4d80",
-                        font=("Helvetica", 11, "bold"), anchor="w", padx=6, pady=3)
+                        font="AzbSmallBold", anchor="w", padx=8, pady=4)
     mode_lbl.pack(side="left", fill="x", expand=True)
-    chip(modebar, "mode").pack(side="right", padx=(6, 4))
+    mode_chip = chip(modebar, "mode")
+    mode_chip.pack(side="right", padx=(6, 6))
 
     # geometry --------------------------------------------------------------
-    fg = ttk.LabelFrame(left, text="Geometry", padding=8); fg.pack(fill="x", pady=(0, 8))
-    tk.Label(fg, text="Scale is applied to the centre-line first; the rod\n"
-                      "diameter is then in final output units.",
-             justify="left", anchor="w", font=("Helvetica", 10),
-             fg="#55606b").grid(row=0, column=0, columnspan=3, sticky="w",
-                                pady=(0, 6))
+    fg = ttk.LabelFrame(left, text="Geometry"); fg.pack(fill="x", pady=(0, 12))
+    ttk.Label(fg, text="Scale is applied to the centre-line first; the rod\n"
+                       "diameter is then in final output units.",
+              justify="left", anchor="w", style="Hint.TLabel"
+              ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
     rows = [("scale factor", "scale", "x input coords"),
             ("rod diameter", "diameter", "final units, after scaling"),
             ("segments / curve", "segments", "'auto', or 0 for raw points"),
             ("facets / rod", "sides", "24 is plenty for printing")]
     W, HINT = {}, {}
     for r, (lab, key, hint) in enumerate(rows, start=1):
-        lw = ttk.Label(fg, text=lab); lw.grid(row=r, column=0, sticky="w")
+        lw = ttk.Label(fg, text=lab, style="Field.TLabel")
+        lw.grid(row=r, column=0, sticky="w", pady=3)
         ew = ttk.Entry(fg, textvariable=V[key], width=10)
-        ew.grid(row=r, column=1, sticky="w", padx=(4, 0))
-        chip(fg, key).grid(row=r, column=2, padx=(6, 0))
-        hw = tk.Label(fg, text=hint, font=("Helvetica", 10), fg="#8a929b")
-        hw.grid(row=r, column=3, sticky="w", padx=(8, 0))
+        ew.grid(row=r, column=1, sticky="w", padx=(12, 0), pady=3)
+        chip(fg, key).grid(row=r, column=2, padx=(8, 0), pady=3)
+        hw = tk.Label(fg, text=hint, font="AzbSmall", fg=C.MUTED)
+        hw.grid(row=r, column=3, sticky="w", padx=(10, 0), pady=3)
         W[key] = (lw, ew); HINT[key] = (hw, hint)
-    lw = ttk.Label(fg, text="closed curves"); lw.grid(row=5, column=0, sticky="w")
+    lw = ttk.Label(fg, text="closed curves", style="Field.TLabel")
+    lw.grid(row=5, column=0, sticky="w", pady=3)
     cb = ttk.Combobox(fg, textvariable=V["closed"], width=8, state="readonly",
                       values=["auto", "yes", "no"])
-    cb.grid(row=5, column=1, sticky="w", padx=(4, 0))
-    chip(fg, "closed").grid(row=5, column=2, padx=(6, 0))
+    cb.grid(row=5, column=1, sticky="w", padx=(12, 0), pady=3)
+    chip(fg, "closed").grid(row=5, column=2, padx=(8, 0), pady=3)
     W["closed"] = (lw, cb)
 
     def set_mode(kind):
@@ -1618,7 +1630,7 @@ def run_gui(initial_file=None, palette="default"):
             if key in HINT:
                 hw_, txt = HINT[key]
                 hw_.configure(text=txt if on else "not used for a mesh input",
-                              fg="#8a929b" if on else "#b0b6bc")
+                              fg=C.MUTED if on else C.DISABLED)
         if kind == "mesh":
             mode_lbl.configure(text="mode: MESH  --  scaling only",
                                fg="#8a4b00", bg="#fff2e0")
@@ -1630,42 +1642,57 @@ def run_gui(initial_file=None, palette="default"):
         else:
             mode_lbl.configure(text="mode: -", fg="#0b4d80", bg="#f4f9ff")
             modebar.configure(bg="#f4f9ff")
+        mode_chip.configure(background=modebar.cget("bg"))
     ttk.Checkbutton(fg, text="recentre on the origin", variable=V["centre"]
-                    ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(4, 0))
+                    ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
     set_mode(None)
-    chip(fg, "centre").grid(row=6, column=2, padx=(6, 0), pady=(4, 0))
+    chip(fg, "centre").grid(row=6, column=2, padx=(8, 0), pady=(6, 0))
 
     # colours ---------------------------------------------------------------
-    fc = ttk.LabelFrame(left, text="Component colours (GLB and preview)", padding=8)
-    fc.pack(fill="x", pady=(0, 8))
+    fc = ttk.LabelFrame(left, text="Component colours (GLB and preview)")
+    fc.pack(fill="x", pady=(0, 12))
     head = ttk.Frame(fc); head.pack(fill="x")
-    tk.Label(head, text="click a swatch to change it", font=("Helvetica", 10),
-             fg="#8a929b").pack(side="left")
+    ttk.Label(head, text="click a swatch to change it", style="Hint.TLabel"
+              ).pack(side="left")
     chip(head, "colors").pack(side="right")
     pal = ttk.Frame(fc)
-    pal.pack(fill="x", pady=(4, 0))
-    ttk.Label(pal, text="palette").pack(side="left")
+    pal.pack(fill="x", pady=(6, 0))
+    ttk.Label(pal, text="palette", style="Field.TLabel").pack(side="left")
     ttk.Combobox(pal, textvariable=V["palette"], width=14, state="readonly",
                  values=(lab_colors.palette_choices("default")
                          if lab_colors is not None else ["default"])
-                 ).pack(side="left", padx=(4, 0))
-    chip(pal, "palette").pack(side="left", padx=(6, 0))
-    row = ttk.Frame(fc); row.pack(fill="x", pady=(4, 0))
+                 ).pack(side="left", padx=(12, 0))
+    chip(pal, "palette").pack(side="left", padx=(8, 0))
+    row = ttk.Frame(fc); row.pack(fill="x", pady=(8, 0))
     swatches = []
+    swatch_faces = {}
+
+    def paint_swatch(w, colour):
+        """A swatch shows its colour as its face: macOS draws a tk.Button
+        natively and ignores its background, so the colour is also the
+        button's image, with the number in black or white to read on it."""
+        face = swatch_faces.get(colour)
+        if face is None:
+            face = tk.PhotoImage(master=root, width=34, height=22)
+            face.put(colour, to=(0, 0, 34, 22))
+            swatch_faces[colour] = face
+        red, green, blue = (v / 65535.0 for v in root.winfo_rgb(colour))
+        light = 0.299 * red + 0.587 * green + 0.114 * blue >= 0.6
+        w.configure(bg=colour, image=face, fg="black" if light else "white")
 
     def pick(i):
         _rgb, hx = colorchooser.askcolor(color=colors[i],
                                          title="Component %d" % (i + 1))
         if hx:
             colors[i] = hx
-            swatches[i].configure(bg=hx)
+            paint_swatch(swatches[i], hx)
 
     def apply_palette(*_):
         """Refill every swatch from the chosen palette, hand edits included."""
         base = palette_colors(V["palette"].get())
         colors[:] = [base[i % len(base)] for i in range(len(colors))]
         for i, w in enumerate(swatches):
-            w.configure(bg=colors[i])
+            paint_swatch(w, colors[i])
 
     V["palette"].trace_add("write", apply_palette)
 
@@ -1677,45 +1704,52 @@ def run_gui(initial_file=None, palette="default"):
         while len(colors) < n:
             colors.append(base[len(colors) % len(base)])
         for i in range(n):
-            b = tk.Button(row, text=" %d " % (i + 1), bg=colors[i], fg="white",
-                          width=3, command=lambda i=i: pick(i))
+            b = tk.Button(row, text=" %d " % (i + 1), compound="center",
+                          font="AzbSmallBold", borderwidth=0, highlightthickness=0,
+                          command=lambda i=i: pick(i))
+            paint_swatch(b, colors[i])
             b.grid(row=i // 8, column=i % 8, padx=2, pady=2)
             swatches.append(b)
     build_swatches(5)
 
     # output ----------------------------------------------------------------
-    fo = ttk.LabelFrame(left, text="Output", padding=8); fo.pack(fill="x")
+    fo = ttk.LabelFrame(left, text="Output"); fo.pack(fill="x")
     fo.columnconfigure(1, weight=1)
-    ttk.Label(fo, text="folder").grid(row=0, column=0, sticky="w")
-    ttk.Entry(fo, textvariable=V["outdir"], width=26).grid(row=0, column=1, sticky="ew")
+    ttk.Label(fo, text="folder", style="Field.TLabel").grid(row=0, column=0, sticky="w", pady=3)
+    ttk.Entry(fo, textvariable=V["outdir"], width=26).grid(row=0, column=1, sticky="ew",
+                                                           padx=(12, 0), pady=3)
     ttk.Button(fo, text="...", width=3,
                command=lambda: V["outdir"].set(filedialog.askdirectory()
                                                or V["outdir"].get())
-               ).grid(row=0, column=2, padx=(4, 0))
-    chip(fo, "output").grid(row=0, column=3, padx=(6, 0))
-    ttk.Label(fo, text="base name").grid(row=1, column=0, sticky="w", pady=(4, 0))
+               ).grid(row=0, column=2, padx=(8, 0), pady=3)
+    chip(fo, "output").grid(row=0, column=3, padx=(8, 0), pady=3)
+    ttk.Label(fo, text="base name", style="Field.TLabel").grid(row=1, column=0, sticky="w",
+                                                               pady=3)
     ttk.Entry(fo, textvariable=V["basename"], width=26).grid(row=1, column=1,
-                                                             sticky="ew", pady=(4, 0))
-    opts = ttk.Frame(fo); opts.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+                                                             sticky="ew", padx=(12, 0), pady=3)
+    opts = ttk.Frame(fo); opts.grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
     for i, (lab, key) in enumerate([("STL", "stl"), ("GLB", "glb"),
                                     ("one STL per component", "split"),
                                     ("PNG preview", "png")]):
         ttk.Checkbutton(opts, text=lab, variable=V[key]).grid(
-            row=i // 2, column=i % 2, sticky="w", padx=(0, 10))
+            row=i // 2, column=i % 2, sticky="w", padx=(0, 16))
+    # One label column for Geometry and Output, so their fields line up.
+    label_width = max(w.winfo_reqwidth() for w in fg.grid_slaves(column=0) + fo.grid_slaves(column=0)
+                      if isinstance(w, ttk.Label) and str(w.cget("style")) == "Field.TLabel")
+    for frame in (fg, fo):
+        frame.columnconfigure(0, minsize=label_width)
 
-    # right pane ------------------------------------------------------------
-    bar = ttk.Frame(right); bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-    ttk.Button(bar, text="Reload", command=lambda: do_load()).pack(side="left")
-    ttk.Button(bar, text="Preview", command=lambda: do_preview()).pack(side="left", padx=6)
-    ttk.Button(bar, text="Generate", command=lambda: do_generate()).pack(side="left")
-    chip(bar, "clearance").pack(side="right")
-    chip(bar, "size").pack(side="right", padx=(0, 6))
-    txt = tk.Text(right, wrap="none", font=("Menlo", 11), height=24)
-    txt.grid(row=1, column=0, sticky="nsew")
-    sb = ttk.Scrollbar(right, orient="vertical", command=txt.yview)
-    sb.grid(row=1, column=1, sticky="ns"); txt.configure(yscrollcommand=sb.set)
-    status = ttk.Label(right, text="", foreground="#0a7")
-    status.grid(row=2, column=0, sticky="w", pady=(4, 0))
+    # right pane: the report, and the run buttons in the footer ----------------
+    report = ui.LogView(right, wrap="none", height=24)
+    report.grid(row=0, column=0, sticky="nsew")
+    txt = report.text
+    status = footer.status
+    status.configure(foreground="#0a7")
+    chip(footer.buttons, "size").pack(side="left", padx=(0, 6))
+    chip(footer.buttons, "clearance").pack(side="left", padx=(0, 8))
+    footer.add_button("Reload", command=lambda: do_load())
+    footer.add_button("Preview", command=lambda: do_preview())
+    footer.add_button("Generate", command=lambda: do_generate(), primary=True)
 
     def show(s):
         txt.delete("1.0", "end"); txt.insert("1.0", s)
@@ -1749,11 +1783,11 @@ def run_gui(initial_file=None, palette="default"):
         if kind == "mesh":
             lbl.configure(text="%d component(s), %d triangles"
                               % (len(comps), sum(len(m.faces) for m in comps)),
-                          foreground="#333")
+                          foreground=C.TEXT)
         else:
             lbl.configure(text="%d component(s), %d points total"
                               % (len(comps), sum(len(c) for c in comps)),
-                          foreground="#333")
+                          foreground=C.TEXT)
         build_swatches(len(comps))
         if not V["outdir"].get():
             V["outdir"].set(os.path.dirname(state["path"]))
@@ -1920,7 +1954,15 @@ def run_gui(initial_file=None, palette="default"):
              "      -> centre-line\n"
              "      +  rod diameter        <- in FINAL units, unaffected\n"
              "      -> solid model            by the scale factor\n\n"
-             "Click any light-blue  ?  for an explanation and examples.\n")
+             "Click any  ?  for an explanation and examples.\n")
+    # Open as large as the content asks, but at most about 900 points tall
+    # and within the screen: the settings on the left scroll in a shorter
+    # window.
+    root.update_idletasks()
+    form.canvas.configure(width=left.winfo_reqwidth(), height=left.winfo_reqheight())
+    root.update_idletasks()
+    root.geometry("%dx%d" % (min(root.winfo_reqwidth(), root.winfo_screenwidth() - 40),
+                             min(root.winfo_reqheight(), 900, root.winfo_screenheight() - 90)))
     root.mainloop()
     return 0
 

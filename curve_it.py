@@ -142,7 +142,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_14"
+APP_VERSION = "V3_15"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -2329,6 +2329,10 @@ def launch_gui() -> None:
 
     root = tk.Tk()
     root.title(f"{APP_NAME} {APP_VERSION} - {APP_TITLE}")
+    from curve_it_lib import azbmost_ui as ui
+    ui.apply_theme(root, "curve_it")
+    root.geometry("1440x1000")
+    root.minsize(1120, 700)
     loaded_gui_images: List[Any] = []
 
     def load_optional_icon(icon_filenames: List[str], subsample: int = 1) -> Optional[Any]:
@@ -2395,15 +2399,6 @@ def launch_gui() -> None:
     curvature_mode_var = tk.StringVar(value="auto")
     curvature_used_var = tk.StringVar(value="N/A")
 
-    section_font = ("TkDefaultFont", 10, "bold")
-    help_button_kwargs = {
-        "text": "?",
-        "width": 2,
-        "bg": "#cfefff",
-        "activebackground": "#aee6ff",
-        "relief": tk.RAISED,
-        "borderwidth": 1,
-    }
 
     help_topics = {
         "helix_pdb": (
@@ -2638,7 +2633,7 @@ def launch_gui() -> None:
         messagebox.showinfo(title, body)
 
     def help_button(parent: Any, topic_key: str) -> Any:
-        return tk.Button(parent, command=lambda: show_help(topic_key), **help_button_kwargs)
+        return ui.HelpButton(parent, command=lambda: show_help(topic_key))
 
     def gui_min_corner_angle() -> float:
         """Read the min corner angle field, falling back to the default."""
@@ -2864,23 +2859,25 @@ def launch_gui() -> None:
         dialog = tk.Toplevel(root)
         dialog.title("Select curve components")
         dialog.transient(root)
-        dialog.geometry("360x320")
+        dialog.geometry("400x360")
+        ui.style_window(dialog)
 
-        tk.Label(
+        ttk.Label(
             dialog,
             text="Choose component(s) to use for fitting",
-            font=section_font,
+            style="Section.TLabel",
             anchor="w",
-        ).grid(row=0, column=0, columnspan=3, sticky="we", padx=10, pady=(10, 4))
+        ).grid(row=0, column=0, columnspan=3, sticky="we", padx=16, pady=(14, 2))
 
-        tk.Label(
+        ttk.Label(
             dialog,
             text="Selected components are concatenated in file order.",
-            fg="gray",
+            style="Hint.TLabel",
             anchor="w",
-        ).grid(row=1, column=0, columnspan=3, sticky="we", padx=10, pady=(0, 6))
+        ).grid(row=1, column=0, columnspan=3, sticky="we", padx=16, pady=(0, 8))
 
-        listbox = tk.Listbox(dialog, selectmode=tk.MULTIPLE, exportselection=False, height=10)
+        listbox = tk.Listbox(dialog, selectmode=tk.MULTIPLE, exportselection=False, height=10,
+                             font="AzbMono", activestyle="none")
         scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=listbox.yview)
         listbox.configure(yscrollcommand=scrollbar.set)
         for i, component in enumerate(curve_components_raw):
@@ -2888,8 +2885,8 @@ def launch_gui() -> None:
             listbox.insert("end", f"{label}    {component.shape[0]} points")
             if i in selected_curve_component_indices:
                 listbox.selection_set(i)
-        listbox.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=(10, 0), pady=4)
-        scrollbar.grid(row=2, column=2, sticky="ns", padx=(0, 10), pady=4)
+        listbox.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=(16, 0), pady=4)
+        scrollbar.grid(row=2, column=2, sticky="ns", padx=(2, 16), pady=4)
 
         def select_all_components() -> None:
             listbox.selection_set(0, "end")
@@ -2903,14 +2900,14 @@ def launch_gui() -> None:
             if set_selected_curve_components(indices, show_error=True):
                 dialog.destroy()
 
-        tk.Button(dialog, text="Select all", command=select_all_components).grid(
-            row=3, column=0, sticky="w", padx=10, pady=(6, 10)
+        ttk.Button(dialog, text="Select all", command=select_all_components).grid(
+            row=3, column=0, sticky="w", padx=16, pady=(10, 14)
         )
-        tk.Button(dialog, text="Use selected", command=apply_selection).grid(
-            row=3, column=1, sticky="e", padx=4, pady=(6, 10)
+        ttk.Button(dialog, text="Use selected", command=apply_selection, style="Accent.TButton").grid(
+            row=3, column=1, sticky="e", padx=4, pady=(10, 14)
         )
-        tk.Button(dialog, text="Cancel", command=dialog.destroy).grid(
-            row=3, column=2, sticky="e", padx=10, pady=(6, 10)
+        ttk.Button(dialog, text="Cancel", command=dialog.destroy).grid(
+            row=3, column=2, sticky="e", padx=(4, 16), pady=(10, 14)
         )
 
         dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
@@ -2921,22 +2918,42 @@ def launch_gui() -> None:
         dialog.grab_set()
         dialog.wait_window()
 
-    title_label = tk.Label(
+    # --- Window layout: header, footer, form on the left, tools and log on the right ---
+    header = ui.Header(
         root,
-        text=APP_TITLE,
-        font=("TkDefaultFont", 14, "bold"),
-        anchor="w",
+        "curve_it",
+        version=APP_VERSION,
+        subtitle="Sculpt PDB structures along any 3D curve  ·  AZBMOST module 3 of 3",
     )
-    title_label.grid(row=0, column=0, sticky="we", padx=8, pady=(8, 2))
+    header.pack(side="top", fill="x")
+    ui.hairline(root).pack(side="top", fill="x")
+    footer = ui.Footer(root)
+    footer.pack(side="bottom", fill="x")
+    ui.hairline(root).pack(side="bottom", fill="x")
+    body = ttk.Frame(root)
+    body.pack(side="top", fill="both", expand=True)
+    body.rowconfigure(0, weight=1)
+    body.columnconfigure(0, weight=1, minsize=640)
+    form_area = ui.ScrollFrame(body)
+    form_area.grid(row=0, column=0, sticky="nsew")
+    ui.hairline(body, orient="vertical").grid(row=0, column=1, sticky="ns")
+    side_panel = ttk.Frame(body, padding=(14, 12, 20, 14), width=440)
+    side_panel.grid(row=0, column=2, sticky="nsew")
+    side_panel.grid_propagate(False)
+    side_panel.columnconfigure(0, weight=1)
+    side_panel.rowconfigure(1, weight=1)
+    form = form_area.body
+    form.configure(padding=(20, 16, 18, 20))
+    form.columnconfigure(0, weight=1)
 
     # --- File selection frame ---
-    file_frame = tk.LabelFrame(root, text="Input files", font=section_font)
-    file_frame.grid(row=1, column=0, sticky="nsew", padx=8, pady=6)
+    file_frame = ui.Card(form, "Input files")
+    file_frame.grid(row=0, column=0, sticky="we", pady=(0, 12))
 
     # Helix PDB
-    tk.Label(file_frame, text="Helix PDB:").grid(row=0, column=0, sticky="e", padx=4, pady=2)
-    helix_entry = tk.Entry(file_frame, textvariable=helix_path_var, width=44)
-    helix_entry.grid(row=0, column=1, columnspan=5, sticky="we", padx=4, pady=2)
+    ttk.Label(file_frame, text="Helix PDB:", style="Field.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 14), pady=4)
+    helix_entry = ttk.Entry(file_frame, textvariable=helix_path_var, width=44)
+    helix_entry.grid(row=0, column=1, sticky="we", pady=4)
 
     def browse_helix():
         nonlocal atoms, pdb_text, helix_pdb_path
@@ -2975,15 +2992,15 @@ def launch_gui() -> None:
             pdb_text = None
             helix_len_var.set("N/A")
 
-    tk.Button(file_frame, text="Browse...", command=browse_helix).grid(
-        row=0, column=6, sticky="w", padx=4, pady=2
+    ttk.Button(file_frame, text="Browse...", command=browse_helix).grid(
+        row=0, column=2, sticky="we", padx=(8, 0), pady=4
     )
-    help_button(file_frame, "helix_pdb").grid(row=0, column=7, sticky="w", padx=(0, 4), pady=2)
+    help_button(file_frame, "helix_pdb").grid(row=0, column=3, sticky="w", padx=(8, 0), pady=4)
 
     # Curve XYZ
-    tk.Label(file_frame, text="Curve file:").grid(row=1, column=0, sticky="e", padx=4, pady=2)
-    curve_entry = tk.Entry(file_frame, textvariable=curve_path_var, width=44)
-    curve_entry.grid(row=1, column=1, columnspan=5, sticky="we", padx=4, pady=2)
+    ttk.Label(file_frame, text="Curve file:", style="Field.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 14), pady=4)
+    curve_entry = ttk.Entry(file_frame, textvariable=curve_path_var, width=44)
+    curve_entry.grid(row=1, column=1, sticky="we", pady=4)
 
     def load_curve_from_path(path: str) -> Optional[np.ndarray]:
         nonlocal curve_components_raw, curve_points_raw, curve_points, curve_xyz_path, selected_curve_component_indices
@@ -3042,22 +3059,30 @@ def launch_gui() -> None:
         curve_path_var.set(path)
         load_curve_from_path(path)
 
-    tk.Button(file_frame, text="Browse...", command=browse_curve).grid(
-        row=1, column=6, sticky="w", padx=4, pady=2
+    ttk.Button(file_frame, text="Browse...", command=browse_curve).grid(
+        row=1, column=2, sticky="we", padx=(8, 0), pady=4
     )
-    help_button(file_frame, "curve_xyz").grid(row=1, column=7, sticky="w", padx=(0, 4), pady=2)
+    help_button(file_frame, "curve_xyz").grid(row=1, column=3, sticky="w", padx=(8, 0), pady=4)
 
-    tk.Label(file_frame, text="Helix length:").grid(row=2, column=0, sticky="e", padx=4, pady=2)
-    helix_len_entry = ttk.Entry(file_frame, textvariable=helix_len_var, width=14, state="readonly")
-    helix_len_entry.grid(row=2, column=1, sticky="w", padx=4, pady=2)
+    # Curve metrics: read-only values (still selectable, so they can be copied)
+    metrics_frame = ui.Card(form, "Curve metrics")
+    metrics_frame.grid(row=2, column=0, sticky="we", pady=(0, 12))
+    stats = ttk.Frame(metrics_frame)
+    stats.grid(row=0, column=0, columnspan=6, sticky="we", pady=(0, 8))
+    metrics_frame.columnconfigure(5, weight=1)
 
-    tk.Label(file_frame, text="Curve points:").grid(row=2, column=2, sticky="e", padx=4, pady=2)
-    curve_n_entry = ttk.Entry(file_frame, textvariable=curve_n_raw_var, width=10, state="readonly")
-    curve_n_entry.grid(row=2, column=3, sticky="w", padx=4, pady=2)
+    def stat_tile(column: int, caption: str, variable: tk.StringVar, width: int) -> ttk.Entry:
+        tile = ttk.Frame(stats)
+        tile.grid(row=0, column=column, sticky="we", padx=(0 if column == 0 else 10, 0))
+        stats.columnconfigure(column, weight=width)
+        ttk.Label(tile, text=caption, style="Hint.TLabel").pack(anchor="w")
+        entry = ttk.Entry(tile, textvariable=variable, width=width, state="readonly", style="Stat.TEntry")
+        entry.pack(fill="x", pady=(2, 0))
+        return entry
 
-    tk.Label(file_frame, text="Curve length:").grid(row=2, column=4, sticky="e", padx=4, pady=2)
-    curve_len_entry = ttk.Entry(file_frame, textvariable=curve_len_var, width=14, state="readonly")
-    curve_len_entry.grid(row=2, column=5, sticky="w", padx=4, pady=2)
+    stat_tile(0, "Helix length:", helix_len_var, 11)
+    stat_tile(1, "Curve points:", curve_n_raw_var, 8)
+    stat_tile(2, "Curve length:", curve_len_var, 11)
 
     def view_curve():
         if curve_points_raw is None:
@@ -3422,20 +3447,15 @@ def launch_gui() -> None:
                 status_convert_var.set(f"ERROR: {exc}")
                 messagebox.showerror("Conversion error", str(exc), parent=dialog)
 
-        ttk.Label(
+        ui.style_window(dialog)
+        ui.ToolHeader(
             dialog,
-            text="Convert XYZ",
-            font=section_font,
-            anchor="w",
-        ).grid(row=0, column=0, columnspan=3, sticky="we", padx=12, pady=(12, 6))
-
-        ttk.Label(
-            dialog,
-            text=("Convert between coordinate XYZ/txt, molecular XYZ and Geomview VECT, "
-                  "or write a fake PDB for visualization."),
-            justify="left",
-            anchor="w",
-        ).grid(row=1, column=0, columnspan=3, sticky="we", padx=12, pady=(0, 10))
+            "Convert XYZ",
+            tool="convert_xyz",
+            subtitle=("Convert between coordinate XYZ/txt, molecular XYZ and Geomview VECT, "
+                      "or write a fake PDB for visualization."),
+        ).grid(row=0, column=0, columnspan=3, sticky="we")
+        ui.hairline(dialog).grid(row=1, column=0, columnspan=3, sticky="we", pady=(0, 12))
 
         ttk.Label(dialog, text="Input file:").grid(row=2, column=0, sticky="e", padx=12, pady=4)
         ttk.Entry(dialog, textvariable=input_path_var).grid(row=2, column=1, sticky="we", padx=4, pady=4)
@@ -3573,8 +3593,8 @@ def launch_gui() -> None:
 
         button_frame = ttk.Frame(dialog)
         button_frame.grid(row=12, column=0, columnspan=3, sticky="e", padx=12, pady=(4, 12))
-        ttk.Button(button_frame, text="Convert", command=run_conversion).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="Close", command=dialog.destroy).pack(side="left")
+        ttk.Button(button_frame, text="Close", command=dialog.destroy).pack(side="left", padx=(0, 8))
+        ttk.Button(button_frame, text="Convert", command=run_conversion, style="Accent.TButton").pack(side="left")
 
         input_path_var.trace_add("write", lambda *_args: refresh_default_output(force=False))
         input_format_var.trace_add("write", lambda *_args: update_component_summary())
@@ -3991,18 +4011,15 @@ def launch_gui() -> None:
         except Exception as e:
             messagebox.showerror("Tool launch error", f"Failed to launch Multicolor Split:\n{e}")
 
-    tk.Button(file_frame, text="View curve", command=view_curve).grid(
-        row=2, column=6, sticky="w", padx=4, pady=2
+    stat_tile(3, "Total curvature:", total_curv_var, 23)
+    stat_tile(4, "Writhe:", writhe_var, 25)
+
+    view_row = ttk.Frame(metrics_frame)
+    view_row.grid(row=1, column=0, columnspan=6, sticky="w")
+    ttk.Button(view_row, text="View curve", command=view_curve).grid(
+        row=0, column=0, sticky="w"
     )
-    help_button(file_frame, "curve_metrics").grid(row=2, column=7, sticky="w", padx=(0, 4), pady=2)
-
-    tk.Label(file_frame, text="Total curvature:").grid(row=3, column=0, sticky="e", padx=4, pady=2)
-    total_curv_entry = ttk.Entry(file_frame, textvariable=total_curv_var, width=32, state="readonly")
-    total_curv_entry.grid(row=3, column=1, columnspan=3, sticky="we", padx=4, pady=2)
-
-    tk.Label(file_frame, text="Writhe:").grid(row=3, column=4, sticky="e", padx=4, pady=2)
-    writhe_entry = ttk.Entry(file_frame, textvariable=writhe_var, width=16, state="readonly")
-    writhe_entry.grid(row=3, column=5, sticky="we", padx=4, pady=2)
+    help_button(view_row, "curve_metrics").grid(row=0, column=1, sticky="w", padx=(8, 0))
 
     # View curve's palette, directly under its button.  The label is drawn
     # without padding so the pair fits the column Select components... sets.
@@ -4014,9 +4031,9 @@ def launch_gui() -> None:
     entry_font = tkfont.nametofont("TkTextFont")
     view_palette_width = max(10, -(-max(entry_font.measure(c) for c in view_palette_choices)
                                    // max(1, entry_font.measure("0"))))
-    view_palette_cell = tk.Frame(file_frame)
-    view_palette_cell.grid(row=3, column=6, sticky="w", padx=4, pady=2)
-    tk.Label(view_palette_cell, text="Palette:", padx=0, bd=0).pack(side="left")
+    view_palette_cell = ttk.Frame(view_row)
+    view_palette_cell.grid(row=0, column=2, sticky="w", padx=(22, 0))
+    ttk.Label(view_palette_cell, text="Palette:", style="Field.TLabel").pack(side="left")
     view_palette_combo = ttk.Combobox(
         view_palette_cell,
         textvariable=view_palette_var,
@@ -4024,81 +4041,67 @@ def launch_gui() -> None:
         width=view_palette_width,
         state="readonly",
     )
-    view_palette_combo.pack(side="left", padx=(2, 0))
-    help_button(file_frame, "view_palette").grid(row=3, column=7, sticky="w", padx=(0, 4), pady=2)
+    view_palette_combo.pack(side="left", padx=(8, 0))
+    help_button(view_row, "view_palette").grid(row=0, column=3, sticky="w", padx=(8, 0))
 
-    tk.Label(file_frame, text="Components:").grid(row=4, column=0, sticky="e", padx=4, pady=2)
+    ttk.Label(file_frame, text="Components:", style="Field.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 14), pady=4)
     components_entry = ttk.Entry(file_frame, textvariable=curve_components_var, width=48, state="readonly")
-    components_entry.grid(row=4, column=1, columnspan=5, sticky="we", padx=4, pady=2)
-    tk.Button(file_frame, text="Select components...", command=open_component_selection_dialog).grid(
-        row=4, column=6, sticky="w", padx=4, pady=2
+    components_entry.grid(row=2, column=1, sticky="we", pady=4)
+    ttk.Button(file_frame, text="Select components...", command=open_component_selection_dialog).grid(
+        row=2, column=2, sticky="we", padx=(8, 0), pady=4
     )
-    help_button(file_frame, "curve_components").grid(row=4, column=7, sticky="w", padx=(0, 4), pady=2)
+    help_button(file_frame, "curve_components").grid(row=2, column=3, sticky="w", padx=(8, 0), pady=4)
 
-    for col in range(8):
-        file_frame.grid_columnconfigure(col, weight=0)
     file_frame.grid_columnconfigure(1, weight=1)
-    file_frame.grid_columnconfigure(5, weight=1)
 
     # --- Curve parameters frame ---
-    curve_param_frame = tk.LabelFrame(root, text="Curve parameters", font=section_font)
-    curve_param_frame.grid(row=3, column=0, sticky="nsew", padx=8, pady=6)
+    curve_param_frame = ui.Card(form, "Curve parameters")
+    curve_param_frame.grid(row=3, column=0, sticky="we", pady=(0, 12))
 
-    tk.Label(curve_param_frame, text="Interpolation mode:").grid(
-        row=0, column=0, sticky="e", padx=4, pady=2
-    )
-    interp_mode_menu = tk.OptionMenu(curve_param_frame, interp_mode_var, "none", "n", "p")
-    interp_mode_menu.grid(row=0, column=1, sticky="w", padx=4, pady=2)
-    help_button(curve_param_frame, "interp_mode").grid(row=0, column=2, sticky="w", padx=(0, 8), pady=2)
+    def param_label(frame: Any, text: str, row: int, column: int) -> None:
+        ttk.Label(frame, text=text, style="Field.TLabel").grid(
+            row=row, column=column, sticky="w", padx=(0 if column == 0 else 20, 8), pady=4
+        )
 
-    tk.Label(curve_param_frame, text="n points (mode 'n'):").grid(
-        row=0, column=3, sticky="e", padx=4, pady=2
-    )
-    interp_n_entry = tk.Entry(curve_param_frame, textvariable=interp_n_var, width=10)
-    interp_n_entry.grid(row=0, column=4, sticky="w", padx=4, pady=2)
-    help_button(curve_param_frame, "interp_n").grid(row=0, column=5, sticky="w", padx=(0, 8), pady=2)
+    param_label(curve_param_frame, "Interpolation mode:", 0, 0)
+    interp_mode_menu = ui.OptionMenu(curve_param_frame, interp_mode_var, "none", "n", "p")
+    interp_mode_menu.grid(row=0, column=1, sticky="we", pady=4)
+    help_button(curve_param_frame, "interp_mode").grid(row=0, column=2, sticky="w", padx=(6, 0), pady=4)
 
-    tk.Label(curve_param_frame, text="p inserted/segment:").grid(
-        row=0, column=6, sticky="e", padx=4, pady=2
-    )
-    interp_p_entry = tk.Entry(curve_param_frame, textvariable=interp_p_var, width=10)
-    interp_p_entry.grid(row=0, column=7, sticky="w", padx=4, pady=2)
-    help_button(curve_param_frame, "interp_p").grid(row=0, column=8, sticky="w", padx=(0, 4), pady=2)
+    param_label(curve_param_frame, "n points (mode 'n'):", 0, 3)
+    interp_n_entry = ttk.Entry(curve_param_frame, textvariable=interp_n_var, width=10)
+    interp_n_entry.grid(row=0, column=4, sticky="we", pady=4)
+    help_button(curve_param_frame, "interp_n").grid(row=0, column=5, sticky="w", padx=(6, 0), pady=4)
 
-    tk.Label(curve_param_frame, text="Min corner angle (mode 'n'):").grid(
-        row=1, column=0, sticky="e", padx=4, pady=2
-    )
-    min_corner_angle_entry = tk.Entry(curve_param_frame, textvariable=min_corner_angle_var, width=10)
-    min_corner_angle_entry.grid(row=1, column=1, sticky="w", padx=4, pady=2)
-    help_button(curve_param_frame, "min_corner_angle").grid(row=1, column=2, sticky="w", padx=(0, 8), pady=2)
+    param_label(curve_param_frame, "p inserted/segment:", 0, 6)
+    interp_p_entry = ttk.Entry(curve_param_frame, textvariable=interp_p_var, width=10)
+    interp_p_entry.grid(row=0, column=7, sticky="we", pady=4)
+    help_button(curve_param_frame, "interp_p").grid(row=0, column=8, sticky="w", padx=(6, 0), pady=4)
 
-    tk.Label(curve_param_frame, text="Points after interpolation:").grid(
-        row=2, column=0, sticky="e", padx=4, pady=2
-    )
+    param_label(curve_param_frame, "Min corner angle (mode 'n'):", 1, 0)
+    min_corner_angle_entry = ttk.Entry(curve_param_frame, textvariable=min_corner_angle_var, width=10)
+    min_corner_angle_entry.grid(row=1, column=1, sticky="we", pady=4)
+    help_button(curve_param_frame, "min_corner_angle").grid(row=1, column=2, sticky="w", padx=(6, 0), pady=4)
+
+    param_label(curve_param_frame, "Points after interpolation:", 1, 3)
     curve_n_used_entry = ttk.Entry(curve_param_frame, textvariable=curve_n_used_var, width=10, state="readonly")
-    curve_n_used_entry.grid(row=2, column=1, sticky="w", padx=4, pady=2)
+    curve_n_used_entry.grid(row=1, column=4, sticky="we", pady=4)
 
-    tk.Label(curve_param_frame, text="Curvature mode:").grid(
-        row=2, column=3, sticky="e", padx=4, pady=2
-    )
-    curvature_mode_menu = tk.OptionMenu(curve_param_frame, curvature_mode_var, "auto", "polyline", "spline")
-    curvature_mode_menu.grid(row=2, column=4, sticky="w", padx=4, pady=2)
-    help_button(curve_param_frame, "curvature_mode").grid(row=2, column=5, sticky="w", padx=(0, 8), pady=2)
+    param_label(curve_param_frame, "Curvature mode:", 2, 0)
+    curvature_mode_menu = ui.OptionMenu(curve_param_frame, curvature_mode_var, "auto", "polyline", "spline")
+    curvature_mode_menu.grid(row=2, column=1, sticky="we", pady=4)
+    help_button(curve_param_frame, "curvature_mode").grid(row=2, column=2, sticky="w", padx=(6, 0), pady=4)
 
-    tk.Label(curve_param_frame, text="Curvature used:").grid(
-        row=2, column=6, sticky="e", padx=4, pady=2
-    )
+    param_label(curve_param_frame, "Curvature used:", 2, 3)
     curvature_used_entry = ttk.Entry(
         curve_param_frame, textvariable=curvature_used_var, width=26, state="readonly"
     )
-    curvature_used_entry.grid(row=2, column=7, columnspan=2, sticky="we", padx=4, pady=2)
+    curvature_used_entry.grid(row=2, column=4, columnspan=5, sticky="we", pady=4)
 
-    tk.Label(curve_param_frame, text="Interpolated curve file:").grid(
-        row=3, column=0, sticky="e", padx=4, pady=2
-    )
+    param_label(curve_param_frame, "Interpolated curve file:", 3, 0)
     interp_out_entry = ttk.Entry(curve_param_frame, textvariable=interp_out_path_var, width=48, state="readonly")
-    interp_out_entry.grid(row=3, column=1, columnspan=7, sticky="we", padx=4, pady=2)
-    help_button(curve_param_frame, "interp_file").grid(row=3, column=8, sticky="w", padx=(0, 4), pady=2)
+    interp_out_entry.grid(row=3, column=1, columnspan=7, sticky="we", pady=4)
+    help_button(curve_param_frame, "interp_file").grid(row=3, column=8, sticky="w", padx=(6, 0), pady=4)
 
     def update_interp_widgets(*_args: Any):
         mode = (interp_mode_var.get() or "none").strip().lower()
@@ -4141,9 +4144,8 @@ def launch_gui() -> None:
 
     curvature_mode_var.trace_add("write", on_curvature_mode_changed)
 
-    for col in range(9):
-        curve_param_frame.grid_columnconfigure(col, weight=0)
-    curve_param_frame.grid_columnconfigure(7, weight=1)
+    for col in (1, 4, 7):
+        curve_param_frame.grid_columnconfigure(col, weight=1)
 
     curve_hint = (
         "Hint: interpolation changes the curve used for fitting the PDB and for metrics; "
@@ -4151,17 +4153,20 @@ def launch_gui() -> None:
         "min corner angle exactly; 'p' inserts points per segment. "
         "Curvature auto mode uses a robust polyline estimate for polygon-like curves."
     )
-    tk.Label(curve_param_frame, text=curve_hint, fg="gray", wraplength=820, justify="left").grid(
-        row=4, column=0, columnspan=9, sticky="w", padx=4, pady=(2, 4)
+    curve_hint_label = ttk.Label(curve_param_frame, text=curve_hint, style="Hint.TLabel", wraplength=820,
+                                 justify="left")
+    curve_hint_label.grid(row=4, column=0, columnspan=9, sticky="w", pady=(8, 0))
+    curve_param_frame.bind(
+        "<Configure>", lambda event: curve_hint_label.configure(wraplength=max(240, event.width - 36)), add="+"
     )
 
     # --- Parameters frame ---
-    param_frame = tk.LabelFrame(root, text="Mapping parameters", font=section_font)
-    param_frame.grid(row=4, column=0, sticky="nsew", padx=8, pady=6)
+    param_frame = ui.Card(form, "Mapping parameters")
+    param_frame.grid(row=4, column=0, sticky="we")
 
     # Scale mode and numeric target length
-    tk.Label(param_frame, text="Scale mode:").grid(row=0, column=0, sticky="e", padx=4, pady=2)
-    scale_mode_menu = tk.OptionMenu(
+    param_label(param_frame, "Scale mode:", 0, 0)
+    scale_mode_menu = ui.OptionMenu(
         param_frame,
         scale_mode_var,
         "curve_to_helix",
@@ -4169,13 +4174,13 @@ def launch_gui() -> None:
         "helix_to_curve",
         "numeric",
     )
-    scale_mode_menu.grid(row=0, column=1, sticky="w", padx=4, pady=2)
-    help_button(param_frame, "scale_mode").grid(row=0, column=2, sticky="w", padx=(0, 8), pady=2)
+    scale_mode_menu.grid(row=0, column=1, sticky="we", pady=4)
+    help_button(param_frame, "scale_mode").grid(row=0, column=2, sticky="w", padx=(6, 0), pady=4)
 
-    tk.Label(param_frame, text="Numeric length (Å):").grid(row=0, column=3, sticky="e", padx=4, pady=2)
-    numeric_length_entry = tk.Entry(param_frame, textvariable=numeric_length_var, width=10)
-    numeric_length_entry.grid(row=0, column=4, sticky="w", padx=4, pady=2)
-    help_button(param_frame, "numeric_length").grid(row=0, column=5, sticky="w", padx=(0, 8), pady=2)
+    param_label(param_frame, "Numeric length (Å):", 0, 3)
+    numeric_length_entry = ttk.Entry(param_frame, textvariable=numeric_length_var, width=10)
+    numeric_length_entry.grid(row=0, column=4, sticky="we", pady=4)
+    help_button(param_frame, "numeric_length").grid(row=0, column=5, sticky="w", padx=(6, 0), pady=4)
 
     # Enable the numeric length entry only when scale_mode = 'numeric'
     def update_scale_mode_widgets(*_args: Any):
@@ -4188,21 +4193,21 @@ def launch_gui() -> None:
     update_scale_mode_widgets()
 
     # Scale anchor
-    tk.Label(param_frame, text="Scale anchor:").grid(row=1, column=0, sticky="e", padx=4, pady=2)
-    scale_anchor_menu = tk.OptionMenu(
+    param_label(param_frame, "Scale anchor:", 1, 0)
+    scale_anchor_menu = ui.OptionMenu(
         param_frame,
         scale_anchor_mode_var,
         "centroid",
         "origin",
         "custom",
     )
-    scale_anchor_menu.grid(row=1, column=1, sticky="w", padx=4, pady=2)
-    help_button(param_frame, "scale_anchor").grid(row=1, column=2, sticky="w", padx=(0, 8), pady=2)
+    scale_anchor_menu.grid(row=1, column=1, sticky="we", pady=4)
+    help_button(param_frame, "scale_anchor").grid(row=1, column=2, sticky="w", padx=(6, 0), pady=4)
 
-    tk.Label(param_frame, text="Custom anchor x,y,z:").grid(row=1, column=3, sticky="e", padx=4, pady=2)
-    scale_anchor_entry = tk.Entry(param_frame, textvariable=scale_anchor_custom_var, width=14)
-    scale_anchor_entry.grid(row=1, column=4, sticky="w", padx=4, pady=2)
-    help_button(param_frame, "custom_anchor").grid(row=1, column=5, sticky="w", padx=(0, 8), pady=2)
+    param_label(param_frame, "Custom anchor x,y,z:", 1, 3)
+    scale_anchor_entry = ttk.Entry(param_frame, textvariable=scale_anchor_custom_var, width=14)
+    scale_anchor_entry.grid(row=1, column=4, sticky="we", pady=4)
+    help_button(param_frame, "custom_anchor").grid(row=1, column=5, sticky="w", padx=(6, 0), pady=4)
 
     # Enable custom anchor entry only when scale_anchor = 'custom'
     def update_scale_anchor_widgets(*_args: Any):
@@ -4215,46 +4220,55 @@ def launch_gui() -> None:
     update_scale_anchor_widgets()
 
     # Path type
-    tk.Label(param_frame, text="Path type:").grid(row=2, column=6, sticky="e", padx=4, pady=2)
-    path_type_menu = tk.OptionMenu(param_frame, path_type_var, "closed", "open")
-    path_type_menu.grid(row=2, column=7, sticky="w", padx=4, pady=2)
-    help_button(param_frame, "path_type").grid(row=2, column=8, sticky="w", padx=(0, 4), pady=2)
+    param_label(param_frame, "Path type:", 2, 0)
+    path_type_menu = ui.OptionMenu(param_frame, path_type_var, "closed", "open")
+    path_type_menu.grid(row=2, column=1, sticky="we", pady=4)
+    help_button(param_frame, "path_type").grid(row=2, column=2, sticky="w", padx=(6, 0), pady=4)
 
     # Phase & Twist
-    tk.Label(param_frame, text="Phase (deg):").grid(row=2, column=0, sticky="e", padx=4, pady=2)
-    helix_phase_entry = tk.Entry(param_frame, textvariable=helix_phase_var, width=10)
-    helix_phase_entry.grid(row=2, column=1, sticky="w", padx=4, pady=2)
-    phase_tool_frame = tk.Frame(param_frame)
-    phase_tool_frame.grid(row=2, column=2, sticky="w", padx=(0, 8), pady=2)
+    param_label(param_frame, "Phase (deg):", 3, 0)
+    helix_phase_entry = ttk.Entry(param_frame, textvariable=helix_phase_var, width=10)
+    helix_phase_entry.grid(row=3, column=1, sticky="we", pady=4)
+    phase_tool_frame = ttk.Frame(param_frame)
+    phase_tool_frame.grid(row=3, column=2, sticky="w", padx=(6, 0), pady=4)
     help_button(phase_tool_frame, "helix_phase").pack(side="left")
-    tk.Button(phase_tool_frame, text="Get phase", command=launch_get_phase_tool).pack(side="left", padx=(4, 0))
-
-    tk.Label(param_frame, text="Twist (deg):").grid(row=2, column=3, sticky="e", padx=4, pady=2)
-    twist_entry = tk.Entry(param_frame, textvariable=twist_var, width=10)
-    twist_entry.grid(row=2, column=4, sticky="w", padx=4, pady=2)
-    help_button(param_frame, "twist").grid(row=2, column=5, sticky="w", padx=(0, 8), pady=2)
-
-    # Path start (closed curves): slider + entry, coupled
-    tk.Label(param_frame, text="Path start (0–1, closed only):").grid(
-        row=3, column=0, sticky="e", padx=4, pady=2
+    ttk.Button(phase_tool_frame, text="Get phase", command=launch_get_phase_tool, style="Small.TButton").pack(
+        side="left", padx=(8, 0)
     )
 
-    path_start_scale = tk.Scale(
-        param_frame,
+    param_label(param_frame, "Twist (deg):", 3, 3)
+    twist_entry = ttk.Entry(param_frame, textvariable=twist_var, width=10)
+    twist_entry.grid(row=3, column=4, sticky="we", pady=4)
+    help_button(param_frame, "twist").grid(row=3, column=5, sticky="w", padx=(6, 0), pady=4)
+
+    # Path start (closed curves): slider + entry, coupled
+    param_label(param_frame, "Path start (0–1, closed only):", 2, 3)
+    path_start_cell = ttk.Frame(param_frame)
+    path_start_cell.grid(row=2, column=4, columnspan=2, sticky="we", pady=4)
+    path_start_cell.columnconfigure(0, weight=1)
+
+    def snap_path_start(value: str) -> None:
+        # The classic slider moved in steps of 0.01; keep that resolution.
+        snapped = round(float(value) / 0.01) * 0.01
+        if abs(snapped - path_start_var.get()) > 1e-12:
+            path_start_var.set(round(snapped, 2))
+
+    path_start_scale = ttk.Scale(
+        path_start_cell,
         from_=0.0,
         to=1.0,
         orient=tk.HORIZONTAL,
-        resolution=0.01,
         variable=path_start_var,
         length=180,
+        command=snap_path_start,
     )
-    path_start_scale.grid(row=3, column=1, columnspan=5, sticky="we", padx=4, pady=2)
+    path_start_scale.grid(row=0, column=0, sticky="we")
 
     # Entry field coupled to the slider
     path_start_entry_var = tk.StringVar(value="0.00")
-    path_start_entry = tk.Entry(param_frame, textvariable=path_start_entry_var, width=6)
-    path_start_entry.grid(row=3, column=6, sticky="w", padx=4, pady=2)
-    help_button(param_frame, "path_start").grid(row=3, column=7, sticky="w", padx=(0, 8), pady=2)
+    path_start_entry = ttk.Entry(path_start_cell, textvariable=path_start_entry_var, width=6)
+    path_start_entry.grid(row=0, column=1, sticky="w", padx=(10, 0))
+    help_button(path_start_cell, "path_start").grid(row=0, column=2, sticky="w", padx=(6, 0))
 
     # When slider moves, update the entry text
     def on_path_start_var_changed(*_args: Any) -> None:
@@ -4291,27 +4305,28 @@ def launch_gui() -> None:
     path_type_var.trace_add("write", update_path_type_widgets)
     update_path_type_widgets()
 
-    for col in range(9):
-        param_frame.grid_columnconfigure(col, weight=0)
-    param_frame.grid_columnconfigure(1, weight=1)
-    param_frame.grid_columnconfigure(4, weight=1)
+    for col in (1, 4):
+        param_frame.grid_columnconfigure(col, weight=1)
 
     mapping_hint = (
         "Hint: curve_to_helix scales the curve to the PDB axis length; none preserves native PDB spacing on the unscaled curve; "
         "helix_to_curve distributes the PDB over the full unscaled curve; numeric sets a curve target length without stretching PDB spacing. "
         "path_start affects closed curves only; phase rotates cross-sections, and twist adds linear axial twist."
     )
-    tk.Label(param_frame, text=mapping_hint, fg="gray", wraplength=820, justify="left").grid(
-        row=4, column=0, columnspan=9, sticky="w", padx=4, pady=(2, 4)
+    mapping_hint_label = ttk.Label(param_frame, text=mapping_hint, style="Hint.TLabel", wraplength=820,
+                                   justify="left")
+    mapping_hint_label.grid(row=4, column=0, columnspan=6, sticky="w", pady=(8, 0))
+    param_frame.bind(
+        "<Configure>", lambda event: mapping_hint_label.configure(wraplength=max(240, event.width - 36)), add="+"
     )
 
     # --- Output and run frame ---
-    out_frame = tk.LabelFrame(root, text="Output and run", font=section_font)
-    out_frame.grid(row=5, column=0, sticky="nsew", padx=8, pady=6)
+    out_frame = ui.Card(form, "Output and run")
+    out_frame.grid(row=1, column=0, sticky="we", pady=(0, 12))
 
-    tk.Label(out_frame, text="Output PDB:").grid(row=0, column=0, sticky="e", padx=4, pady=2)
-    output_entry = tk.Entry(out_frame, textvariable=output_path_var, width=44)
-    output_entry.grid(row=0, column=1, columnspan=2, sticky="we", padx=4, pady=2)
+    ttk.Label(out_frame, text="Output PDB:", style="Field.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 14), pady=4)
+    output_entry = ttk.Entry(out_frame, textvariable=output_path_var, width=44)
+    output_entry.grid(row=0, column=1, columnspan=2, sticky="we", pady=4)
 
     def choose_output_path():
         initialdir = os.path.dirname(helix_path_var.get()) if helix_path_var.get() else "."
@@ -4325,44 +4340,45 @@ def launch_gui() -> None:
         if path:
             output_path_var.set(path)
 
-    tk.Button(out_frame, text="Browse...", command=choose_output_path).grid(
-        row=0, column=3, sticky="w", padx=4, pady=2
+    ttk.Button(out_frame, text="Browse...", command=choose_output_path).grid(
+        row=0, column=3, sticky="we", padx=(8, 0), pady=4
     )
-    help_button(out_frame, "output_pdb").grid(row=0, column=4, sticky="w", padx=(0, 4), pady=2)
+    help_button(out_frame, "output_pdb").grid(row=0, column=4, sticky="w", padx=(8, 0), pady=4)
 
     status_var = tk.StringVar(value="Ready.")
-    status_label = tk.Label(out_frame, textvariable=status_var, anchor="w")
-    status_label.grid(row=1, column=0, columnspan=3, sticky="we", padx=4, pady=4)
+    status_label = footer.status
+    status_label.configure(textvariable=status_var)
+
+    # Icons for the Other tools list, by help topic.
+    tool_icons = {
+        "xyz_convert": "convert_xyz", "svg2xyz": "svg2xyz", "kp2xyz": "kp2xyz",
+        "generate_helical_curve": "generate_helix", "generate_sc": "generate_sc",
+        "local_curvature_torsion": "local_curvature", "plane_it": "plane_it",
+        "curved_connector": "curved_connector", "xyz2model": "xyz2model",
+        "multicolor_split": "multicolor_split", "reverse_curve_it": "reverse_curve_it",
+    }
 
     # --- Other tools frame ---
-    tools_frame = tk.LabelFrame(root, text="Other tools", font=section_font)
-    tools_frame.grid(row=6, column=0, sticky="nsew", padx=8, pady=6)
+    tools_frame = ui.ToolList(side_panel, title="Other tools")
+    tools_frame.grid(row=0, column=0, sticky="we")
     tool_rows: List[Any] = []
 
     def add_tool_button(row: int, col: int, label: str, command: Any, topic_key: str) -> None:
-        while len(tool_rows) <= row:
-            tool_row = tk.Frame(tools_frame)
-            tool_row.grid(row=len(tool_rows), column=0, sticky="w")
-            tool_rows.append(tool_row)
-        cell = tk.Frame(tool_rows[row])
-        cell.grid(row=0, column=col, sticky="w", padx=(3, 5), pady=2)
-        tk.Button(cell, text=label, command=command).pack(side="left")
-        help_button(cell, topic_key).pack(side="left", padx=(3, 0))
+        # One entry of the Other tools list (row/col give the order: curve
+        # producers first, then the tools that use a curve or a structure).
+        icon = tool_icons.get(topic_key, "generic")
+        tool_rows.append(tools_frame.add(
+            label,
+            command=command,
+            description=ui.tool_description(icon),
+            icon=f"tool:{icon}",
+            help_command=lambda: show_help(topic_key),
+        ))
 
-    # Rows grouped by purpose: the first holds the tools that produce a
-    # curve file, converting one from another format or generating one from
-    # parameters; the second the tools that use a curve or a structure, to
-    # analyze it, project it, build on it or split it into printable parts.
-    # Each row is a frame of its own, set at the left, rather than one row of
-    # a grid both share.  A shared grid gives every column the width of its
-    # widest cell in either row, so these ten would need over 1100 px, more
-    # than the 1070 px the Mapping parameters frame gives the window; a row of
-    # its own is only as wide as its five cells.  The gap after each ? chip is
-    # 5 px rather than 8, which on macOS leaves the wider second row about
-    # 20 px inside the frame instead of 6; a new tool therefore starts a third
-    # row rather than widening one.  The rows are gridded rather than packed
-    # because pack places nothing in a withdrawn window, which is how the
-    # tests build it.
+    # Grouped by purpose: first the tools that produce a curve file,
+    # converting one from another format or generating one from parameters;
+    # then the tools that use a curve or a structure, to analyze it, project
+    # it, build on it or split it into printable parts.
     add_tool_button(0, 0, "Convert XYZ...", convert_xyz_file_dialog, "xyz_convert")
     add_tool_button(0, 1, "SVG to XYZ...", launch_svg2xyz_tool, "svg2xyz")
     add_tool_button(0, 2, "KnotPlot to XYZ...", launch_kp2xyz_tool, "kp2xyz")
@@ -4376,13 +4392,13 @@ def launch_gui() -> None:
     add_tool_button(2, 0, "Reverse Curve It...", launch_reverse_curve_it_tool, "reverse_curve_it")
 
     # --- Run log frame ---
-    log_frame = tk.LabelFrame(root, text="Run log", font=section_font)
-    log_frame.grid(row=7, column=0, sticky="nsew", padx=8, pady=(0, 8))
-    log_text = tk.Text(log_frame, height=8, wrap="word", state="disabled")
-    log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=log_text.yview)
-    log_text.configure(yscrollcommand=log_scroll.set)
-    log_text.grid(row=0, column=0, columnspan=3, sticky="nsew", padx=(4, 0), pady=4)
-    log_scroll.grid(row=0, column=3, sticky="ns", padx=(0, 4), pady=4)
+    log_frame = ttk.Frame(side_panel)
+    log_frame.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
+    ttk.Label(log_frame, text="Run log", style="Section.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+    log_view = ui.LogView(log_frame, wrap="word", height=8)
+    log_view.grid(row=1, column=0, columnspan=3, sticky="nsew")
+    log_text = log_view.text
+    log_text.configure(state="disabled")
 
     def append_log(text: str) -> None:
         if not text:
@@ -4453,11 +4469,11 @@ def launch_gui() -> None:
         rest = " \\\n    ".join(quoted[3:])
         return f"{first} \\\n    {rest}"
 
-    tk.Button(log_frame, text="Clear", command=clear_log).grid(
-        row=1, column=2, sticky="e", padx=4, pady=(0, 4)
+    ttk.Button(log_frame, text="Clear", command=clear_log, style="Small.TButton").grid(
+        row=0, column=2, sticky="e", pady=(0, 6)
     )
     log_frame.grid_columnconfigure(0, weight=1)
-    log_frame.grid_rowconfigure(0, weight=1)
+    log_frame.grid_rowconfigure(1, weight=1)
 
     def run_embedding():
         nonlocal atoms, pdb_text, curve_points_raw, curve_points, curve_xyz_path
@@ -4624,27 +4640,10 @@ def launch_gui() -> None:
             status_var.set("Error during embedding.")
             messagebox.showerror("Embedding error", f"An error occurred:\n{e}")
 
-    tk.Button(out_frame, text="Run", command=run_embedding).grid(
-        row=1, column=3, sticky="e", padx=4, pady=4
-    )
-    tk.Button(out_frame, text="Quit", command=root.destroy).grid(
-        row=1, column=4, sticky="w", padx=4, pady=4
-    )
+    footer.add_button("Quit", root.destroy)
+    footer.add_button("Run", run_embedding, primary=True)
 
-    for col in range(5):
-        out_frame.grid_columnconfigure(col, weight=0)
     out_frame.grid_columnconfigure(1, weight=1)
-
-    # Allow window to resize
-    root.grid_columnconfigure(0, weight=1)
-    root.grid_rowconfigure(0, weight=0)
-    root.grid_rowconfigure(1, weight=0)
-    root.grid_rowconfigure(2, weight=0)
-    root.grid_rowconfigure(3, weight=0)
-    root.grid_rowconfigure(4, weight=0)
-    root.grid_rowconfigure(5, weight=0)
-    root.grid_rowconfigure(6, weight=0)
-    root.grid_rowconfigure(7, weight=1)
 
     root.mainloop()
 

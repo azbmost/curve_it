@@ -2375,12 +2375,18 @@ def run_cli(args):
 def run_gui(initial_file=None, palette="default"):
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
+    try:
+        from curve_it_lib import azbmost_ui as ui
+    except ImportError:
+        import azbmost_ui as ui
 
     root = tk.Tk()
     root.title("svg2xyz  -  a 2D SVG drawing  ->  3D XYZ curves   v%s" % __version__)
     root.minsize(940, 600)
     set_optional_window_icon(
         root, tk, ["svg2xyz_icon.png", "icon.png"], "_svg2xyz_icon_image")
+    ui.tool_window(root, TOOL_NAME, tool="svg2xyz", version="v%s" % __version__)
+    C = ui.C
 
     state = {"curves": None, "info": None, "path": None}
     V = {
@@ -2425,26 +2431,27 @@ def run_gui(initial_file=None, palette="default"):
         open_help["win"] = top
         top.title(title)
         top.transient(root)
-        top.configure(bg="#f4f9ff")
-        frm = tk.Frame(top, bg="#f4f9ff", padx=16, pady=14)
+        top.configure(bg=C.BG)
+        frm = tk.Frame(top, bg=C.BG, padx=20, pady=16)
         frm.pack(fill="both", expand=True)
-        tk.Label(frm, text=title, font=("Helvetica", 14, "bold"),
-                 bg="#f4f9ff", fg="#0b4d80", anchor="w",
+        tk.Label(frm, text=title, font="AzbTitle",
+                 bg=C.BG, fg=C.TEXT, anchor="w",
                  justify="left").pack(fill="x", pady=(0, 8))
         tk.Label(frm, text=prose, wraplength=470, justify="left",
-                 bg="#f4f9ff", fg="#1a1a1a", font=("Helvetica", 12),
+                 bg=C.BG, fg=C.TEXT, font="AzbBody",
                  anchor="w").pack(fill="x")
         if example:
-            tk.Label(frm, text="Example", font=("Helvetica", 11, "bold"),
-                     bg="#f4f9ff", fg="#0b4d80", anchor="w").pack(fill="x",
-                                                                  pady=(12, 3))
-            box = tk.Text(frm, font=("Menlo", 11), height=example.count("\n") + 1,
-                          width=62, bg="#e8f1fa", relief="flat", padx=8, pady=6,
-                          highlightthickness=0)
+            tk.Label(frm, text="Example", font="AzbSmallBold",
+                     bg=C.BG, fg=C.TEXT_2, anchor="w").pack(fill="x",
+                                                            pady=(12, 4))
+            box = tk.Text(frm, font="AzbMono", height=example.count("\n") + 1,
+                          width=62, bg=C.SUBTLE, fg=C.TEXT, relief="flat", padx=10,
+                          pady=8, highlightthickness=1, highlightbackground=C.BORDER,
+                          highlightcolor=C.BORDER)
             box.insert("1.0", example)
             box.configure(state="disabled")
             box.pack(fill="x")
-        tk.Button(frm, text="Close", command=top.destroy).pack(pady=(12, 0))
+        ttk.Button(frm, text="Close", command=top.destroy).pack(anchor="e", pady=(14, 0))
         top.bind("<Escape>", lambda e: top.destroy())
         try:
             x = near.winfo_rootx() + 26
@@ -2455,33 +2462,42 @@ def run_gui(initial_file=None, palette="default"):
         top.focus_set()
 
     def chip(parent, key):
-        """A small light-blue '?' that opens the explanation for `key`.
-
-        Built from a Label rather than a Button because macOS's native button
-        ignores background colour.
-        """
-        c = tk.Label(parent, text="?", font=("Helvetica", 11, "bold"),
-                     bg="#bcdcf5", fg="#0b4d80", width=2, relief="raised",
-                     borderwidth=1, cursor="hand2")
-        c.bind("<Button-1>", lambda e, k=key, w=c: show_help(k, w))
-        c.bind("<Enter>", lambda e, w=c: w.configure(bg="#8fc7ee"))
-        c.bind("<Leave>", lambda e, w=c: w.configure(bg="#bcdcf5"))
+        """The theme's round '?' that opens the explanation for `key`."""
+        c = ui.HelpButton(parent)
+        c.configure(command=lambda k=key, w=c: show_help(k, w))
         return c
 
-    main = ttk.Frame(root, padding=10)
+    # The run buttons and the status line sit in the footer, at the bottom
+    # right of the window; packed first, they keep their place when a short
+    # screen cuts the window's height.
+    footer = ui.Footer(root)
+    footer.pack(side="bottom", fill="x")
+    ui.hairline(root).pack(side="bottom", fill="x")
+
+    main = ttk.Frame(root, padding=(20, 16, 20, 16))
     main.pack(fill="both", expand=True)
     main.columnconfigure(1, weight=1)
     main.rowconfigure(0, weight=1)
-    left = ttk.Frame(main)
-    left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+    # The settings scroll when the window is too short for all of them.
+    form = ui.ScrollFrame(main)
+    form.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+    left = form.body
+    left.configure(padding=(0, 0, 10, 0))      # room beside the cards for the scrollbar
     right = ttk.Frame(main)
     right.grid(row=0, column=1, sticky="nsew")
-    right.rowconfigure(1, weight=1)
+    right.rowconfigure(0, weight=1)
     right.columnconfigure(0, weight=1)
+    field_labels = []               # one label column for every card
+
+    def field_label(parent, text, row, pady=3):
+        label = ttk.Label(parent, text=text, style="Field.TLabel")
+        label.grid(row=row, column=0, sticky="w", pady=pady)
+        field_labels.append(label)
+        return label
 
     # input -----------------------------------------------------------------
-    fi = ttk.LabelFrame(left, text="Input", padding=8)
-    fi.pack(fill="x", pady=(0, 8))
+    fi = ttk.LabelFrame(left, text="Input")
+    fi.pack(fill="x", pady=(0, 12))
     fi.columnconfigure(0, weight=1)
     ttk.Entry(fi, textvariable=V["file"], width=40).grid(row=0, column=0, sticky="ew")
 
@@ -2493,60 +2509,60 @@ def run_gui(initial_file=None, palette="default"):
             V["file"].set(p)
             do_load()
 
-    ttk.Button(fi, text="Browse...", command=browse).grid(row=0, column=1, padx=(6, 0))
-    chip(fi, "file").grid(row=0, column=2, padx=(6, 0))
-    lbl = ttk.Label(fi, text="no file loaded", foreground="#888")
+    ttk.Button(fi, text="Browse...", command=browse).grid(row=0, column=1, padx=(8, 0))
+    chip(fi, "file").grid(row=0, column=2, padx=(8, 0))
+    lbl = ttk.Label(fi, text="no file loaded", foreground=C.MUTED)
     lbl.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
-    chip(fi, "curves").grid(row=1, column=2, padx=(6, 0), pady=(6, 0))
+    chip(fi, "curves").grid(row=1, column=2, padx=(8, 0), pady=(6, 0))
 
     # sampling --------------------------------------------------------------
-    fs = ttk.LabelFrame(left, text="Sampling", padding=8)
-    fs.pack(fill="x", pady=(0, 8))
+    fs = ttk.LabelFrame(left, text="Sampling")
+    fs.pack(fill="x", pady=(0, 12))
     sampling_rows = [("flattening tolerance", "tolerance", "SVG units, before scaling"),
                      ("points per curve", "points", "'auto', 'keep', or a count"),
                      ("point spacing", "spacing", "'auto', or a step in output units"),
                      ("min corner angle", "corner", "degrees; sharper vertices pinned")]
     for r, (label, key, hint) in enumerate(sampling_rows):
-        ttk.Label(fs, text=label).grid(row=r, column=0, sticky="w")
+        field_label(fs, label, r)
         ttk.Entry(fs, textvariable=V[key], width=10).grid(row=r, column=1,
-                                                          sticky="w", padx=(4, 0))
-        chip(fs, key).grid(row=r, column=2, padx=(6, 0))
-        tk.Label(fs, text=hint, font=("Helvetica", 10), fg="#8a929b").grid(
-            row=r, column=3, sticky="w", padx=(8, 0))
+                                                          sticky="w", padx=(12, 0), pady=3)
+        chip(fs, key).grid(row=r, column=2, padx=(8, 0), pady=3)
+        ttk.Label(fs, text=hint, style="Hint.TLabel").grid(
+            row=r, column=3, sticky="w", padx=(10, 0), pady=3)
     ttk.Checkbutton(fs, text="split subpaths into separate curves",
                     variable=V["subpaths"]).grid(row=4, column=0, columnspan=2,
-                                                 sticky="w", pady=(4, 0))
-    chip(fs, "subpaths").grid(row=4, column=2, padx=(6, 0), pady=(4, 0))
+                                                 sticky="w", pady=(6, 0))
+    chip(fs, "subpaths").grid(row=4, column=2, padx=(8, 0), pady=(6, 0))
 
     # geometry --------------------------------------------------------------
-    fg = ttk.LabelFrame(left, text="Geometry", padding=8)
-    fg.pack(fill="x", pady=(0, 8))
+    fg = ttk.LabelFrame(left, text="Geometry")
+    fg.pack(fill="x", pady=(0, 12))
     geometry_rows = [("scale factor", "scale", "x every coordinate"),
                      ("fit size", "fit", "largest dimension; wins over scale"),
                      ("z value", "z", "the plane the curve lies in")]
     for r, (label, key, hint) in enumerate(geometry_rows):
-        ttk.Label(fg, text=label).grid(row=r, column=0, sticky="w")
+        field_label(fg, label, r)
         ttk.Entry(fg, textvariable=V[key], width=10).grid(row=r, column=1,
-                                                          sticky="w", padx=(4, 0))
-        chip(fg, {"fit": "fit"}.get(key, key)).grid(row=r, column=2, padx=(6, 0))
-        tk.Label(fg, text=hint, font=("Helvetica", 10), fg="#8a929b").grid(
-            row=r, column=3, sticky="w", padx=(8, 0))
+                                                          sticky="w", padx=(12, 0), pady=3)
+        chip(fg, {"fit": "fit"}.get(key, key)).grid(row=r, column=2, padx=(8, 0), pady=3)
+        ttk.Label(fg, text=hint, style="Hint.TLabel").grid(
+            row=r, column=3, sticky="w", padx=(10, 0), pady=3)
     combo_rows = [("closed curves", "closed", ["auto", "yes", "no"]),
                   ("centre on origin", "center", ["bbox", "centroid", "none"]),
                   ("coordinate space", "space", ["user", "viewport"])]
     for r, (label, key, values) in enumerate(combo_rows, start=3):
-        ttk.Label(fg, text=label).grid(row=r, column=0, sticky="w")
+        field_label(fg, label, r)
         ttk.Combobox(fg, textvariable=V[key], width=9, state="readonly",
-                     values=values).grid(row=r, column=1, sticky="w", padx=(4, 0))
-        chip(fg, key).grid(row=r, column=2, padx=(6, 0))
+                     values=values).grid(row=r, column=1, sticky="w", padx=(12, 0), pady=3)
+        chip(fg, key).grid(row=r, column=2, padx=(8, 0), pady=3)
     ttk.Checkbutton(fg, text="flip the y axis (SVG y points down)",
                     variable=V["flip"]).grid(row=6, column=0, columnspan=2,
-                                             sticky="w", pady=(4, 0))
-    chip(fg, "flip").grid(row=6, column=2, padx=(6, 0), pady=(4, 0))
+                                             sticky="w", pady=(6, 0))
+    chip(fg, "flip").grid(row=6, column=2, padx=(8, 0), pady=(6, 0))
 
     # filters ---------------------------------------------------------------
-    ff = ttk.LabelFrame(left, text="Which curves", padding=8)
-    ff.pack(fill="x", pady=(0, 8))
+    ff = ttk.LabelFrame(left, text="Which curves")
+    ff.pack(fill="x", pady=(0, 12))
     ff.columnconfigure(1, weight=1)
     filter_rows = [("components", "components", "components"),
                    ("include", "include", "filters"), ("exclude", "exclude", "filters"),
@@ -2554,62 +2570,67 @@ def run_gui(initial_file=None, palette="default"):
                    ("min points", "minpoints", "minpoints"),
                    ("min length", "minlength", "minpoints")]
     for r, (label, key, topic) in enumerate(filter_rows):
-        ttk.Label(ff, text=label).grid(row=r, column=0, sticky="w")
+        field_label(ff, label, r)
         ttk.Entry(ff, textvariable=V[key], width=24).grid(row=r, column=1,
-                                                          sticky="ew", padx=(4, 0))
-        chip(ff, topic).grid(row=r, column=2, padx=(6, 0))
+                                                          sticky="ew", padx=(12, 0), pady=3)
+        chip(ff, topic).grid(row=r, column=2, padx=(8, 0), pady=3)
 
     # output ----------------------------------------------------------------
-    fo = ttk.LabelFrame(left, text="Output", padding=8)
+    fo = ttk.LabelFrame(left, text="Output")
     fo.pack(fill="x")
     fo.columnconfigure(1, weight=1)
-    ttk.Label(fo, text="folder").grid(row=0, column=0, sticky="w")
-    ttk.Entry(fo, textvariable=V["outdir"], width=24).grid(row=0, column=1, sticky="ew")
+    field_label(fo, "folder", 0)
+    ttk.Entry(fo, textvariable=V["outdir"], width=24).grid(row=0, column=1, sticky="ew",
+                                                           padx=(12, 0), pady=3)
     ttk.Button(fo, text="...", width=3,
                command=lambda: V["outdir"].set(filedialog.askdirectory()
                                                or V["outdir"].get())
-               ).grid(row=0, column=2, padx=(4, 0))
-    chip(fo, "output").grid(row=0, column=3, padx=(6, 0))
-    ttk.Label(fo, text="base name").grid(row=1, column=0, sticky="w", pady=(4, 0))
+               ).grid(row=0, column=2, padx=(8, 0), pady=3)
+    chip(fo, "output").grid(row=0, column=3, padx=(8, 0), pady=3)
+    field_label(fo, "base name", 1)
     ttk.Entry(fo, textvariable=V["basename"], width=24).grid(row=1, column=1,
-                                                             sticky="ew", pady=(4, 0))
+                                                             sticky="ew", padx=(12, 0), pady=3)
     opts = ttk.Frame(fo)
     opts.grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
     for i, (label, key) in enumerate([("one file per curve", "split"),
                                       ("comment header", "comments"),
                                       ("PNG preview", "png")]):
         ttk.Checkbutton(opts, text=label, variable=V[key]).grid(
-            row=i // 2, column=i % 2, sticky="w", padx=(0, 10))
+            row=i // 2, column=i % 2, sticky="w", padx=(0, 16))
+    label_width = max(label.winfo_reqwidth() for label in field_labels)
+    for frame in (fs, fg, ff, fo):
+        frame.columnconfigure(0, minsize=label_width)
 
-    # right pane ------------------------------------------------------------
-    bar = ttk.Frame(right)
-    bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-    buttons = ttk.Frame(bar)
+    # right pane: the report; the run buttons are in the footer ---------------
+    report = ui.LogView(right, wrap="none", height=26)
+    report.grid(row=0, column=0, sticky="nsew")
+    txt = report.text
+    status = footer.status
+    status.configure(foreground="#0a7")
+    bar = ttk.Frame(footer.buttons, style="Footer.TFrame")
+    bar.pack(side="right")
+    buttons = ttk.Frame(bar, style="Footer.TFrame")
     buttons.pack(side="top", anchor="w")
-    ttk.Button(buttons, text="Reload", command=lambda: do_load()).pack(side="left")
-    ttk.Button(buttons, text="Preview", command=lambda: do_preview()).pack(side="left", padx=6)
-    ttk.Button(buttons, text="Write XYZ", command=lambda: do_write()).pack(side="left")
+    ttk.Button(buttons, text="Reload", command=lambda: do_load(),
+               style="Footer.TButton").pack(side="left")
+    ttk.Button(buttons, text="Preview", command=lambda: do_preview(),
+               style="Footer.TButton").pack(side="left", padx=8)
+    ttk.Button(buttons, text="Write XYZ", command=lambda: do_write(),
+               style="Accent.TButton").pack(side="left")
     # Under the buttons it acts on, Preview and the PNG that Write XYZ adds
-    # when PNG preview is ticked; the XYZ itself has no colour.  Up here it
+    # when PNG preview is ticked; the XYZ itself has no colour.  Down here it
     # adds no height to the left pane, which sets the window's height, and
     # stays in view when a short screen cuts the bottom of that pane off.  On
     # a line of its own it also stays in view in a window narrowed to its
     # minimum width, which the button line alone was sized for.
     palettes = (lab_colors.palette_choices("default") if lab_colors is not None
                 else ["default"])
-    palette_row = ttk.Frame(bar)
-    palette_row.pack(side="top", anchor="w", pady=(4, 0))
-    ttk.Label(palette_row, text="palette").pack(side="left")
+    palette_row = ttk.Frame(bar, style="Footer.TFrame")
+    palette_row.pack(side="top", anchor="w", pady=(8, 0))
+    ttk.Label(palette_row, text="palette", style="Footer.TLabel").pack(side="left")
     ttk.Combobox(palette_row, textvariable=V["palette"], width=14, state="readonly",
-                 values=palettes).pack(side="left", padx=(4, 0))
-    chip(palette_row, "palette").pack(side="left", padx=(6, 0))
-    txt = tk.Text(right, wrap="none", font=("Menlo", 11), height=26)
-    txt.grid(row=1, column=0, sticky="nsew")
-    sb = ttk.Scrollbar(right, orient="vertical", command=txt.yview)
-    sb.grid(row=1, column=1, sticky="ns")
-    txt.configure(yscrollcommand=sb.set)
-    status = ttk.Label(right, text="", foreground="#0a7")
-    status.grid(row=2, column=0, sticky="w", pady=(4, 0))
+                 values=palettes).pack(side="left", padx=(8, 0))
+    chip(palette_row, "palette").pack(side="left", padx=(8, 0))
 
     def show(s):
         txt.delete("1.0", "end")
@@ -2679,7 +2700,7 @@ def run_gui(initial_file=None, palette="default"):
         state.update(curves=curves, info=info, path=info["path"])
         lbl.configure(text="%d curve(s), %d points total"
                           % (len(curves), sum(len(c.points) for c in curves)),
-                      foreground="#333")
+                      foreground=C.TEXT)
         if not V["outdir"].get():
             V["outdir"].set(os.path.dirname(info["path"]))
         if V["basename"].get() in ("", "curves"):
@@ -2766,7 +2787,18 @@ def run_gui(initial_file=None, palette="default"):
              "      x  scale factor\n"
              "      -  centre             <- onto the origin\n"
              "      -> XYZ components\n\n"
-             "Click any light-blue  ?  for an explanation and examples.\n")
+             "Click any  ?  for an explanation and examples.\n")
+
+    # Open as large as the content asks, but at most about 900 points tall
+    # and within the screen: the settings on the left scroll in a shorter
+    # window.  The status line keeps to the button line of the footer.
+    root.update_idletasks()
+    form.canvas.configure(width=left.winfo_reqwidth(), height=left.winfo_reqheight())
+    status.grid_configure(sticky="nwe", pady=(
+        max(0, (buttons.winfo_reqheight() - status.winfo_reqheight()) // 2), 0))
+    root.update_idletasks()
+    root.geometry("%dx%d" % (min(root.winfo_reqwidth(), root.winfo_screenwidth() - 40),
+                             min(root.winfo_reqheight(), 900, root.winfo_screenheight() - 90)))
 
     root.after(120, lambda: (root.lift(), root.attributes("-topmost", True),
                              root.after(400, lambda: root.attributes("-topmost", False))))

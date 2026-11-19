@@ -465,6 +465,51 @@ def attach_path_location_report(
     return status_text
 
 
+def style_tk_window(fig: Any) -> None:
+    """The AZBMOST look for the Tk window around a figure.
+
+    Only when the figure is shown in a Tk window, as under Curve It's View
+    curve (matplotlib's TkAgg backend): the window gets the light surface and
+    title bar of the other AZBMOST windows, and the toolbar under the plot
+    their footer bar's colours and type, with a hairline above it.  The plot
+    itself, its colours and palettes are left exactly as they are, and with
+    another backend, or without the shared look's module, nothing changes.
+    """
+    manager = getattr(getattr(fig, "canvas", None), "manager", None)
+    window = getattr(manager, "window", None)
+    try:
+        import tkinter as tk
+        if not isinstance(window, tk.Misc):
+            return
+        try:
+            from curve_it_lib import azbmost_ui as ui
+        except ImportError:
+            import azbmost_ui as ui
+    except Exception:
+        return
+    try:
+        ui.apply_theme(window, "curve_it")
+        toolbar = getattr(manager, "toolbar", None)
+        if not isinstance(toolbar, tk.Frame):
+            return
+        bar = ui.C.SUBTLE
+        toolbar.configure(background=bar)
+        for child in toolbar.winfo_children():
+            if isinstance(child, (tk.Button, tk.Checkbutton)):
+                child.configure(background=bar, activebackground=ui.C.SUBTLE_HOVER,
+                                highlightbackground=bar)
+                if isinstance(child, tk.Checkbutton):   # Pan and Zoom, while on
+                    child.configure(selectcolor=ui.C.ACCENT_SOFT)
+            elif isinstance(child, tk.Label):
+                child.configure(background=bar, foreground=ui.C.TEXT_2, font="AzbSmall")
+            elif isinstance(child, tk.Frame):        # the separators between button groups
+                child.configure(background=ui.C.BORDER_INPUT)
+        if toolbar.winfo_manager() == "pack":
+            ui.hairline(window).pack(side="bottom", fill="x", before=fig.canvas.get_tk_widget())
+    except Exception:
+        pass
+
+
 def plot_curve(points: np.ndarray, closed: bool = True) -> None:
     """
     Plot the 3D curve.
@@ -535,6 +580,7 @@ def plot_curve(points: np.ndarray, closed: bool = True) -> None:
     )
 
     plt.tight_layout()
+    style_tk_window(fig)
     plt.show()
 
 
@@ -733,6 +779,7 @@ def plot_curve_components(
     attach_path_location_report(fig, ax, curve_entries)
 
     fig._curve_component_widgets = (check, all_button, selected_button)
+    style_tk_window(fig)
     plt.show()
 
 
@@ -766,6 +813,7 @@ def plot_projections(points: np.ndarray, closed: bool = True) -> None:
     cbar.set_label("Curve parameter")
 
     plt.tight_layout()
+    style_tk_window(fig)
     plt.show()
 
 

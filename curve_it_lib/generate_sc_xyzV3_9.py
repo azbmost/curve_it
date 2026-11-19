@@ -4068,15 +4068,19 @@ def run_gui() -> None:
 
     try:
         import tkinter as tk
-        from tkinter import filedialog, font, messagebox, ttk
+        from tkinter import filedialog, messagebox, ttk
     except ImportError as exc:
         raise RuntimeError("Tkinter is not available in this Python installation.") from exc
+    try:
+        from curve_it_lib import azbmost_ui as ui
+    except ImportError:
+        import azbmost_ui as ui  # type: ignore[no-redef]
 
     root = tk.Tk()
     root.title("{0} {1}".format(TOOL_NAME, TOOL_VERSION))
-    root.geometry("1040x830")
-    root.minsize(900, 700)
+    root.geometry("1200x860")
     set_optional_window_icon(root, tk, ("icon.png",), "_generate_sc_icon_image")
+    ui.tool_window(root, TOOL_NAME, tool="generate_sc", version=TOOL_VERSION)
 
     def bring_window_to_front() -> None:
         """Raise and focus a newly launched helper without keeping it always on top."""
@@ -4108,62 +4112,47 @@ def run_gui() -> None:
         if temporary_topmost:
             root.after(400, release_temporary_topmost)
 
-    style = ttk.Style(root)
-    try:
-        style.theme_use("clam")
-    except tk.TclError:
-        pass
-    style.configure(
-        "Help.TButton",
-        background="#c9ecff",
-        foreground="#075985",
-        padding=(3, 1),
-        relief="raised",
-    )
-    style.map(
-        "Help.TButton",
-        background=(("active", "#9fddff"), ("pressed", "#7dccf5")),
-        foreground=(("disabled", "#7a8d99"),),
-    )
-    title_font = font.Font(root, family="Helvetica", size=16, weight="bold")
-    mono_font = font.Font(root, family="Menlo", size=10)
-
-    main = ttk.Frame(root, padding=14)
+    main = ttk.Frame(root, padding=(18, 12, 18, 14))
     main.pack(fill="both", expand=True)
     main.columnconfigure(0, weight=1)
-    main.rowconfigure(2, weight=1)
+    main.rowconfigure(1, weight=1)
 
-    ttk.Label(main, text="{0} {1}".format(TOOL_NAME, TOOL_VERSION), font=title_font).grid(
-        row=0, column=0, sticky="w"
-    )
-    ttk.Label(
+    description = ttk.Label(
         main,
         text=(
             "Standalone projection-robust plectoneme generator. Integer W is fitted to Gauss writhe "
             "and screened over generic projections. The loose family writes a loosely interwound "
             "twisted ring of equal lobes instead."
         ),
-        wraplength=980,
+        style="Muted.TLabel",
+        wraplength=1060,
         justify="left",
-    ).grid(row=1, column=0, sticky="ew", pady=(6, 10))
+        width=1,  # wraps to the window's width (below) and never widens it
+    )
+    description.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+    description.bind(
+        "<Configure>", lambda event: description.configure(wraplength=max(300, event.width)), add="+"
+    )
 
     body = ttk.Frame(main)
-    body.grid(row=2, column=0, sticky="nsew")
+    body.grid(row=1, column=0, sticky="nsew")
     body.columnconfigure(1, weight=1)
     body.rowconfigure(0, weight=1)
 
-    inputs = ttk.LabelFrame(body, text="Inputs", padding=10)
-    inputs.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+    # Left column: three cards, each holding one group of settings.
+    settings = ttk.Frame(body)
+    settings.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+    settings.columnconfigure(0, weight=1)
+
+    inputs = ttk.LabelFrame(settings, text="Inputs")
+    inputs.grid(row=1, column=0, sticky="ew", pady=(0, 12))
     inputs.columnconfigure(1, weight=1)
 
     def add_help_button(parent, row: int, column: int, title: str, explanation: str):
-        return ttk.Button(
+        return ui.HelpButton(
             parent,
-            text="?",
-            width=2,
-            style="Help.TButton",
             command=lambda: messagebox.showinfo(title, explanation, parent=root),
-        ).grid(row=row, column=column, padx=(5, 0), sticky="w")
+        ).grid(row=row, column=column, padx=(8, 0), sticky="w")
 
     length_var = tk.StringVar(value=str(DEFAULT_TOTAL_LENGTH))
     writhe_var = tk.StringVar(value=str(DEFAULT_WRITHE))
@@ -4253,8 +4242,9 @@ def run_gui() -> None:
             "precision can collapse samples or move writhe outside tolerance.\n\nDefault: 8.",
         ),
     }
-    family_frame = ttk.LabelFrame(inputs, text="Curve family", padding=8)
-    family_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+    family_frame = ttk.LabelFrame(settings, text="Curve family")
+    family_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+    family_frame.columnconfigure(0, weight=1)
     family_options = (
         (
             "Tight (default)",
@@ -4301,9 +4291,10 @@ def run_gui() -> None:
             variable=family_var,
             value=family_value,
         )
-        family_button.grid(row=0, column=2 * column, sticky="w", padx=(0 if column == 0 else 12, 0))
+        family_button.grid(row=0, column=2 * column, sticky="w", padx=(0 if column == 0 else 24, 0))
         family_buttons.append(family_button)
         add_help_button(family_row, 0, 2 * column + 1, help_title, family_help)
+    ttk.Separator(family_frame).grid(row=1, column=0, sticky="ew", pady=(8, 6))
     loose_fields = (
         (
             "Crossings",
@@ -4337,16 +4328,16 @@ def run_gui() -> None:
         ),
     )
     loose_row = ttk.Frame(family_frame)
-    loose_row.grid(row=1, column=0, sticky="w", pady=(6, 0))
+    loose_row.grid(row=2, column=0, sticky="w")
     loose_widgets = []
     # Crossings, then the two alternative shape settings stacked: lobe aspect over ellipse ratio.
     for (grid_row, column), (label_text, variable, help_title, help_text) in zip(
         ((0, 0), (0, 3), (1, 3)), loose_fields
     ):
-        label_widget = ttk.Label(loose_row, text=label_text)
-        label_widget.grid(row=grid_row, column=column, sticky="e", padx=(0 if column == 0 else 10, 4), pady=2)
-        entry_widget = ttk.Entry(loose_row, textvariable=variable, width=6)
-        entry_widget.grid(row=grid_row, column=column + 1, sticky="w", pady=2)
+        label_widget = ttk.Label(loose_row, text=label_text, style="Field.TLabel")
+        label_widget.grid(row=grid_row, column=column, sticky="w", padx=(0 if column == 0 else 24, 10), pady=3)
+        entry_widget = ttk.Entry(loose_row, textvariable=variable, width=7)
+        entry_widget.grid(row=grid_row, column=column + 1, sticky="w", pady=3)
         add_help_button(loose_row, grid_row, column + 2, help_title, help_text)
         loose_widgets.append((label_widget, entry_widget, variable))
 
@@ -4354,11 +4345,11 @@ def run_gui() -> None:
     qualifying_views_entry = None
     minimum_radius_label = None
     minimum_radius_entry = None
-    for row, (label, variable) in enumerate(fields, start=1):
-        label_widget = ttk.Label(inputs, text=label)
-        label_widget.grid(row=row, column=0, sticky="e", padx=(0, 6), pady=5)
+    for row, (label, variable) in enumerate(fields):
+        label_widget = ttk.Label(inputs, text=label, style="Field.TLabel")
+        label_widget.grid(row=row, column=0, sticky="w", padx=(0, 12), pady=3)
         entry_widget = ttk.Entry(inputs, textvariable=variable, width=17)
-        entry_widget.grid(row=row, column=1, sticky="ew", pady=5)
+        entry_widget.grid(row=row, column=1, sticky="ew", pady=3)
         help_title, help_text = field_help[label]
         add_help_button(inputs, row, 2, help_title, help_text)
         if variable is qualifying_views_var:
@@ -4368,8 +4359,9 @@ def run_gui() -> None:
             minimum_radius_label = label_widget
             minimum_radius_entry = entry_widget
 
-    objective_frame = ttk.LabelFrame(inputs, text="Opening-angle selection", padding=8)
-    objective_frame.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+    objective_frame = ttk.LabelFrame(settings, text="Opening-angle selection")
+    objective_frame.grid(row=2, column=0, sticky="ew")
+    objective_frame.columnconfigure(0, weight=1)
     options = (
         (
             "Minimize total bending energy (default)",
@@ -4422,7 +4414,7 @@ def run_gui() -> None:
             variable=curvature_objective_var,
             value=value,
         )
-        objective_button.grid(row=row, column=0, sticky="w", pady=2)
+        objective_button.grid(row=row, column=0, sticky="w", pady=1)
         objective_buttons.append(objective_button)
         add_help_button(
             objective_frame,
@@ -4431,12 +4423,13 @@ def run_gui() -> None:
             "Opening-angle option",
             explanation,
         )
-    manual_angle_entry = ttk.Entry(objective_frame, textvariable=opening_angle_var, width=9)
-    manual_angle_entry.grid(row=4, column=1, sticky="w", padx=(8, 0))
-    ttk.Label(objective_frame, text="deg").grid(row=4, column=2, sticky="w", padx=(4, 0))
+    manual_angle_entry = ttk.Entry(objective_frame, textvariable=opening_angle_var, width=8)
+    manual_angle_entry.grid(row=4, column=1, sticky="e", padx=(8, 0), pady=2)
+    ttk.Label(objective_frame, text="deg", style="Field.TLabel").grid(row=4, column=2, sticky="w", padx=(6, 0))
+    ttk.Separator(objective_frame).grid(row=5, column=0, columnspan=4, sticky="ew", pady=(8, 6))
     angle_search_frame = ttk.Frame(objective_frame)
-    angle_search_frame.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
-    angle_search_label = ttk.Label(angle_search_frame, text="Angle search:")
+    angle_search_frame.grid(row=6, column=0, columnspan=3, sticky="w", pady=1)
+    angle_search_label = ttk.Label(angle_search_frame, text="Angle search:", style="Field.TLabel")
     angle_search_label.pack(side="left")
     angle_search_buttons = []
     for search_text, search_value in (
@@ -4449,11 +4442,11 @@ def run_gui() -> None:
             variable=angle_search_var,
             value=search_value,
         )
-        search_button.pack(side="left", padx=(8, 0))
+        search_button.pack(side="left", padx=(12, 0))
         angle_search_buttons.append(search_button)
     add_help_button(
         objective_frame,
-        5,
+        6,
         3,
         "Angle search (--angle-search)",
         "Quick (default) is the V3.7 search. It chooses the angle that optimizes the "
@@ -4477,10 +4470,10 @@ def run_gui() -> None:
         text="Enable arm-phase trimming (default)",
         variable=trim_enabled_var,
     )
-    trim_checkbutton.grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    trim_checkbutton.grid(row=7, column=0, columnspan=3, sticky="w", pady=1)
     add_help_button(
         objective_frame,
-        6,
+        7,
         3,
         "Arm-phase trimming (--trim / --no-trim)",
         "Shortens the centered arm phase below pi*|W| and refits the end loops to preserve "
@@ -4494,10 +4487,10 @@ def run_gui() -> None:
         text="Use H0 = 0 construction (default: H0 = 2R)",
         variable=zero_h0_var,
     )
-    zero_h0_checkbutton.grid(row=7, column=0, columnspan=3, sticky="w", pady=(4, 0))
+    zero_h0_checkbutton.grid(row=8, column=0, columnspan=3, sticky="w", pady=1)
     add_help_button(
         objective_frame,
-        7,
+        8,
         3,
         "Zero-H0 construction (--zero-h0)",
         "Selects the distinct H0 = 0 arm-height family instead of the default H0 = 2R. "
@@ -4677,13 +4670,13 @@ def run_gui() -> None:
     update_screening_state()
     update_automatic_output()
 
-    output_frame = ttk.LabelFrame(body, text="Output and verification", padding=10)
-    output_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+    output_frame = ttk.LabelFrame(body, text="Output and verification")
+    output_frame.grid(row=0, column=1, sticky="nsew")
     output_frame.columnconfigure(0, weight=1)
     output_frame.rowconfigure(2, weight=1)
 
     output_row = ttk.Frame(output_frame)
-    output_row.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+    output_row.grid(row=0, column=0, sticky="ew", pady=(2, 12))
     output_row.columnconfigure(0, weight=1)
     ttk.Entry(output_row, textvariable=output_var).grid(row=0, column=0, sticky="ew")
     add_help_button(
@@ -4712,16 +4705,16 @@ def run_gui() -> None:
         if filename:
             output_var.set(filename)
 
-    ttk.Button(output_row, text="Browse...", command=browse_output).grid(row=0, column=1, padx=(6, 0))
-    ttk.Label(output_frame, text="Derived values and checks").grid(row=1, column=0, sticky="w")
+    ttk.Button(output_row, text="Browse...", command=browse_output).grid(row=0, column=1, padx=(8, 0))
+    ttk.Label(output_frame, text="Derived values and checks", style="Field.TLabel").grid(
+        row=1, column=0, sticky="w"
+    )
 
-    summary_box = tk.Text(output_frame, wrap="none", font=mono_font, bg="white", padx=8, pady=8)
-    summary_box.grid(row=2, column=0, sticky="nsew", pady=(4, 0))
-    y_scroll = ttk.Scrollbar(output_frame, orient="vertical", command=summary_box.yview)
-    y_scroll.grid(row=2, column=1, sticky="ns", pady=(4, 0))
-    x_scroll = ttk.Scrollbar(output_frame, orient="horizontal", command=summary_box.xview)
-    x_scroll.grid(row=3, column=0, sticky="ew")
-    summary_box.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+    # Report box with vertical and horizontal scroll bars (the report is not wrapped).
+    summary_view = ui.LogView(output_frame, wrap="none", height=20, horizontal=True)
+    summary_view.grid(row=2, column=0, sticky="nsew", pady=(4, 0))
+    summary_box = summary_view.text
+    summary_box.configure(width=60)
 
     def set_summary(text: str) -> None:
         summary_box.configure(state="normal")
@@ -4744,7 +4737,6 @@ def run_gui() -> None:
         "  enter or browse to a custom filename. Accurate search adds _Acc; W = 0, H0 = 0 uses Ring."
     )
     status_var = tk.StringVar(value="Ready.")
-    ttk.Label(main, textvariable=status_var).grid(row=3, column=0, sticky="w", pady=(10, 0))
 
     cached_key = None
     cached_result: Optional[SCGenerationResult] = None
@@ -4975,10 +4967,22 @@ def run_gui() -> None:
             set_summary("Input or generation issue:\n{0}".format(exc))
             messagebox.showerror("Generate SC error", str(exc))
 
-    buttons = ttk.Frame(main)
-    buttons.grid(row=4, column=0, sticky="e", pady=(12, 0))
-    ttk.Button(buttons, text="Preview / verify", command=preview).pack(side="left", padx=(0, 8))
-    ttk.Button(buttons, text="Generate XYZ", command=generate_file).pack(side="left")
+    # Status line and run buttons; packed before the form so a short window
+    # squeezes the form, never the buttons.
+    footer = ui.Footer(root, textvariable=status_var)
+    footer.pack(side="bottom", fill="x", before=main)
+
+    # Long messages (errors, the Accurate search notice) wrap in the room the
+    # buttons leave instead of being cut off; they never widen the window.
+    footer.status.configure(width=1)
+    footer.status.bind(
+        "<Configure>", lambda event: footer.status.configure(wraplength=max(200, event.width)), add="+"
+    )
+    footer.add_button("Preview / verify", preview)
+    footer.add_button("Generate XYZ", generate_file, primary=True)
+    # The form does not scroll, so the window never gets shorter than it.
+    root.update_idletasks()
+    root.minsize(1000, root.winfo_reqheight())
     root.bind("<Escape>", lambda _event: root.destroy())
     root.after(100, bring_window_to_front)
     root.mainloop()

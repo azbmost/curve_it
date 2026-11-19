@@ -516,6 +516,8 @@ class GuiTests(unittest.TestCase):
     def test_generation_and_all_field_help_buttons(self):
         import tkinter as tk
 
+        from curve_it_lib import azbmost_ui
+
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             straight, curved, output = (folder / name for name in
@@ -530,7 +532,8 @@ class GuiTests(unittest.TestCase):
             def exercise():
                 root.update_idletasks()
                 buttons = [w for w in descendants(root) if w.winfo_class() == "TButton"]
-                helps = [w for w in buttons if w.cget("text") == "?"]
+                # The field help buttons are the themed round "?" buttons.
+                helps = [w for w in descendants(root) if isinstance(w, azbmost_ui.HelpButton)]
                 self.assertEqual(len(helps), 8)
                 for button in helps:
                     button.invoke()
@@ -565,7 +568,9 @@ class GuiTests(unittest.TestCase):
                             mock.patch.object(sys, "frozen", frozen, create=True):
                         curve_it.launch_gui()
                         root.update_idletasks()
-                        button = [w for w in descendants(root) if w.winfo_class() == "Button"
+                        # The Other tools entries are themed "ToolButton" rows.
+                        button = [w for w in descendants(root)
+                                  if w.winfo_class() in ("Button", "ToolButton")
                                   and w.cget("text") == "Reverse Curve It..."][0]
                         button.invoke()
                         command = popen.call_args.args[0]

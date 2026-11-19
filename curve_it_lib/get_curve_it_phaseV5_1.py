@@ -1868,10 +1868,13 @@ def run_gui(
     """Open a compact Tkinter GUI for computing the Curve It phase."""
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox
-        from tkinter import scrolledtext
+        from tkinter import filedialog, messagebox, ttk
     except Exception as exc:
         raise SystemExit("Tkinter is not available in this Python environment: {}".format(exc))
+    try:
+        from . import azbmost_ui as ui
+    except ImportError:
+        import azbmost_ui as ui  # type: ignore[no-redef]
 
     owns_mainloop = parent is None
     root = tk.Tk() if owns_mainloop else tk.Toplevel(parent)
@@ -1885,17 +1888,11 @@ def run_gui(
     )
     if parent is not None:
         root.transient(parent)
+    # Inside Curve It the theme is already on; tool_window() only adds the header then.
+    ui.tool_window(root, "Get Phase", tool="get_phase", version="V5_1")
 
     vars_dict: Dict[str, Any] = {}
     widgets_dict: Dict[str, Any] = {}
-    help_button_kwargs = {
-        "text": "?",
-        "width": 2,
-        "bg": "#cfefff",
-        "activebackground": "#aee6ff",
-        "relief": tk.RAISED,
-        "borderwidth": 1,
-    }
 
     help_topics = {
         "input_pdb": (
@@ -2008,16 +2005,18 @@ def run_gui(
         messagebox.showinfo(title, body, parent=root)
 
     def help_button(parent_widget: Any, topic_key: str) -> Any:
-        return tk.Button(parent_widget, command=lambda: show_help(topic_key), **help_button_kwargs)
+        return ui.HelpButton(parent_widget, command=lambda: show_help(topic_key))
 
     def add_path_row(parent_widget, row, label, key, default="", browse="file", width=76):
         """Add a full-width path entry with a Browse button."""
-        tk.Label(parent_widget, text=label, anchor="w").grid(row=row, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(parent_widget, text=label, anchor="w", style="Field.TLabel").grid(
+            row=row, column=0, sticky="w", padx=(0, 12), pady=3
+        )
         var = tk.StringVar(value=str(default))
         vars_dict[key] = var
-        entry = tk.Entry(parent_widget, textvariable=var, width=width)
+        entry = ttk.Entry(parent_widget, textvariable=var, width=width)
         widgets_dict[key] = entry
-        entry.grid(row=row, column=1, columnspan=5, sticky="ew", padx=4, pady=2)
+        entry.grid(row=row, column=1, columnspan=5, sticky="ew", pady=3)
 
         def do_browse():
             if browse == "file":
@@ -2029,16 +2028,17 @@ def run_gui(
             if path:
                 var.set(path)
 
-        tk.Button(parent_widget, text="Browse", command=do_browse).grid(row=row, column=6, sticky="ew", padx=4, pady=2)
-        help_button(parent_widget, key).grid(row=row, column=7, sticky="w", padx=(0, 4), pady=2)
+        ttk.Button(parent_widget, text="Browse", command=do_browse).grid(
+            row=row, column=6, sticky="ew", padx=(8, 0), pady=3
+        )
+        help_button(parent_widget, key).grid(row=row, column=7, sticky="w", padx=(8, 0), pady=3)
         return row + 1
 
     def add_section(parent_widget, row, text):
-        """Add a compact section label."""
-        tk.Label(parent_widget, text=text, font=("TkDefaultFont", 10, "bold")).grid(
-            row=row, column=0, columnspan=9, sticky="w", padx=4, pady=(10, 2)
-        )
-        return row + 1
+        """Add a section card spanning the form; its fields go inside it."""
+        card = ttk.LabelFrame(parent_widget, text=text)
+        card.grid(row=row, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
+        return card
 
     def add_compact_row(parent_widget, row, specs):
         """Add several labeled widgets on one row.
@@ -2048,51 +2048,60 @@ def run_gui(
         """
         col = 0
         for label, key, default, kind, choices, width, help_key in specs:
-            tk.Label(parent_widget, text=label, anchor="w").grid(row=row, column=col, sticky="w", padx=(4, 2), pady=2)
+            ttk.Label(parent_widget, text=label, anchor="w", style="Field.TLabel").grid(
+                row=row, column=col, sticky="w", padx=(0 if col == 0 else 24, 10), pady=3
+            )
             var = tk.StringVar(value=str(default))
             vars_dict[key] = var
             if kind == "option":
-                widget = tk.OptionMenu(parent_widget, var, *choices)
-                widget.grid(row=row, column=col + 1, sticky="ew", padx=(2, 8), pady=2)
+                widget = ui.OptionMenu(parent_widget, var, *choices)
+                widget.configure(width=width)
+                widget.grid(row=row, column=col + 1, sticky="ew", pady=3)
             else:
-                widget = tk.Entry(parent_widget, textvariable=var, width=width)
-                widget.grid(row=row, column=col + 1, sticky="ew", padx=(2, 8), pady=2)
+                widget = ttk.Entry(parent_widget, textvariable=var, width=width)
+                widget.grid(row=row, column=col + 1, sticky="ew", pady=3)
             widgets_dict[key] = widget
-            help_button(parent_widget, help_key).grid(row=row, column=col + 2, sticky="w", padx=(0, 8), pady=2)
+            help_button(parent_widget, help_key).grid(row=row, column=col + 2, sticky="w", padx=(8, 0), pady=3)
             col += 3
         return row + 1
 
-    frame = tk.Frame(root)
-    frame.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
-    root.columnconfigure(0, weight=1)
-    root.rowconfigure(0, weight=0)
-    for col in range(9):
-        frame.columnconfigure(col, weight=1 if col in (1, 4, 7) else 0)
+    frame = ttk.Frame(root, padding=(18, 12, 18, 12))
+    frame.pack(fill="both", expand=True)
+    frame.columnconfigure(0, weight=1)
+    frame.columnconfigure(1, weight=1)
+    frame.rowconfigure(4, weight=1)
+
+    # Files (left) and atom selection (right), then the two option cards.
+    files_card = ttk.LabelFrame(frame, text="Files")
+    files_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+    files_card.columnconfigure(1, weight=1)
 
     row = 0
-    row = add_path_row(frame, row, "Input PDB", "input_pdb", _namespace_value(initial, "input_pdb", ""), browse="file")
-    row = add_path_row(frame, row, "Curve XYZ/text", "curve_xyz", _namespace_value(initial, "curve_xyz", ""), browse="file")
-    row = add_path_row(frame, row, "Output report", "output", _namespace_value(initial, "output", ""), browse="save")
+    row = add_path_row(files_card, row, "Input PDB", "input_pdb", _namespace_value(initial, "input_pdb", ""), browse="file", width=30)
+    row = add_path_row(files_card, row, "Curve XYZ/text", "curve_xyz", _namespace_value(initial, "curve_xyz", ""), browse="file", width=30)
+    row = add_path_row(files_card, row, "Output report", "output", _namespace_value(initial, "output", ""), browse="save", width=30)
 
-    row = add_section(frame, row, "Atom selection")
-    atom_selection_frame = tk.Frame(frame)
-    atom_selection_frame.grid(row=row, column=0, columnspan=9, sticky="ew", padx=4, pady=2)
-    atom_selection_frame.columnconfigure(6, weight=1)
-    row += 1
+    atom_selection_frame = ttk.LabelFrame(frame, text="Atom selection")
+    atom_selection_frame.grid(row=0, column=1, sticky="nsew")
+    atom_selection_frame.columnconfigure(1, weight=1)
 
     selection_mode_default = _namespace_value(initial, "selection_mode", "real")
     if str(selection_mode_default).strip().lower() not in {"real", "virtual"}:
         selection_mode_default = "real"
     selection_mode_var = tk.StringVar(value=str(selection_mode_default).strip().lower())
     vars_dict["selection_mode"] = selection_mode_var
-    tk.Label(atom_selection_frame, text="Choose", anchor="w").grid(row=0, column=0, sticky="w", padx=(0, 2), pady=2)
-    tk.Radiobutton(
-        atom_selection_frame, text="Real atom(s)", variable=selection_mode_var, value="real"
-    ).grid(row=0, column=1, sticky="w", padx=(2, 8), pady=2)
-    tk.Radiobutton(
-        atom_selection_frame, text="Virtual atom", variable=selection_mode_var, value="virtual"
-    ).grid(row=0, column=2, sticky="w", padx=(2, 8), pady=2)
-    help_button(atom_selection_frame, "selection_mode").grid(row=0, column=3, sticky="w", padx=(0, 8), pady=2)
+    ttk.Label(atom_selection_frame, text="Choose", anchor="w", style="Field.TLabel").grid(
+        row=0, column=0, sticky="w", padx=(0, 12), pady=3
+    )
+    choose_frame = ttk.Frame(atom_selection_frame)
+    choose_frame.grid(row=0, column=1, sticky="w", pady=3)
+    ttk.Radiobutton(
+        choose_frame, text="Real atom(s)", variable=selection_mode_var, value="real"
+    ).pack(side="left", padx=(0, 16))
+    ttk.Radiobutton(
+        choose_frame, text="Virtual atom", variable=selection_mode_var, value="virtual"
+    ).pack(side="left")
+    help_button(atom_selection_frame, "selection_mode").grid(row=0, column=2, sticky="w", padx=(8, 0), pady=3)
 
     initial_real_rows = _namespace_value(initial, "real_atom_selections", [])
     if not isinstance(initial_real_rows, list):
@@ -2109,30 +2118,30 @@ def run_gui(
     except (TypeError, ValueError):
         initial_real_count = max(1, len(initial_real_rows))
 
-    tk.Label(atom_selection_frame, text="Number of real atoms", anchor="w").grid(
-        row=1, column=0, sticky="w", padx=(0, 2), pady=2
+    ttk.Label(atom_selection_frame, text="Number of real atoms", anchor="w", style="Field.TLabel").grid(
+        row=1, column=0, sticky="w", padx=(0, 12), pady=3
     )
     real_atom_count_var = tk.StringVar(value=str(initial_real_count))
     vars_dict["real_atom_count"] = real_atom_count_var
-    real_atom_count_entry = tk.Entry(atom_selection_frame, textvariable=real_atom_count_var, width=6)
+    real_atom_count_entry = ttk.Entry(atom_selection_frame, textvariable=real_atom_count_var, width=6)
     widgets_dict["real_atom_count"] = real_atom_count_entry
-    real_atom_count_entry.grid(row=1, column=1, sticky="w", padx=(2, 8), pady=2)
-    help_button(atom_selection_frame, "real_atom_count").grid(row=1, column=2, sticky="w", padx=(0, 8), pady=2)
+    real_atom_count_entry.grid(row=1, column=1, sticky="w", pady=3)
+    help_button(atom_selection_frame, "real_atom_count").grid(row=1, column=2, sticky="w", padx=(8, 0), pady=3)
 
-    tk.Label(atom_selection_frame, text="Virtual atom (x,y,z A)", anchor="w").grid(
-        row=1, column=3, sticky="w", padx=(4, 2), pady=2
+    ttk.Label(atom_selection_frame, text="Virtual atom (x,y,z A)", anchor="w", style="Field.TLabel").grid(
+        row=2, column=0, sticky="w", padx=(0, 12), pady=3
     )
     virtual_atom_var = tk.StringVar(
         value=_vec3_to_text(_namespace_value(initial, "virtual_atom", np.array([0.0, 0.0, 0.0])), "0,0,0")
     )
     vars_dict["virtual_atom"] = virtual_atom_var
-    virtual_atom_entry = tk.Entry(atom_selection_frame, textvariable=virtual_atom_var, width=22)
+    virtual_atom_entry = ttk.Entry(atom_selection_frame, textvariable=virtual_atom_var, width=22)
     widgets_dict["virtual_atom"] = virtual_atom_entry
-    virtual_atom_entry.grid(row=1, column=4, sticky="w", padx=(2, 8), pady=2)
-    help_button(atom_selection_frame, "virtual_atom").grid(row=1, column=5, sticky="w", padx=(0, 8), pady=2)
+    virtual_atom_entry.grid(row=2, column=1, sticky="ew", pady=3)
+    help_button(atom_selection_frame, "virtual_atom").grid(row=2, column=2, sticky="w", padx=(8, 0), pady=3)
 
-    real_rows_frame = tk.Frame(atom_selection_frame)
-    real_rows_frame.grid(row=2, column=0, columnspan=7, sticky="ew", pady=(2, 0))
+    real_rows_frame = ttk.Frame(atom_selection_frame)
+    real_rows_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(6, 0))
     real_atom_rows: List[Dict[str, Any]] = []
     real_atom_row_widgets: List[Any] = []
     saved_real_atom_values: List[Dict[str, str]] = []
@@ -2170,19 +2179,19 @@ def run_gui(
 
         headers = ("#", "ChainID", "ResNumber", "Atom name")
         for column, header in enumerate(headers):
-            tk.Label(real_rows_frame, text=header, anchor="w").grid(
-                row=0, column=column, sticky="w", padx=(0, 6), pady=(0, 1)
+            ttk.Label(real_rows_frame, text=header, anchor="w", style="Hint.TLabel").grid(
+                row=0, column=column, sticky="w", padx=(0, 8), pady=(0, 2)
             )
         for index in range(count):
             values = saved_real_atom_values[index] if index < len(saved_real_atom_values) else {}
-            tk.Label(real_rows_frame, text=str(index + 1), anchor="w").grid(
-                row=index + 1, column=0, sticky="w", padx=(0, 6), pady=1
+            ttk.Label(real_rows_frame, text=str(index + 1), anchor="w", style="Field.TLabel").grid(
+                row=index + 1, column=0, sticky="w", padx=(0, 8), pady=2
             )
             row_vars: Dict[str, Any] = {}
             for column, key, width in ((1, "chain", 8), (2, "resseq", 10), (3, "atom_name", 12)):
                 var = tk.StringVar(value=values.get(key, ""))
-                entry = tk.Entry(real_rows_frame, textvariable=var, width=width)
-                entry.grid(row=index + 1, column=column, sticky="w", padx=(0, 6), pady=1)
+                entry = ttk.Entry(real_rows_frame, textvariable=var, width=width)
+                entry.grid(row=index + 1, column=column, sticky="w", padx=(0, 8), pady=2)
                 row_vars[key] = var
                 real_atom_row_widgets.append(entry)
             real_atom_rows.append(row_vars)
@@ -2194,9 +2203,12 @@ def run_gui(
     real_atom_count_var.trace_add("write", rebuild_real_atom_rows)
     rebuild_real_atom_rows()
 
-    row = add_section(frame, row, "Curve It mapping options")
+    mapping_card = add_section(frame, 1, "Curve It mapping options")
+    for col in (1, 4, 7):
+        mapping_card.columnconfigure(col, weight=1)
+    row = 0
     row = add_compact_row(
-        frame,
+        mapping_card,
         row,
         [
             ("Scale mode", "scale_mode", _namespace_value(initial, "scale_mode", "none"), "entry", None, 14, "scale_mode"),
@@ -2205,7 +2217,7 @@ def run_gui(
         ],
     )
     row = add_compact_row(
-        frame,
+        mapping_card,
         row,
         [
             ("Scale anchor (A)", "scale_anchor", _namespace_value(initial, "scale_anchor", "centroid"), "entry", None, 14, "scale_anchor"),
@@ -2214,7 +2226,7 @@ def run_gui(
         ],
     )
     row = add_compact_row(
-        frame,
+        mapping_card,
         row,
         [
             ("Interp mode", "interp_mode", _namespace_value(initial, "interp_mode", "none"), "option", ["none", "n", "p"], 10, "interp_mode"),
@@ -2223,9 +2235,12 @@ def run_gui(
         ],
     )
 
-    row = add_section(frame, row, "Target direction")
+    target_card = add_section(frame, 2, "Target direction")
+    for col in (1, 4, 7):
+        target_card.columnconfigure(col, weight=1)
+    row = 0
     row = add_compact_row(
-        frame,
+        target_card,
         row,
         [
             (
@@ -2242,7 +2257,7 @@ def run_gui(
         ],
     )
     row = add_compact_row(
-        frame,
+        target_card,
         row,
         [
             (
@@ -2266,7 +2281,7 @@ def run_gui(
         ],
     )
     row = add_compact_row(
-        frame,
+        target_card,
         row,
         [
             (
@@ -2334,9 +2349,10 @@ def run_gui(
         vars_dict[dynamic_key].trace_add("write", update_dynamic_fields)
     update_dynamic_fields()
 
-    report_box = scrolledtext.ScrolledText(root, width=112, height=18)
-    report_box.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
-    root.rowconfigure(1, weight=1)
+    report_view = ui.LogView(frame, wrap="word", height=12)
+    report_view.grid(row=4, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
+    report_box = report_view.text
+    report_box.configure(width=112)
 
     def collect_args() -> argparse.Namespace:
         try:
@@ -2439,16 +2455,22 @@ def run_gui(
         except (Exception, SystemExit) as exc:
             messagebox.showerror("Error", str(exc), parent=root)
 
-    button_frame = tk.Frame(root)
-    button_frame.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
-    tk.Button(button_frame, text="Compute phase", command=on_compute).pack(side="left")
-    tk.Button(button_frame, text="Close" if parent is not None else "Quit", command=root.destroy).pack(side="right")
-
     help_text = (
         "curvature_angle: 0=local curvature normal, 90=local curvature binormal. "
         "toward_axis/toward_point/custom_vector are projected into the local cross-section."
     )
-    tk.Label(button_frame, text=help_text, anchor="w").pack(side="left", padx=12)
+    # Footer: the note on the left, the buttons on the right. Packed before the
+    # form so a short window squeezes the form, never the buttons.
+    button_frame = ui.Footer(root, text=help_text)
+    button_frame.pack(side="bottom", fill="x", before=frame)
+    button_frame.add_button("Close" if parent is not None else "Quit", root.destroy)
+    button_frame.add_button("Compute phase", on_compute, primary=True)
+
+    # The note takes the room the buttons leave and wraps there; it never widens the window.
+    button_frame.status.configure(width=1)
+    button_frame.status.bind(
+        "<Configure>", lambda event: button_frame.status.configure(wraplength=max(200, event.width)), add="+"
+    )
 
     if owns_mainloop:
         root.mainloop()

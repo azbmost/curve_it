@@ -1322,13 +1322,18 @@ def launch_gui() -> None:
         from tkinter import filedialog, messagebox, ttk
     except Exception as exc:
         raise SystemExit("Could not import Tkinter: {}".format(exc))
+    try:
+        from . import azbmost_ui as ui
+    except ImportError:
+        import azbmost_ui as ui  # type: ignore[no-redef]
 
     root = tk.Tk()
     root.title("Local Curvature, Torsion, and Writhe Density")
-    # 880x720 rather than 860x700 since the Plot palette row: the log keeps the
-    # height it asks for, and the pale tints' longer hint still has room.
-    root.geometry("880x720")
+    # Wide enough that the pale tints' longer Plot palette hint has room, and
+    # tall enough that the log keeps a useful height under the settings.
+    root.geometry("1100x800")
     set_optional_window_icon(root, tk, ["local_curvature_icon.png", "icon.png"], "_local_curvature_icon_image")
+    ui.tool_window(root, "Local Curvature/Torsion", tool="local_curvature")
 
     input_var = tk.StringVar()
     output_var = tk.StringVar()
@@ -1347,16 +1352,7 @@ def launch_gui() -> None:
     palette_choices = lab_colors.palette_choices("default") if lab_colors is not None else ["default"]
 
     def help_button(parent, title: str, body: str):
-        return tk.Button(
-            parent,
-            text="?",
-            width=2,
-            bg="#cfefff",
-            activebackground="#aee6ff",
-            relief=tk.RAISED,
-            borderwidth=1,
-            command=lambda: messagebox.showinfo(title, body, parent=root),
-        )
+        return ui.HelpButton(parent, command=lambda: messagebox.showinfo(title, body, parent=root))
 
     def update_palette_hint(*_args) -> None:
         palette_hint_var.set(plot_palette_hint(palette_var.get()))
@@ -1462,59 +1458,82 @@ def launch_gui() -> None:
             append_log("[ERROR] {}".format(exc))
             messagebox.showerror("Error", str(exc))
 
-    main_frame = ttk.Frame(root, padding=12)
+    # Run buttons in the footer, packed first so they always stay in the window.
+    button_frame = ui.Footer(root)
+    button_frame.pack(side="bottom", fill="x")
+
+    main_frame = ttk.Frame(root, padding=(18, 12, 18, 12))
     main_frame.pack(fill="both", expand=True)
+    main_frame.columnconfigure(0, weight=1)
+    main_frame.columnconfigure(1, weight=1)
+    main_frame.rowconfigure(2, weight=1)
 
-    for col in range(3):
-        main_frame.columnconfigure(col, weight=1 if col == 1 else 0)
-    main_frame.rowconfigure(13, weight=1)
+    def field_label(parent, text: str, row: int) -> None:
+        ttk.Label(parent, text=text, style="Field.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 12), pady=3)
 
-    ttk.Label(main_frame, text="Input XYZ/coordinate file:").grid(row=0, column=0, sticky="w", pady=4)
-    ttk.Entry(main_frame, textvariable=input_var).grid(row=0, column=1, sticky="ew", padx=6, pady=4)
-    ttk.Button(main_frame, text="Browse...", command=browse_input).grid(row=0, column=2, sticky="ew", pady=4)
+    # Input and output: the curve file, where the CSV goes, and how to read the curve.
+    files_card = ttk.LabelFrame(main_frame, text="Input and output")
+    files_card.grid(row=0, column=0, columnspan=2, sticky="ew")
+    files_card.columnconfigure(1, weight=1)
 
-    ttk.Label(main_frame, text="Output CSV:").grid(row=1, column=0, sticky="w", pady=4)
-    ttk.Entry(main_frame, textvariable=output_var).grid(row=1, column=1, sticky="ew", padx=6, pady=4)
-    ttk.Button(main_frame, text="Browse...", command=browse_output).grid(row=1, column=2, sticky="ew", pady=4)
+    field_label(files_card, "Input XYZ/coordinate file:", 0)
+    ttk.Entry(files_card, textvariable=input_var).grid(row=0, column=1, sticky="ew", pady=3)
+    ttk.Button(files_card, text="Browse...", command=browse_input).grid(row=0, column=2, sticky="ew", padx=(8, 0), pady=3)
 
-    ttk.Label(main_frame, text="Input format:").grid(row=2, column=0, sticky="w", pady=4)
+    field_label(files_card, "Output CSV:", 1)
+    ttk.Entry(files_card, textvariable=output_var).grid(row=1, column=1, sticky="ew", pady=3)
+    ttk.Button(files_card, text="Browse...", command=browse_output).grid(row=1, column=2, sticky="ew", padx=(8, 0), pady=3)
+
+    field_label(files_card, "Input format:", 2)
     ttk.Combobox(
-        main_frame,
+        files_card,
         textvariable=format_var,
         values=["auto", "plain", "molecule", "vect"],
         state="readonly",
         width=15,
-    ).grid(row=2, column=1, sticky="w", padx=6, pady=4)
+    ).grid(row=2, column=1, sticky="w", pady=3)
 
-    ttk.Label(main_frame, text="Curve type:").grid(row=3, column=0, sticky="w", pady=4)
-    curve_frame = ttk.Frame(main_frame)
-    curve_frame.grid(row=3, column=1, sticky="w", padx=6, pady=4)
+    field_label(files_card, "Curve type:", 3)
+    curve_frame = ttk.Frame(files_card)
+    curve_frame.grid(row=3, column=1, sticky="w", pady=3)
     ttk.Radiobutton(curve_frame, text="Closed", variable=curve_type_var, value="closed").pack(side="left")
-    ttk.Radiobutton(curve_frame, text="Open", variable=curve_type_var, value="open").pack(side="left", padx=(12, 0))
+    ttk.Radiobutton(curve_frame, text="Open", variable=curve_type_var, value="open").pack(side="left", padx=(16, 0))
 
-    ttk.Label(main_frame, text="Number of samples:").grid(row=4, column=0, sticky="w", pady=4)
-    ttk.Entry(main_frame, textvariable=nsamples_var, width=12).grid(row=4, column=1, sticky="w", padx=6, pady=4)
+    # Sampling and smoothing (left), plot and torsion settings (right).
+    sampling_card = ttk.LabelFrame(main_frame, text="Sampling and smoothing")
+    sampling_card.grid(row=1, column=0, sticky="nsew", pady=(12, 0), padx=(0, 12))
 
-    ttk.Checkbutton(main_frame, text="Use Savitzky-Golay smoothing", variable=smooth_var).grid(
-        row=5, column=1, sticky="w", padx=6, pady=4
+    field_label(sampling_card, "Number of samples:", 0)
+    ttk.Entry(sampling_card, textvariable=nsamples_var, width=12).grid(row=0, column=1, sticky="w", pady=3)
+
+    ttk.Checkbutton(sampling_card, text="Use Savitzky-Golay smoothing", variable=smooth_var).grid(
+        row=1, column=1, sticky="w", pady=3
     )
 
-    ttk.Label(main_frame, text="Smoothing window:").grid(row=6, column=0, sticky="w", pady=4)
-    smooth_frame = ttk.Frame(main_frame)
-    smooth_frame.grid(row=6, column=1, sticky="w", padx=6, pady=4)
+    field_label(sampling_card, "Smoothing window:", 2)
+    smooth_frame = ttk.Frame(sampling_card)
+    smooth_frame.grid(row=2, column=1, sticky="w", pady=3)
     ttk.Entry(smooth_frame, textvariable=smooth_window_var, width=12).pack(side="left")
-    ttk.Label(smooth_frame, text="blank = default; must be odd").pack(side="left", padx=(8, 0))
+    ttk.Label(smooth_frame, text="blank = default; must be odd", style="Hint.TLabel").pack(side="left", padx=(10, 0))
 
-    ttk.Label(main_frame, text="Smoothing polyorder:").grid(row=7, column=0, sticky="w", pady=4)
-    ttk.Entry(main_frame, textvariable=polyorder_var, width=12).grid(row=7, column=1, sticky="w", padx=6, pady=4)
+    field_label(sampling_card, "Smoothing polyorder:", 3)
+    ttk.Entry(sampling_card, textvariable=polyorder_var, width=12).grid(row=3, column=1, sticky="w", pady=3)
 
-    ttk.Checkbutton(main_frame, text="Show pop-up plot after calculation", variable=show_plot_var).grid(
-        row=8, column=1, sticky="w", padx=6, pady=4
+    right_cards = ttk.Frame(main_frame)
+    right_cards.grid(row=1, column=1, sticky="nsew", pady=(12, 0))
+    right_cards.columnconfigure(0, weight=1)
+
+    plot_card = ttk.LabelFrame(right_cards, text="Plot")
+    plot_card.grid(row=0, column=0, sticky="ew")
+
+    # The palette menu sits directly under the plot checkbox.
+    ttk.Checkbutton(plot_card, text="Show pop-up plot after calculation", variable=show_plot_var).grid(
+        row=0, column=1, sticky="w", pady=3
     )
 
-    ttk.Label(main_frame, text="Plot palette:").grid(row=9, column=0, sticky="w", pady=4)
-    palette_frame = ttk.Frame(main_frame)
-    palette_frame.grid(row=9, column=1, sticky="w", padx=6, pady=4)
+    field_label(plot_card, "Plot palette:", 1)
+    palette_frame = ttk.Frame(plot_card)
+    palette_frame.grid(row=1, column=1, sticky="w", pady=3)
     ttk.Combobox(
         palette_frame,
         textvariable=palette_var,
@@ -1522,50 +1541,49 @@ def launch_gui() -> None:
         state="readonly",
         width=15,
     ).pack(side="left")
-    help_button(palette_frame, PLOT_PALETTE_HELP_TITLE, PLOT_PALETTE_HELP).pack(side="left", padx=(6, 0))
-    ttk.Label(palette_frame, textvariable=palette_hint_var).pack(side="left", padx=(8, 0))
+    help_button(palette_frame, PLOT_PALETTE_HELP_TITLE, PLOT_PALETTE_HELP).pack(side="left", padx=(8, 0))
+    ttk.Label(palette_frame, textvariable=palette_hint_var, style="Hint.TLabel").pack(side="left", padx=(10, 0))
+
+    torsion_card = ttk.LabelFrame(right_cards, text="Writhe and torsion")
+    torsion_card.grid(row=1, column=0, sticky="ew", pady=(12, 0))
 
     ttk.Checkbutton(
-        main_frame,
+        torsion_card,
         text="Calculate local writhe density (O(N^2))",
         variable=writhe_density_var,
-    ).grid(row=10, column=1, sticky="w", padx=6, pady=4)
+    ).grid(row=0, column=1, sticky="w", pady=3)
 
-    ttk.Label(main_frame, text="Torsion rel. curvature cutoff:").grid(row=11, column=0, sticky="w", pady=4)
-    torsion_frame = ttk.Frame(main_frame)
-    torsion_frame.grid(row=11, column=1, sticky="w", padx=6, pady=4)
+    field_label(torsion_card, "Torsion rel. curvature cutoff:", 1)
+    torsion_frame = ttk.Frame(torsion_card)
+    torsion_frame.grid(row=1, column=1, sticky="w", pady=3)
     ttk.Entry(torsion_frame, textvariable=torsion_rel_cutoff_var, width=12).pack(side="left")
-    ttk.Label(torsion_frame, text="default 0.05; masks near-zero curvature").pack(side="left", padx=(8, 0))
+    ttk.Label(torsion_frame, text="default 0.05; masks near-zero curvature", style="Hint.TLabel").pack(
+        side="left", padx=(10, 0)
+    )
 
-    ttk.Label(main_frame, text="Torsion min curvature:").grid(row=12, column=0, sticky="w", pady=4)
-    torsion_min_frame = ttk.Frame(main_frame)
-    torsion_min_frame.grid(row=12, column=1, sticky="w", padx=6, pady=4)
+    field_label(torsion_card, "Torsion min curvature:", 2)
+    torsion_min_frame = ttk.Frame(torsion_card)
+    torsion_min_frame.grid(row=2, column=1, sticky="w", pady=3)
     ttk.Entry(torsion_min_frame, textvariable=torsion_min_curv_var, width=12).pack(side="left")
-    ttk.Label(torsion_min_frame, text="blank = use relative cutoff").pack(side="left", padx=(8, 0))
+    ttk.Label(torsion_min_frame, text="blank = use relative cutoff", style="Hint.TLabel").pack(
+        side="left", padx=(10, 0)
+    )
 
-    log_text = tk.Text(main_frame, height=16, wrap="word", state="disabled")
-    log_text.grid(row=13, column=0, columnspan=3, sticky="nsew", pady=(10, 6))
-    log_scroll = ttk.Scrollbar(main_frame, orient="vertical", command=log_text.yview)
-    log_scroll.grid(row=13, column=3, sticky="ns", pady=(10, 6))
-    log_text.configure(yscrollcommand=log_scroll.set)
+    log_view = ui.LogView(main_frame, wrap="word", height=8)
+    log_view.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
+    log_text = log_view.text
+    log_text.configure(state="disabled")
 
-    button_frame = ttk.Frame(main_frame)
-    button_frame.grid(row=14, column=0, columnspan=3, sticky="e", pady=4)
-    ttk.Button(
-        button_frame,
-        text="Load trefoil example",
-        command=lambda: load_trefoil_example(False),
-    ).pack(side="left", padx=4)
-    ttk.Button(
-        button_frame,
-        text="Run trefoil example",
-        command=lambda: load_trefoil_example(True),
-    ).pack(side="left", padx=4)
-    ttk.Button(button_frame, text="Clear Log", command=clear_log).pack(side="left", padx=4)
-    ttk.Button(button_frame, text="Run", command=run_from_gui).pack(side="left", padx=4)
-    ttk.Button(button_frame, text="Close", command=root.destroy).pack(side="left", padx=4)
+    button_frame.add_button("Load trefoil example", lambda: load_trefoil_example(False))
+    button_frame.add_button("Run trefoil example", lambda: load_trefoil_example(True))
+    button_frame.add_button("Clear Log", clear_log)
+    button_frame.add_button("Close", root.destroy)
+    button_frame.add_button("Run", run_from_gui, primary=True)
 
     append_log("Choose an input file and click Run. Default curve type is closed; local writhe density is enabled.")
+    # Never smaller than the settings, so no field is cut off.
+    root.update_idletasks()
+    root.minsize(root.winfo_reqwidth(), root.winfo_reqheight())
     root.mainloop()
 
 
