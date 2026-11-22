@@ -2691,7 +2691,7 @@ def launch_gui() -> None:
             "auto reports the sum of the turning angles of the polyline when the curve is polygon-like: straight stretches meeting at corners, including a polygon whose edges are cut into collinear points, as kp2xyz writes KnotPlot's polygons, whatever its corner angles. "
             "It does the same when the periodic spline through the points turns more than the polyline by more than sampling a smooth curve explains, because the spline is then ringing between kinked points. "
             "Otherwise it reports the periodic spline curvature, which is closer for a coarse sample of a smooth curve. Curvature used names the estimator and the reason.\n\n"
-            "Example: KnotPlot's torus 2 6, whose components have 79 corners of at most 23 degrees, gives 867.6 degrees, its turning-angle sum; a spline through the same points would give 1313.9 degrees.\n\n"
+            "Example: KnotPlot's torus 2 6, whose components are 40-sided polygons with corners of 17 to 24 degrees written as 400 points, gives 867.6 degrees, its turning-angle sum; a spline through the same points would give 1313.9 degrees.\n\n"
             "polyline always uses the sum of turning angles, the exact total curvature of the polyline Curve It maps onto.\n\n"
             "spline always uses a smoothed periodic spline and may overestimate curvature near sharp corners."
         ),

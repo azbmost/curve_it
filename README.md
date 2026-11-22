@@ -162,7 +162,7 @@ Examples:
 
 | Curve | Points per component | `auto` reports | Reason | Spline alone would give |
 | --- | --- | --- | --- | --- |
-| KnotPlot's `torus 2 6` (79 corners of at most 23°) | 400 | 867.6° | polygon-like curve | 1313.9° |
+| KnotPlot's `torus 2 6` (40 corners of 17–24°, 39 of them split between two points) | 400 | 867.6° | polygon-like curve | 1313.9° |
 | A hexagram (rounded triangles linearly resampled from 40-point arcs, with a weave) | 600 | 680.9° | the spline overshoots by 5.9% | 720.9° |
 | The smooth (1,3) torus curve | 800 | 879.0° | spline | 879.0° (turning-angle sum 879.03°) |
 

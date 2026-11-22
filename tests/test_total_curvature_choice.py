@@ -141,8 +141,9 @@ class RunLengthTests(unittest.TestCase):
 class PolygonTests(unittest.TestCase):
 
     def test_subdivided_polygon_with_shallow_corners(self):
-        # 79 corners turning about 11 degrees each, like a component of
-        # KnotPlot's torus 2 6, with every edge cut into five pieces.
+        # 79 corners turning about 11 degrees each, shallower than the
+        # 17-24 degree corners of KnotPlot's torus 2 6, every edge cut into
+        # five pieces.
         points = _subdivide(_torus_13(79), 5)
         self.assertLess(float(np.max(curve_it._turning_angles_deg_closed(points))), 45.0)
         self.assertTrue(curve_it.curve_looks_polygonal(points))
