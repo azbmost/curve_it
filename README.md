@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_15`
+Version: `V3_16`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -14,6 +14,7 @@ GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along An
   - nucleic acids: phosphate, sugar, and base groups
   - proteins and unknown residues: whole-residue groups
 - Reports closed-curve writhe from the exact piecewise-linear path used for mapping, using an analytic solid-angle sum over nonadjacent segment pairs. No smoothing or spline substitution is applied to mapped-polyline writhe.
+- Reports closed-curve total curvature, naming the estimator it used: the sum of turning angles of that path for polygon-like curves, and a periodic spline for sampled smooth curves (see [Total Curvature](#total-curvature)).
 - Supports open and closed curves, curve scaling, path start control, helix phase rotation, extra twist, and optional curve interpolation.
 
 ## Requirements
@@ -138,6 +139,36 @@ When interpolation is enabled, the input curve is first resampled or densified, 
 Use `--interp-mode n` when you want exactly `--interp-n` evenly arc-length-spaced points. Use `--interp-mode p` when you want to insert `--interp-p` points between each adjacent pair of original curve points.
 
 `--interp-mode n` reproduces exactly every vertex that turns by at least `--min-corner-angle`, 20 degrees by default, and resamples each smooth stretch between two kept corners on its own, so a polygonal curve keeps its corners instead of having them clipped by evenly spaced samples. On smooth, densely sampled curves no vertex reaches 20 degrees and the result is bitwise identical to blind resampling; on a coarse polygon it preserves contour length that blind resampling loses. `--min-corner-angle 0` restores the blind behaviour exactly. The setting is ignored by `--interp-mode none` and `--interp-mode p`, and it is the same threshold, the same default and the same code as the SVG to XYZ tool uses, since both share the resampler in `curve_it_lib/interpolate_xyz.py`.
+
+## Total Curvature
+
+For a closed curve, Curve It reports the total curvature in the GUI's **Curve metrics** and in the run report. **Curvature mode** (GUI) chooses how it is estimated; the command line always uses `auto`. The GUI's **Curvature used** field, and a `Curvature estimator:` line in the run report, name the estimator chosen and the reason.
+
+- `auto` (default) reports the sum of the turning angles of the polyline in two cases:
+  - **The curve is polygon-like:** straight stretches meet at corners. This includes a polygon whose edges are cut into collinear points, as **KnotPlot to XYZ** writes KnotPlot's polygons, whatever its corner angles.
+  - **The spline overshoots:** the periodic spline through the points turns more than the polyline by more than sampling a smooth curve explains, so the spline is ringing between kinked points.
+
+  Otherwise `auto` reports the periodic spline curvature, which is closer for a coarse sample of a smooth curve.
+- `polyline` always reports the turning-angle sum. It is the exact total curvature of the polyline that Curve It maps onto.
+- `spline` always smooths the points (Savitzky–Golay) and fits a periodic spline. It may overestimate the curvature near sharp corners.
+
+How `auto` tells the cases apart:
+
+- **Polygon test:** at least half the vertices must be straight, meaning they turn by less than 2% of the sharpest turn. The remaining turning vertices must come in isolated runs of at most three. Three are allowed because a corner that falls between two samples is split over both.
+- **Spline check:** a spline through the vertices always turns at least as much as the polyline does. For a sampled smooth curve, the difference shrinks with the square of the turning angle per vertex. A difference larger than 0.5% plus 0.25 × (root-mean-square turn in radians)² is treated as overshoot. That allowance covers every smooth test curve tried, from 8 to 800 points.
+- **Polygons given by corners alone:** a polygon with no points along its edges cannot be told from a coarse sample of a smooth curve, so it keeps the spline.
+
+Examples:
+
+| Curve | Points per component | `auto` reports | Reason | Spline alone would give |
+| --- | --- | --- | --- | --- |
+| KnotPlot's `torus 2 6` (79 corners of at most 23°) | 400 | 867.6° | polygon-like curve | 1313.9° |
+| A hexagram (rounded triangles linearly resampled from 40-point arcs, with a weave) | 600 | 680.9° | the spline overshoots by 5.9% | 720.9° |
+| The smooth (1,3) torus curve | 800 | 879.0° | spline | 879.0° (turning-angle sum 879.03°) |
+
+The same applies to a curve densified with `--interp-mode p`: the inserted points are collinear, which makes the curve a subdivided polygon. A planar ellipse densified with p = 3 used to read 680.0° from the spline; it now reads 360.0°.
+
+Before V3_16, `auto` took the turning-angle sum only when some vertex turned by 45° or more. Corners as shallow as KnotPlot's slipped through, and the spline value was reported.
 
 ## Curve File Format
 

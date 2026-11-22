@@ -107,7 +107,11 @@ Additional behavior:
       of the frame is compensated per lap to eliminate twist jumps.
     - If curve_it_lib/cal_xyz_total_curvature_writheV2.py is importable, the total curvature
       and writhe of the (scaled) curve are reported for closed paths, and
-      are also shown in the GUI for loaded curves (assuming closed).
+      are also shown in the GUI for loaded curves (assuming closed). The
+      total curvature is the turning-angle sum of the polyline for
+      polygon-like curves and wherever the periodic spline overshoots that
+      sum, and the periodic spline curvature otherwise; the report names
+      the estimator.
 
 CLI examples:
     python curve_it.py helix.pdb
@@ -142,7 +146,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_15"
+APP_VERSION = "V3_16"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -982,21 +986,104 @@ def _turning_angles_deg_closed(points: np.ndarray, eps: float = 1e-12) -> np.nda
     return np.array(ang, dtype=float)
 
 
+# How auto mode chooses the total-curvature estimator (V3_16).
+# A vertex turning by less than this fraction of the sharpest turn counts as
+# straight when looking for a polygon whose edges are cut into points.
+POLYGON_STRAIGHT_FRACTION = 0.02
+# Turning vertices allowed in one corner: a corner that falls between two
+# evenly spaced samples is split over both, as in kp2xyz's KnotPlot polygons.
+POLYGON_MAX_CORNER_RUN = 3
+# Share of straight vertices a subdivided polygon must have.
+POLYGON_MIN_STRAIGHT_SHARE = 0.5
+# Relative excess of the periodic spline over the turning-angle sum that
+# sampling a smooth curve explains: FLOOR + COEFF * rms_turn**2 (radians).
+SPLINE_EXCESS_FLOOR = 0.005
+SPLINE_EXCESS_COEFF = 0.25
+
+
+def _circular_run_lengths(mask: np.ndarray) -> List[int]:
+    """Lengths of the runs of True in a boolean array read as a closed loop."""
+    mask = np.asarray(mask, dtype=bool)
+    if mask.size == 0 or not mask.any():
+        return []
+    if mask.all():
+        return [int(mask.size)]
+    # Start on a False entry so that no run is cut in two at the seam.
+    rolled = np.roll(mask, -int(np.argmin(mask)))
+    runs: List[int] = []
+    count = 0
+    for value in rolled:
+        if value:
+            count += 1
+        elif count:
+            runs.append(count)
+            count = 0
+    if count:
+        runs.append(count)
+    return runs
+
+
 def curve_looks_polygonal(points: np.ndarray,
                           angle_large_deg: float = 45.0,
                           angle_small_deg: float = 1.0,
-                          frac_nontrivial_threshold: float = 0.25) -> bool:
-    """Heuristic to detect mostly-straight polylines with a few sharp corners.
+                          frac_nontrivial_threshold: float = 0.25,
+                          straight_fraction: float = POLYGON_STRAIGHT_FRACTION,
+                          max_corner_run: int = POLYGON_MAX_CORNER_RUN,
+                          min_straight_share: float = POLYGON_MIN_STRAIGHT_SHARE) -> bool:
+    """Detect a polygon: straight stretches that meet at corners.
 
-    This matters because Savitzky–Golay smoothing and periodic spline fitting
-    can introduce 'ringing' near sharp corners, inflating total curvature.
+    This matters because a periodic spline through such points rings at the
+    corners and Savitzky–Golay smoothing rounds them, so both misstate the
+    total curvature of the polyline Curve It maps onto. Either signature counts:
+
+    * sharp corners on a mostly straight polyline: some vertex turns by
+      angle_large_deg or more while at most frac_nontrivial_threshold of the
+      vertices turn by more than angle_small_deg (the only test before V3_16);
+    * a polygon whose edges are cut into collinear points, as kp2xyz writes
+      KnotPlot's polygons, whatever its corner angles: at least
+      min_straight_share of the vertices are straight (they turn by less than
+      straight_fraction of the sharpest turn) and the others come in isolated
+      runs of at most max_corner_run vertices.
+
+    A sampled smooth curve turns by similar amounts at neighbouring vertices,
+    however densely or coarsely it is sampled, so it meets neither test. A
+    polygon given by its corners alone, with no points along its edges, cannot
+    be told from a coarse sample of a smooth curve and is not reported here.
     """
     angles = _turning_angles_deg_closed(points)
     if angles.size == 0:
         return False
     max_ang = float(np.max(angles))
     frac_nontrivial = float(np.mean(angles > angle_small_deg))
-    return (max_ang >= angle_large_deg) and (frac_nontrivial <= frac_nontrivial_threshold)
+    if (max_ang >= angle_large_deg) and (frac_nontrivial <= frac_nontrivial_threshold):
+        return True
+    if max_ang <= 0.0:
+        return False
+    turning = angles > straight_fraction * max_ang
+    if float(np.mean(~turning)) < min_straight_share:
+        return False
+    runs = _circular_run_lengths(turning)
+    return bool(runs) and max(runs) <= max_corner_run
+
+
+def spline_excess_allowance(points: np.ndarray) -> float:
+    """Relative excess of the spline over the turning-angle sum that sampling
+    a smooth curve explains.
+
+    A curve through the vertices of a polyline turns at least as much as the
+    polyline does (Milnor), so the periodic spline never reports less than
+    the turning-angle sum in exact arithmetic. For a sampled smooth curve the
+    excess shrinks with the square of the turning angle per vertex: under
+    0.12% once the root-mean-square turn is 5 degrees or less. The allowance,
+    0.5% plus 0.25 * rms_turn**2 (radians), covers every smooth test curve
+    sampled with 8 to 800 points (tests/test_total_curvature_choice.py). A
+    larger excess means the spline is ringing between kinked points.
+    """
+    angles = np.radians(_turning_angles_deg_closed(points))
+    if angles.size == 0:
+        return SPLINE_EXCESS_FLOOR
+    rms = float(np.sqrt(np.mean(angles ** 2)))
+    return SPLINE_EXCESS_FLOOR + SPLINE_EXCESS_COEFF * rms ** 2
 
 
 def compute_discrete_total_curvature(points: np.ndarray,
@@ -1992,26 +2079,81 @@ def estimate_helix_length(atoms: List[AtomRecord]) -> float:
     return float(s_vals.max() - s_vals.min())
 
 
+def estimate_total_curvature(points: np.ndarray,
+                             curvature_mode: str = "auto") -> Tuple[Optional[float], str]:
+    """Total curvature (radians) of a closed curve, and the estimator used.
+
+    curvature_mode:
+        - 'auto' (default): the turning-angle sum of the polyline when the
+          curve is polygon-like (curve_looks_polygonal), or when the periodic
+          spline through the points exceeds that sum by more than sampling a
+          smooth curve explains (spline_excess_allowance), because the spline
+          is then ringing between kinked points. Otherwise the periodic spline
+          curvature of the supplied coordinates, which is closer for a coarse
+          sample of a smooth curve. The geometry is never changed.
+        - 'polyline': always the turning-angle sum, the exact total curvature
+          of the polyline Curve It maps onto.
+        - 'spline': always the periodic spline, after Savitzky–Golay smoothing
+          (requires the curvature tools); for sharp corners this can
+          overestimate total curvature.
+
+    The second value names the estimator for the GUI and the run report,
+    for example 'polyline (auto: polygon-like curve)'.
+    """
+    mode = (curvature_mode or "auto").strip().lower()
+    force_polyline = mode in ("polyline", "pline", "discrete")
+    force_spline = mode in ("spline", "smooth", "periodic")
+
+    def polyline_sum() -> Optional[float]:
+        try:
+            return compute_discrete_total_curvature(points, closed=True)
+        except Exception as e:
+            print(f"[WARNING] polyline total curvature failed: {e}")
+            return None
+
+    if force_polyline:
+        return polyline_sum(), "polyline (manual)"
+    if not HAVE_CURVATURE_WRITHE:
+        return polyline_sum(), "polyline (fallback; spline unavailable)"
+    if force_spline:
+        try:
+            # Smooth even polygon-like curves, as requested.
+            return fit_spline_and_calculate_curvature(smooth_closed_curve_force(points)), "spline (manual)"
+        except Exception as e:
+            print(f"[WARNING] spline total curvature failed: {e}")
+            return None, "spline (manual)"
+
+    polyline = polyline_sum()
+    if curve_looks_polygonal(points):
+        return polyline, "polyline (auto: polygon-like curve)"
+    try:
+        spline = float(fit_spline_and_calculate_curvature(points))
+    except Exception as e:
+        print(f"[WARNING] spline total curvature failed: {e}")
+        return polyline, "polyline (auto: spline failed)"
+    if polyline is not None and polyline > 0.0:
+        excess = spline / polyline - 1.0
+        if excess > spline_excess_allowance(points):
+            return polyline, f"polyline (auto: spline overshoot {100.0 * excess:.1f}%)"
+    return spline, "spline (auto)"
+
+
 def compute_curve_metrics(points: np.ndarray,
                           closed: bool = True,
-                          curvature_mode: str = "auto"
-                          ) -> Tuple[float, Optional[float], Optional[float]]:
+                          curvature_mode: str = "auto",
+                          return_method: bool = False) -> Tuple[Any, ...]:
     """Compute basic geometric metrics of a curve.
 
     Returns:
-        length, total_curvature, writhe
+        length, total_curvature, writhe; with return_method=True also the
+        name of the total-curvature estimator (see estimate_total_curvature).
 
     Args:
         points: (N,3) polyline points.
         closed: whether to treat the curve as closed.
-        curvature_mode:
-            - 'auto' (default): detect polygon-like curves and use a robust
-              polyline total curvature for cornered curves; otherwise use the
-              periodic spline curvature of the supplied coordinates without
-              changing the geometry.
-            - 'polyline': always use polyline total curvature (sum of turning angles).
-            - 'spline': always use periodic spline curvature (requires curvature tools);
-              for sharp corners this can overestimate total curvature.
+        curvature_mode: 'auto' (default), 'polyline' or 'spline', as in
+            estimate_total_curvature.
+        return_method: also return the estimator name.
 
     Notes:
         - Length is computed from the given polyline points. For a closed
@@ -2026,41 +2168,12 @@ def compute_curve_metrics(points: np.ndarray,
     length = float(compute_arc_lengths(points_for_length)[-1])
 
     if not closed:
-        return length, None, None
+        return (length, None, None, "N/A (open curve)") if return_method else (length, None, None)
 
-    mode = (curvature_mode or "auto").strip().lower()
-    total_curv: Optional[float] = None
     wr: Optional[float] = None
 
-    polygonal = curve_looks_polygonal(points)
-
-    # Decide which curvature estimator to use.
-    force_polyline = mode in ("polyline", "pline", "discrete")
-    force_spline = mode in ("spline", "smooth", "periodic")
-
-    if force_spline and (not HAVE_CURVATURE_WRITHE):
-        # Spline tools unavailable: fall back to polyline.
-        force_spline = False
-        force_polyline = True
-
-    use_polyline = force_polyline or ((not HAVE_CURVATURE_WRITHE) or (polygonal and not force_spline))
-    use_spline = force_spline or (HAVE_CURVATURE_WRITHE and (not polygonal) and (not force_polyline))
-
     # --- Total curvature ---
-    if use_polyline:
-        try:
-            total_curv = compute_discrete_total_curvature(points, closed=True)
-        except Exception as e:
-            print(f"[WARNING] compute_curve_metrics failed for polyline curvature: {e}")
-            total_curv = None
-    elif use_spline:
-        try:
-            # If the user explicitly requested spline mode, smooth even for polygon-like curves.
-            points_for_spline = smooth_closed_curve_force(points) if force_spline else points
-            total_curv = fit_spline_and_calculate_curvature(points_for_spline)
-        except Exception as e:
-            print(f"[WARNING] compute_curve_metrics failed for spline curvature: {e}")
-            total_curv = None
+    total_curv, method = estimate_total_curvature(points, curvature_mode)
 
     # --- Writhe ---
     if HAVE_CURVATURE_WRITHE:
@@ -2072,6 +2185,8 @@ def compute_curve_metrics(points: np.ndarray,
             print(f"[WARNING] compute_curve_metrics failed for writhe: {e}")
             wr = None
 
+    if return_method:
+        return length, total_curv, wr, method
     return length, total_curv, wr
 
 
@@ -2573,9 +2688,12 @@ def launch_gui() -> None:
         ),
         "curvature_mode": (
             "Curvature Mode",
-            "auto detects polygon-like curves and chooses a robust estimator.\n\n"
-            "polyline uses the sum of turning angles, good for sharp-corner curves.\n\n"
-            "spline uses a smoothed periodic spline and may overestimate curvature near sharp corners."
+            "auto reports the sum of the turning angles of the polyline when the curve is polygon-like: straight stretches meeting at corners, including a polygon whose edges are cut into collinear points, as kp2xyz writes KnotPlot's polygons, whatever its corner angles. "
+            "It does the same when the periodic spline through the points turns more than the polyline by more than sampling a smooth curve explains, because the spline is then ringing between kinked points. "
+            "Otherwise it reports the periodic spline curvature, which is closer for a coarse sample of a smooth curve. Curvature used names the estimator and the reason.\n\n"
+            "Example: KnotPlot's torus 2 6, whose components have 79 corners of at most 23 degrees, gives 867.6 degrees, its turning-angle sum; a spline through the same points would give 1313.9 degrees.\n\n"
+            "polyline always uses the sum of turning angles, the exact total curvature of the polyline Curve It maps onto.\n\n"
+            "spline always uses a smoothed periodic spline and may overestimate curvature near sharp corners."
         ),
         "interp_file": (
             "Interpolated Curve File",
@@ -2706,30 +2824,16 @@ def launch_gui() -> None:
         closed = (path_type_var.get() == "closed")
 
         mode = (curvature_mode_var.get() or "auto").strip().lower()
-        polygonal = curve_looks_polygonal(pts_used) if closed else False
 
-        # Decide what method is used (for display).
-        if not closed:
-            curvature_used_var.set("N/A (open curve)")
-        elif mode in ("polyline", "pline", "discrete"):
-            curvature_used_var.set("polyline (manual)")
-        elif mode in ("spline", "smooth", "periodic"):
-            if HAVE_CURVATURE_WRITHE:
-                curvature_used_var.set("spline (manual)")
-            else:
-                curvature_used_var.set("polyline (fallback; spline unavailable)")
-        else:
-            # auto (default)
-            if (not HAVE_CURVATURE_WRITHE) or polygonal:
-                curvature_used_var.set("polyline (auto)")
-            else:
-                curvature_used_var.set("spline (auto)")
-
-        length, total_curv, wr = compute_curve_metrics(
+        # The estimator is chosen from the computed values (auto mode compares
+        # the spline with the turning-angle sum), so it is shown afterwards.
+        length, total_curv, wr, method = compute_curve_metrics(
             pts_used,
             closed=closed,
             curvature_mode=mode,
+            return_method=True,
         )
+        curvature_used_var.set(method)
         curve_len_var.set(f"{length:.3f} Å")
 
         if not closed:
@@ -4151,7 +4255,8 @@ def launch_gui() -> None:
         "Hint: interpolation changes the curve used for fitting the PDB and for metrics; "
         "'n' resamples to a total point count and keeps vertices sharper than the "
         "min corner angle exactly; 'p' inserts points per segment. "
-        "Curvature auto mode uses a robust polyline estimate for polygon-like curves."
+        "Curvature auto mode uses the polyline's turning-angle sum for polygon-like curves "
+        "and wherever the spline overshoots it."
     )
     curve_hint_label = ttk.Label(curve_param_frame, text=curve_hint, style="Hint.TLabel", wraplength=820,
                                  justify="left")
@@ -5077,20 +5182,20 @@ def main(argv: Optional[List[str]] = None) -> None:
     if HAVE_CURVATURE_WRITHE:
         if args.path_type == "closed":
             try:
-                polygonal = curve_looks_polygonal(scaled_curve_pts)
-                curve_for_invariants = scaled_curve_pts
-                if polygonal:
-                    # Polygon-like curves can yield spuriously large curvature after periodic spline fitting.
-                    total_curv = compute_discrete_total_curvature(scaled_curve_pts, closed=True)
-                else:
-                    total_curv = fit_spline_and_calculate_curvature(curve_for_invariants)
-                wr = calculate_polyline_writhe(curve_for_invariants)
-                curv_pi = total_curv / np.pi
-                curv_deg = np.degrees(total_curv)
+                # Auto mode: the turning-angle sum for polygon-like curves and
+                # wherever the periodic spline overshoots it, else the spline.
+                total_curv, curvature_method = estimate_total_curvature(scaled_curve_pts, "auto")
+                wr = calculate_polyline_writhe(scaled_curve_pts)
                 wr_deg = (wr - np.rint(wr)) * 360.0
                 print("\n[INFO] Geometric invariants of (scaled) closed curve:")
-                print(f"       Total curvature: {total_curv:.6f} "
-                      f"(≈ {curv_pi:.6f} * pi; {curv_deg:.3f}°)")
+                if total_curv is not None:
+                    curv_pi = total_curv / np.pi
+                    curv_deg = np.degrees(total_curv)
+                    print(f"       Total curvature: {total_curv:.6f} "
+                          f"(≈ {curv_pi:.6f} * pi; {curv_deg:.3f}°)")
+                else:
+                    print("       Total curvature: N/A")
+                print(f"       Curvature estimator: {curvature_method}")
                 print(f"       Mapped-polyline writhe: {wr:.6f} "
                       f"(residual {wr_deg:.3f}°)")
             except Exception as e:
