@@ -146,7 +146,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_16"
+APP_VERSION = "V3_17"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -2523,7 +2523,8 @@ def launch_gui() -> None:
             "- a straight DNA/RNA helix\n"
             "- an alpha helix or coiled-coil protein\n"
             "- an elongated filament-like PDB\n\n"
-            "Compact globular proteins may not fit well because one principal axis is not a good shape description."
+            "Compact globular proteins may not fit well because one principal axis is not a good shape description.\n\n"
+            "A helix with corners already built (Bend Helix pivots, bent D/L junctions) goes to Other tools > Corner Curve It, which curves each side on its own arc and keeps the corners."
         ),
         "curve_xyz": (
             "Curve file",
@@ -2645,6 +2646,13 @@ def launch_gui() -> None:
             "The tool reverses local atom-group transforms, keeping the curve in the curved model's coordinate frame, in Angstrom. It matches atoms by chain, residue, atom name and alternate location, so record order and serial numbers may change.\n\n"
             "Use the complete original straight template. Curve It's saved REMARKs supply path type and extra twist when available. Without saved twist, the tool estimates it from the atomic coordinates; enter estimate to force this fit, or a number to use a known angle. The report gives the estimated signed total twist, an approximate standard error and group fit errors. Global phase needs no input.\n\n"
             "The output samples the occupied path. Original vertices, unused endpoints and gaps cannot be reconstructed from the two models. Closed curves omit the repeated first point; select closed when loading that XYZ into Curve It. Groups need at least three noncollinear matched atoms, so a CA-only or P-only model is insufficient."
+        ),
+        "corner_curve_it": (
+            "Corner Curve It",
+            "Curve a helix whose corners are already built onto arcs in one plane, every corner in or out of phase with the curve.\n\n"
+            "Use it for a duplex bent at RE_Helix Bend Helix pivots, or D- and L-RNA joined by bent mirror junctions. Each straight side gets its own arc, every corner is kept exactly as built, and each corner bends towards the inside of the curve (in) or away from it (out), chosen corner by corner, mixed if you like. A closed ring is solved so that it closes, flat, with the bending spread evenly and as little extra twist as the side lengths allow. Corner mode designs the arcs, so no curve file is needed.\n\n"
+            "A corner bends about a direction that turns with the helix, so the lengths between corners decide where the bends point. Check phases reports, before solving, how much extra twist each side needs for the phases you chose, and which side lengths, or which flipped phase, would need less. It also says when the helix axes pass beside each other at the corners so that a ring with those phases cannot lie flat.\n\n"
+            "The window opens with the main window's helix PDB. From the command line: curve_it.py bent.pdb --corners auto --corner-phase in,out,in,out."
         ),
         "multicolor_split": (
             "Multicolor Split",
@@ -3911,6 +3919,21 @@ def launch_gui() -> None:
         except Exception as e:
             messagebox.showerror("Tool launch error", f"Failed to launch Reverse Curve It:\n{e}")
 
+    def launch_corner_curve_it_tool() -> None:
+        script_path = resource_path(os.path.join("curve_it_lib", "corner_curve_it.py"))
+        if not getattr(sys, "frozen", False) and not os.path.isfile(script_path):
+            messagebox.showerror("Tool not found", f"Could not find Corner Curve It:\n{script_path}")
+            return
+        helix = (helix_pdb_path or helix_path_var.get()).strip()
+        helix = os.path.abspath(helix) if helix and os.path.isfile(helix) else ""
+        try:
+            import subprocess
+            prefix = ([sys.executable, "--corner-curve-it"] if getattr(sys, "frozen", False)
+                      else [sys.executable, script_path])
+            subprocess.Popen(prefix + ([helix] if helix else []) + ["--gui"])
+        except Exception as e:
+            messagebox.showerror("Tool launch error", f"Failed to launch Corner Curve It:\n{e}")
+
     def launch_xyz2model_tool() -> None:
         script_path = resource_path(os.path.join("curve_it_lib", "xyz2model.py"))
         if not os.path.isfile(script_path):
@@ -4461,6 +4484,11 @@ def launch_gui() -> None:
         "local_curvature_torsion": "local_curvature", "plane_it": "plane_it",
         "curved_connector": "curved_connector", "xyz2model": "xyz2model",
         "multicolor_split": "multicolor_split", "reverse_curve_it": "reverse_curve_it",
+        "corner_curve_it": "generic",
+    }
+    # Tools without an entry in the shared azbmost_ui descriptions bring their own.
+    tool_descriptions = {
+        "corner_curve_it": "Curve a helix with built corners onto arcs in one plane, each corner in or out.",
     }
 
     # --- Other tools frame ---
@@ -4475,7 +4503,7 @@ def launch_gui() -> None:
         tool_rows.append(tools_frame.add(
             label,
             command=command,
-            description=ui.tool_description(icon),
+            description=tool_descriptions.get(topic_key) or ui.tool_description(icon),
             icon=f"tool:{icon}",
             help_command=lambda: show_help(topic_key),
         ))
@@ -4495,6 +4523,7 @@ def launch_gui() -> None:
     add_tool_button(1, 3, "XYZ to 3D Model...", launch_xyz2model_tool, "xyz2model")
     add_tool_button(1, 4, "Multicolor Split...", launch_multicolor_split_tool, "multicolor_split")
     add_tool_button(2, 0, "Reverse Curve It...", launch_reverse_curve_it_tool, "reverse_curve_it")
+    add_tool_button(2, 1, "Corner Curve It...", launch_corner_curve_it_tool, "corner_curve_it")
 
     # --- Run log frame ---
     log_frame = ttk.Frame(side_panel)
@@ -4753,6 +4782,32 @@ def launch_gui() -> None:
     root.mainloop()
 
 
+def run_corner_cli(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """Corner mode from the command line (curve_it_lib/corner_curve_it.py does the work)."""
+    if args.curve_xyz is not None:
+        parser.error("corner mode designs its own arcs: give the helix PDB without a curve file")
+    ignored = [flag for flag, value, default in (
+        ("--scale-mode", args.scale_mode, "curve_to_helix"), ("--helix_phase", args.helix_phase, 0.0),
+        ("--twist", args.twist, 0.0), ("--path-start", args.path_start, 0.0),
+        ("--interp-mode", args.interp_mode, "none"), ("--curve-components", args.curve_components, "all"),
+    ) if value != default]
+    if ignored:
+        print(f"[INFO] Corner mode solves its own arcs, phases and twists, so it ignores {', '.join(ignored)}.")
+    path_type = args.path_type or "closed"
+    if path_type == "closed" and args.corner_radius is not None:
+        print("[INFO] --corner-radius applies to open paths; a closed ring solves its radii.")
+    try:
+        from curve_it_lib import corner_curve_it
+    except Exception as exc:
+        raise SystemExit(f"Corner mode needs curve_it_lib/corner_curve_it.py and scipy: {exc}")
+    try:
+        corner_curve_it.run(args.helix_pdb, args.corners or "auto", args.corner_phase, path_type,
+                            args.corner_radius, args.output_pdb, args.corner_curve,
+                            check_only=args.corner_check)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"Corner mode failed: {exc}")
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
@@ -4765,6 +4820,15 @@ def main(argv: Optional[List[str]] = None) -> None:
         except Exception as exc:
             raise SystemExit(f"Failed to launch Reverse Curve It: {exc}")
         sys.exit(reverse_curve_it.main(argv[1:]))
+
+    # Corner Curve It, like Reverse Curve It, owns every option after its flag; a
+    # frozen app also opens its window this way (--corner-curve-it --gui).
+    if argv[:1] == ["--corner-curve-it"]:
+        try:
+            from curve_it_lib import corner_curve_it
+        except BaseException as exc:
+            raise SystemExit(f"Failed to launch Corner Curve It: {exc}")
+        sys.exit(corner_curve_it.main(argv[1:]))
 
     # Multicolor Split runs each split as a child process of its own GUI. In a
     # frozen one-file build sys.executable is this app, not a Python, so that
@@ -4792,7 +4856,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                      "chemistry-aware residue/group mapping, and "
                      "holonomy compensation for closed multi-wrap cases. "
                      "If no arguments or only --gui are provided, a GUI is launched."),
-        epilog="Recover a curve: curve_it.py --reverse-curve-it curved.pdb template.pdb -o curve.xyz",
+        epilog=("Recover a curve: curve_it.py --reverse-curve-it curved.pdb template.pdb -o curve.xyz. "
+                "Curve a helix with corners: curve_it.py bent.pdb --corners auto --corner-phase in "
+                "(see 'helix with corners' above)."),
     )
     parser.add_argument(
         "helix_pdb",
@@ -4912,6 +4978,52 @@ def main(argv: Optional[List[str]] = None) -> None:
               "blank-line-separated in a plain XYZ/txt file and are the polylines of a Geomview "
               "VECT file. They are labeled A, B, C... in file order. Examples: 'A', 'B,C', 'A-C', "
               "or 'all' (default). Molecular XYZ files are treated as one component."),
+    )
+
+    corner_group = parser.add_argument_group(
+        "helix with corners (corner mode)",
+        "For a helix whose corners are already built, such as a duplex bent at RE_Helix Bend Helix "
+        "pivots or D- and L-RNA joined by bent mirror junctions. Each straight side is curved on "
+        "its own arc, all arcs in one plane, and every corner is kept as built and bends towards "
+        "the inside of the curve (in) or away from it (out). Corner mode designs the arcs, so give "
+        "the PDB without a curve file; --path-type defaults to closed, and a closed ring needs its "
+        "chain ends in the middle of a side. The window is Other tools > Corner Curve It.")
+    corner_group.add_argument(
+        "--corners",
+        default=None,
+        metavar="SPEC",
+        help=("Switch on corner mode. auto finds the corners on the longest chain, where two "
+              "straight stretches of helix meet at 10 degrees or more (auto:B looks on chain B); "
+              "or list the last residue before each corner, on one chain, in the chain's order, "
+              "e.g. A28,A79,A129,A180."),
+    )
+    corner_group.add_argument(
+        "--corner-phase",
+        default="in",
+        metavar="PHASES",
+        help=("in or out for every corner, or one per corner in the chain's order, e.g. "
+              "in,out,in,out. Default: in."),
+    )
+    corner_group.add_argument(
+        "--corner-radius",
+        default=None,
+        metavar="R",
+        help=("--path-type open only: the arc radius of every side in Angstrom, or straight "
+              "(the default), which only turns the corners into one plane. A closed ring solves "
+              "its radii."),
+    )
+    corner_group.add_argument(
+        "--corner-curve",
+        default=None,
+        metavar="XYZ",
+        help="Also write the mapped axis as a curve file, one component per side.",
+    )
+    corner_group.add_argument(
+        "--corner-check",
+        action="store_true",
+        help=("Only report the corners, the extra twist each side needs for the phases and the "
+              "side lengths that would need less; write nothing. Uses --corners auto when "
+              "--corners is not given."),
     )
 
     convert_group = parser.add_argument_group(
@@ -5064,6 +5176,10 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.helix_pdb is None:
         parser.error("helix_pdb is required in CLI mode. "
                      "Run with no arguments or --gui for GUI mode.")
+
+    if args.corners is not None or args.corner_check:
+        run_corner_cli(args, parser)
+        return
 
     helix_pdb_path = args.helix_pdb
     curve_xyz_path = args.curve_xyz

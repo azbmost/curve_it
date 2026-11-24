@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Added **corner mode** for a helix whose corners are already built, bumping Curve It to **V3_17**. Each straight side is curved on its own arc, all in one plane, and every corner bends into the curve (**in**, in phase) or out of it (**out**), chosen corner by corner, so mixed patterns such as `in,out,in,out` work. It comes as `--corners`, `--corner-phase`, `--corner-radius`, `--corner-curve` and `--corner-check`, as the **Other tools > Corner Curve It...** window, and as `curve_it_lib/corner_curve_it.py` (v1.0.0; also `curve_it.py --corner-curve-it`).
+  - **Corners:** `auto` superposes each residue of the longest chain on the next one and puts a corner where two straight stretches meet at 10° or more. The corners can also be listed as the last residue before each one. Partner strands follow their base pairs; linkers such as an X33 phosphate go with the side they touch. The phosphate and O5′ are left out of these superpositions, since a 5′-5′ junction rebuilds them.
+  - **Solve:** the curvature, helix phase and extra twist of every side, by least squares. A closed ring must close: the closing base pair has to reach its place as a pose, shift and rotation, which an atom-by-atom error never could once the pair is curved. Arcs and corner axes must stay in one plane, at weight 300, so the bending-energy term can no longer buy curvature by tilting arcs (at 30 it tilted a D/L ring 1.6°). Among the solutions left, it takes the least bending energy and the least twist. A closed ring needs its chain ends inside a side; that side is joined by the helix's own step and curved as one arc.
+  - **Report:** before solving, every corner's miss with no extra twist, the twist that cancels it, and the side length (±6 residues) or flipped phase that needs less (`--corner-check` stops there). It also says when the helix axes pass beside each other at the corners so that the ring cannot lie flat. After solving, it gives each side's radius and twist per step, how flat and closed the ring is, the bonds across the corners, the closing steps and any new contacts under 2.2 Å.
+  - **Mapping:** each side is mapped by Curve It's arc mapping about its helical (screw) axis, because a finite helix's principal axis is tilted and offset (2.4 Å between two 20-bp sides). Each side's end base pairs and their linkers move as rigid groups, so the corners stay exactly as built.
+  - **Checked on** the gallery's D/L-RNA minicircle, built as straight chains on the fitted bent junctions:
+
+    | Design and phases | Radii | Extra twist | Arcs and corner axes off the plane | Closure, contacts |
+    | --- | --- | --- | --- | --- |
+    | D28-L50-D50-L50-D22, `in` | four of 175.1 Å | ≤ 0.10°/step | ≤ 0.02° | 0.000 Å, none |
+    | D28-L50-D50-L50-D22, `out` | four of 59.0 Å | ≤ 0.10°/step | ≤ 0.02° | 0.000 Å, none |
+    | D33-L44-D44-L55-D22, `in,out,in,out` | | ≤ 0.50°/step | arcs tilted 1.5–2.3° | 0.004 Å, none |
+
+    The bonds across the corners keep their built 1.54–1.71 Å. For comparison, the hand-fitted gallery model (`in`) has radii of 158–209 Å, 0.13°/bp and 0.3°. The mixed ring tilts because its corners' 2.9 Å axis offsets add up to 11.7 Å per lap, as the report predicts.
+  - **Tests:** `tests/test_corner_curve_it.py` is self-contained: synthetic kinked duplexes, with corners in, out, mixed and skewed, on open and closed paths, plus the command line.
 - Fixed the total curvature that Curve It reports for polygonal curves, bumping Curve It to **V3_16**.
   - **Old test:** `auto` took the turning-angle sum only when some vertex turned by 45° or more, on a curve whose other vertices were nearly straight. KnotPlot's polygons, written by **KnotPlot to XYZ** with their edges cut into collinear points, have shallower corners, so they got the periodic spline. That spline rings at the corners: 1313.9° for `torus 2 6` against a turning-angle sum of 867.6°.
   - **New polygon test:** `curve_looks_polygonal` also accepts a polygon whose edges are cut into points, whatever its corner angles. At least half its vertices are straight, turning by less than 2% of the sharpest turn, and the turning ones come in isolated runs of at most three.

@@ -20,6 +20,7 @@ test/
 tests/*
 !tests/test_reverse_curve_it.py
 !tests/test_total_curvature_choice.py
+!tests/test_corner_curve_it.py
 
 *_curved.pdb
 *_rescaled.xyz

@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_16`
+Version: `V3_17`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -16,12 +16,13 @@ GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along An
 - Reports closed-curve writhe from the exact piecewise-linear path used for mapping, using an analytic solid-angle sum over nonadjacent segment pairs. No smoothing or spline substitution is applied to mapped-polyline writhe.
 - Reports closed-curve total curvature, naming the estimator it used: the sum of turning angles of that path for polygon-like curves, and a periodic spline for sampled smooth curves (see [Total Curvature](#total-curvature)).
 - Supports open and closed curves, curve scaling, path start control, helix phase rotation, extra twist, and optional curve interpolation.
+- Curves a helix whose corners are already built ([corner mode](#helix-with-corners-corner-mode)): each straight side on its own arc, all in one plane, every corner bending into the curve or out of it.
 
 ## Requirements
 
 - Python 3.9 or newer
 - Required: `numpy`
-- Required by **Generate SC** and **Multicolor Split**; otherwise optional but recommended: `scipy` for curvature/writhe reporting and the local curvature/torsion tool
+- Required by **Generate SC**, **Multicolor Split** and corner mode (**Corner Curve It**); otherwise optional but recommended: `scipy` for curvature/writhe reporting and the local curvature/torsion tool
 - Optional: `matplotlib` for the GUI curve viewer, local analysis plots, the SVG to XYZ preview, and the Multicolor Split preview image
 - **SVG to XYZ** needs nothing beyond `numpy` and the standard library
 - Required by **XYZ to 3D Model** and **Multicolor Split**; not needed otherwise: `trimesh` for STL/GLB mesh output
@@ -170,6 +171,46 @@ The same applies to a curve densified with `--interp-mode p`: the inserted point
 
 Before V3_16, `auto` took the turning-angle sum only when some vertex turned by 45° or more. Corners as shallow as KnotPlot's slipped through, and the spline value was reported.
 
+## Helix With Corners (Corner Mode)
+
+Corner mode curves a helix whose corners are already built: straight sides joined at bends, such as a duplex bent at RE_Helix **Bend Helix** pivots, or D- and L-RNA joined by bent mirror junctions. Each side is curved on its own circular arc, all the arcs lie in one plane, and every corner bends **in** (towards the inside of the curve, in phase with it) or **out** (away from it, out of phase). The phase is chosen corner by corner, so mixed patterns such as `in,out,in,out` work. Corner mode designs the arcs itself, so give the helix PDB without a curve file.
+
+```bash
+python3 curve_it.py bent.pdb --corners auto --corner-phase in -o ring.pdb
+python3 curve_it.py bent.pdb --corners A28,A79,A129,A180 --corner-phase in,out,in,out -o ring.pdb --corner-curve ring_axis.xyz
+python3 curve_it.py bent.pdb --corners auto --corner-phase out --corner-check
+python3 curve_it.py bent.pdb --corners auto --path-type open --corner-radius 150 -o arc.pdb
+```
+
+The same tool has its own window, **Other tools > Corner Curve It...**, which opens with the main window's helix PDB, and its own command line, `python3 curve_it_lib/corner_curve_it.py bent.pdb --phase in` (`--corners`, `--phase`, `--path-type`, `--radius`, `-o`, `--curve`, `--check`, `--gui`; `curve_it.py --corner-curve-it ...` reaches it from a frozen app).
+
+**Corners.** `--corners auto` looks on the longest chain. It superposes every residue on the next one, groups the steps whose screw axes agree into straight stretches, and puts a corner where two stretches meet at 10° or more. `auto:B` looks on chain B. You can also list the last residue before each corner, all on one chain: `A28,A79,A129,A180`. Partner strands follow their base pairs, which are found from the hydrogen bonds between bases. Linker residues such as an X33 phosphate go with the side they touch.
+
+**Closed rings.** In corner mode `--path-type` defaults to closed. The chain ends must meet in the middle of a side, at an ordinary step, not at a corner. Corner mode joins the two pieces of that side by the helix's own step and curves them as one arc. Each side's curvature, helix phase and extra twist are then solved together so that:
+
+- the ring closes;
+- every arc and every corner lies in one plane;
+- the bending is spread evenly (least bending energy);
+- the extra twist is as small as the lengths allow.
+
+With `--path-type open`, every side gets the arc radius `--corner-radius` (default `straight`), and only the phases and twists are solved.
+
+**Phases and lengths.** A corner bends about a direction that turns with the helix, so the lengths between corners decide where the bends point. Before solving, corner mode reports three things for each corner: how far it misses its in/out direction with no extra twist, the twist that would cancel that miss, and the side length or flipped phase that would need less twist. `--corner-check` prints only this report. For example, for D/L-RNA with all corners `in`, whole-turn sides (D33-L44-D44-L55-D22) need about 159° of extra twist per side, and the report suggests sides of 50 bp (4½ turns). Those need under 5°.
+
+**Corners whose axes do not meet.** When the two helix axes pass beside each other at a corner (2.9 Å at the D/L-RNA junctions), the corner lifts the next side along the plane normal. Around a ring these steps cancel for some phase patterns and add up for others. The report gives the sum per lap. When it adds up, the ring cannot lie flat and its arcs tilt: about 1.5–2.3° for D33-L44-D44-L55-D22 with `in,out,in,out`, where the steps add to 11.7 Å.
+
+**How it maps.** Each side is mapped with Curve It's arc mapping: a rotation-minimizing frame with rigid phosphate, sugar and base groups. The mapping runs about the side's helical axis, the screw axis of its base-pair steps, rather than its principal axis. On a finite piece of helix the principal axis is tilted and offset: two 20-bp sides at 10 bp per turn meet 2.4 Å apart. Each side's end base pairs, with any linker on them, move as rigid groups, so the bonds across every corner stay as built.
+
+The output PDB:
+
+- keeps the input's records and order;
+- lies in the xy plane, with a closed ring centred at the origin;
+- carries REMARK 900 lines with every side's radius, extra twist, helix phase and twist.
+
+Corner mode does not add the LINK records that close the strands; use RE_Helix's **Add PDB LINK Record** for those.
+
+On the D/L-RNA minicircle D28-L50-D50-L50-D22 with every corner `in`, the four arcs come out at 175.1 Å, with at most 0.10° of extra twist per step. Arcs and corner axes are within 0.02° of the plane, the closure is 0.000 Å, and no atoms come closer than 2.2 Å.
+
 ## Curve File Format
 
 Curve files can be plain whitespace-separated coordinates:
@@ -233,6 +274,8 @@ An estimate is written into the console/GUI report and the XYZ comments, alongsi
 Global helix phase and frame holonomy are absorbed by the fitted rotations and require no input. A model may be translated or rotated after curving. Refined models can be fitted approximately; the report gives atom-weighted group RMSD and the largest group RMSD, and flags fits above 0.1 A. Axis positions extrapolated from small groups can be sensitive even when their fit errors are small.
 
 This recovers the **occupied, mapped path**, at the groups' stations, rather than the original curve file. PDB rounding limits accuracy. Original vertex locations, sharp bends between groups, unused path sections and endpoints are unobservable. Open outputs run between the first and last fitted stations without extrapolation; closing a loop joins its last sample back to its first. Multiple wraps remain multiple traversals. The tool does not undo the original curve scaling, infer its original seam, or smooth refinement noise. A different straight template can bias the axis even with small residuals. Only NumPy is required beyond the existing Curve It code; Tkinter is needed for the window.
+
+**Corner Curve It...** curves a helix whose corners are already built, each side on its own arc in one plane and each corner in or out of phase with the curve; see [Helix With Corners](#helix-with-corners-corner-mode). **Detect** fills in the corners and lists the sides and bends, **Check phases** reports the extra twist each side needs and the lengths that would need less, and **Run** writes the curved PDB. **Arc radius** is greyed out and shows `solved` for a closed ring.
 
 **Get phase** beside the main **Phase (deg)** field opens `curve_it_lib/get_curve_it_phaseV5_1.py`. Its atom-selection area can use a single real PDB atom, the centroid of multiple individually selected real atoms, or a virtual source-space `x,y,z` point that does not exist in the PDB. Choose **Real atom(s)** and set the number of selection rows, or choose **Virtual atom** and enter coordinates in Angstrom. The computed phase transfers back to the main GUI automatically.
 
@@ -634,6 +677,7 @@ Supporting scripts live in `curve_it_lib/`:
 - `view_xyzV3.py`
 - `xyz2model.py`
 - `reverse_curve_it.py` (recover centerline samples from curved and straight template PDBs; also available through the root launcher of the same name)
+- `corner_curve_it.py` (corner mode: a helix with corners on arcs in one plane, each corner in or out of phase; also `curve_it.py --corners ...`)
 - `vect_io.py` (Geomview VECT reading and writing, shared by every tool above)
 - `multicolor_split.py` (Multicolor Split; reads PDB or mmCIF rather than curve files)
 - `lab_colors.py` (the DiLiuLab figure palette, read from `assets/diliulab_colors.json` and shared by every tool that offers the palette)
