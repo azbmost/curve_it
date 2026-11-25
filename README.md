@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_17`
+Version: `V3_18`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -173,7 +173,7 @@ Before V3_16, `auto` took the turning-angle sum only when some vertex turned by 
 
 ## Helix With Corners (Corner Mode)
 
-Corner mode curves a helix whose corners are already built: straight sides joined at bends, such as a duplex bent at RE_Helix **Bend Helix** pivots, or D- and L-RNA joined by bent mirror junctions. Each side is curved on its own circular arc, all the arcs lie in one plane, and every corner bends **in** (towards the inside of the curve, in phase with it) or **out** (away from it, out of phase). The phase is chosen corner by corner, so mixed patterns such as `in,out,in,out` work. Corner mode designs the arcs itself, so give the helix PDB without a curve file.
+Corner mode curves a helix whose corners are already built: straight sides joined at bends, such as a duplex bent at RE_Helix **Bend Helix** pivots, D- and L-RNA joined by bent mirror junctions, or B- and Z-DNA joined by bowtie junctions. Each side is curved on its own circular arc, all the arcs lie in one plane, and every corner bends **in** (towards the inside of the curve, in phase with it) or **out** (away from it, out of phase). The phase is chosen corner by corner, so mixed patterns such as `in,out,in,out` work. Corner mode designs the arcs itself, so give the helix PDB without a curve file.
 
 ```bash
 python3 curve_it.py bent.pdb --corners auto --corner-phase in -o ring.pdb
@@ -184,9 +184,9 @@ python3 curve_it.py bent.pdb --corners auto --path-type open --corner-radius 150
 
 The same tool has its own window, **Other tools > Corner Curve It...**, which opens with the main window's helix PDB, and its own command line, `python3 curve_it_lib/corner_curve_it.py bent.pdb --phase in` (`--corners`, `--phase`, `--path-type`, `--radius`, `-o`, `--curve`, `--check`, `--gui`; `curve_it.py --corner-curve-it ...` reaches it from a frozen app).
 
-**Corners.** `--corners auto` looks on the longest chain. It superposes every residue on the next one, groups the steps whose screw axes agree into straight stretches, and puts a corner where two stretches meet at 10° or more. `auto:B` looks on chain B. You can also list the last residue before each corner, all on one chain: `A28,A79,A129,A180`. Partner strands follow their base pairs, which are found from the hydrogen bonds between bases. Linker residues such as an X33 phosphate go with the side they touch.
+**Corners.** `--corners auto` looks on the longest chain. It superposes every residue on the next one, groups the steps whose screw axes agree into straight stretches, and puts a corner where two stretches meet at 10° or more. Along Z-DNA these residue-to-residue screws alternate, so between the stretches it also superposes every residue on the one two on, and Z-DNA makes a straight stretch of these two-step screws. Only a base-paired stretch whose residue-to-residue screws do not already describe the helix counts, so a curved B-DNA or A-RNA helix is read as before. Where B-DNA meets Z-DNA there is always a corner, however small the bend, because one side cannot hold both. `auto:B` looks on chain B. You can also list the last residue before each corner, all on one chain: `A28,A79,A129,A180`. Partner strands follow their base pairs, which are found from the hydrogen bonds between bases. Linker residues such as an X33 phosphate go with the side they touch.
 
-**Closed rings.** In corner mode `--path-type` defaults to closed. The chain ends must meet in the middle of a side, at an ordinary step, not at a corner. Corner mode joins the two pieces of that side by the helix's own step and curves them as one arc. Each side's curvature, helix phase and extra twist are then solved together so that:
+**Closed rings.** In corner mode `--path-type` defaults to closed. The chain ends must meet in the middle of a side, at an ordinary step, not at a corner. Corner mode joins the two pieces of that side by the helix's own step (on Z-DNA, the step from each base pair to the one two on) and curves them as one arc. Each side's curvature, helix phase and extra twist are then solved together so that:
 
 - the ring closes;
 - every arc and every corner lies in one plane;
@@ -199,7 +199,9 @@ With `--path-type open`, every side gets the arc radius `--corner-radius` (defau
 
 **Corners whose axes do not meet.** When the two helix axes pass beside each other at a corner (2.9 Å at the D/L-RNA junctions), the corner lifts the next side along the plane normal. Around a ring these steps cancel for some phase patterns and add up for others. The report gives the sum per lap. When it adds up, the ring cannot lie flat and its arcs tilt: about 1.5–2.3° for D33-L44-D44-L55-D22 with `in,out,in,out`, where the steps add to 11.7 Å.
 
-**How it maps.** Each side is mapped with Curve It's arc mapping: a rotation-minimizing frame with rigid phosphate, sugar and base groups. The mapping runs about the side's helical axis, the screw axis of its base-pair steps, rather than its principal axis. On a finite piece of helix the principal axis is tilted and offset: two 20-bp sides at 10 bp per turn meet 2.4 Å apart. Each side's end base pairs, with any linker on them, move as rigid groups, so the bonds across every corner stay as built.
+**How it maps.** Each side is mapped with Curve It's arc mapping: a rotation-minimizing frame with rigid phosphate, sugar and base groups. The mapping runs about the side's helical axis, the screw axis of its base-pair steps, rather than its principal axis. On a finite piece of helix the principal axis is tilted and offset: two 20-bp sides at 10 bp per turn meet 2.4 Å apart. Each side's end base pairs, with any linker on them, move as rigid groups, so the bonds across every corner stay as built. If no helical screw fits a side, the report says so, and that side is mapped about its principal axis.
+
+**Z-DNA sides.** Z-DNA repeats every two base pairs: C anti, then G syn. So no single screw carries each base pair onto the next one; on a BNP_NA Z-DNA side the best such screw misses by 4.0 Å RMSD. For a side like this, corner mode uses the screw that carries each base pair onto the pair two steps on (−60.0° and 7.25 Å, 0.001 Å RMSD) and maps the side about its axis. Half its twist, −30.0°, is the side's helix twist per step. The side report adds `repeating every 2 base pairs`. Suggested length changes for such a side come two base pairs at a time, because one base pair more or less would change the conformation of its end base pairs. `--corners auto` finds Z-DNA sides (see **Corners**), and a ring's chain ends may lie inside a Z-DNA side (see **Closed rings**).
 
 The output PDB:
 
@@ -210,6 +212,8 @@ The output PDB:
 Corner mode does not add the LINK records that close the strands; use RE_Helix's **Add PDB LINK Record** for those.
 
 On the D/L-RNA minicircle D28-L50-D50-L50-D22 with every corner `in`, the four arcs come out at 175.1 Å, with at most 0.10° of extra twist per step. Arcs and corner axes are within 0.02° of the plane, the closure is 0.000 Å, and no atoms come closer than 2.2 Å.
+
+On the B-Z bowtie ring B41-Z48-B41-Z48 (corners `A21,A70,A111,A160`, phases `in,out,in,out`), every side, Z-DNA included, is mapped about its helical axis. `--corners auto` finds the same four corners, although they bend only 5.4–5.5°, because each one joins B-DNA to Z-DNA. The four arcs come out at 97.5 Å, with +6.6°, +26.3°, +7.0° and +26.4° of extra twist on the four sides (at most 0.56° per step). The closure is 0.000 Å, arcs and corner axes are within 0.02° of the plane, and no atoms come closer than 2.2 Å.
 
 ## Curve File Format
 

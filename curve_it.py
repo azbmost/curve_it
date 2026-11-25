@@ -146,7 +146,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_17"
+APP_VERSION = "V3_18"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -4993,7 +4993,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         default=None,
         metavar="SPEC",
         help=("Switch on corner mode. auto finds the corners on the longest chain, where two "
-              "straight stretches of helix meet at 10 degrees or more (auto:B looks on chain B); "
+              "straight stretches of helix meet at 10 degrees or more or B-DNA meets Z-DNA "
+              "(auto:B looks on chain B); "
               "or list the last residue before each corner, on one chain, in the chain's order, "
               "e.g. A28,A79,A129,A180."),
     )

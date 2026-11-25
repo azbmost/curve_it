@@ -21,9 +21,11 @@ ends in the middle of a side, joined by an ordinary step: that side is curved as
 
 Two things differ from running Curve It on each side by hand.  Each side is mapped about its helical axis (the
 screw axis of its base-pair steps), not its principal axis: the principal axis of a finite piece of helix is
-tilted and shifted off the helix axis, so two sides would meet in skew lines and no flat ring could close.  And
-each side's end base pairs, with any linker residue on them (an X33 phosphate, say), move as rigid groups, so
-the bonds across every corner stay as built; the curving shows up one step further in instead.
+tilted and shifted off the helix axis, so two sides would meet in skew lines and no flat ring could close.
+Z-DNA repeats every two base pairs (C anti, G syn), so no one screw carries each of its base pairs onto the
+next; a Z-DNA side takes the screw that carries each pair onto the pair two steps on instead.  And each side's
+end base pairs, with any linker residue on them (an X33 phosphate, say), move as rigid groups, so the bonds
+across every corner stay as built; the curving shows up one step further in instead.
 """
 
 from __future__ import annotations
@@ -47,7 +49,7 @@ if __package__ in (None, ""):
 
 import curve_it as CI  # noqa: E402
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 ResKey = Tuple[str, int, str]
 
 # Atom names shared by every nucleotide or amino acid, used to superpose residues of different types.
@@ -58,6 +60,9 @@ PAIR_CUTOFF = 3.35        # base N/O atoms closer than this count as one hydroge
 STEP_RMSD_MAX = 0.5       # residue-to-residue superposition worse than this is not a helical step (A)
 RUN_TOLERANCE = 5.0       # helical steps whose axes agree within this belong to one straight stretch (deg)
 DEFAULT_MIN_CORNER = 10.0  # straight stretches whose axes differ by at least this meet at a corner (deg)
+REPEAT_TWIST = 30.0       # a residue-to-residue screw whose twist is within this of a two-step stretch's twist per
+                          # step belongs to an ordinary helix, so the stretch does not repeat every two residues (deg)
+MAX_HELIX_TWIST = 60.0    # a two-step stretch that turns more than this per residue is no duplex (Z-DNA: -30) (deg)
 TWIST_WARN = 0.5          # extra twist above this (deg per step) is reported as a warning
 SMALL_BEND = 2.0          # a corner bending less than this has no direction to phase (deg)
 
@@ -246,21 +251,22 @@ def find_base_pairs(atoms, res_atoms, X) -> Dict[ResKey, ResKey]:
     return {keys[a]: keys[b] for a, (b, _, _) in best.items() if best.get(b, (None,))[0] == a}
 
 
-def guide_steps(atoms, res_atoms, keys: Sequence[ResKey], X) -> List[Optional[dict]]:
-    """The screw that carries each residue of the guide chain onto the next one (None where that is not a
-    helical step: too few shared atoms, a poor superposition such as a change of hand, or no rise)."""
+def guide_steps(atoms, res_atoms, keys: Sequence[ResKey], X, n: int = 1) -> List[Optional[dict]]:
+    """The screw that carries each residue of the guide chain onto the next one, or onto the one n residues on
+    (None where that is not a helical step: too few shared atoms, a poor superposition such as a change of hand,
+    or no rise).  Twist and rise are per residue."""
     steps: List[Optional[dict]] = []
-    for k1, k2 in zip(keys, keys[1:]):
+    for k1, k2 in zip(keys, keys[n:]):
         pairs = residue_match(atoms, res_atoms, k1, k2)
         if len(pairs) < 4:
             steps.append(None)
             continue
         R, t, rmsd = kabsch(X[[p for p, _ in pairs]], X[[q for _, q in pairs]])
         sc = screw_of(R, t)
-        if rmsd > STEP_RMSD_MAX or sc is None or sc[2] < 0.5:
+        if rmsd > STEP_RMSD_MAX or sc is None or sc[2] < 0.5 * n:
             steps.append(None)
             continue
-        steps.append({"u": sc[0], "twist": sc[1], "rise": sc[2], "rmsd": rmsd})
+        steps.append({"u": sc[0], "twist": sc[1] / n, "rise": sc[2] / n, "rmsd": rmsd})
     return steps
 
 
@@ -287,26 +293,96 @@ def straight_runs(steps, tol: float = RUN_TOLERANCE, min_steps: int = 2) -> List
     return [r for r in runs if r["last"] - r["first"] + 1 >= min_steps]
 
 
+def two_step_runs(atoms, res_atoms, keys: Sequence[ResKey], X, steps, runs: Sequence[dict],
+                  partner: Dict[ResKey, ResKey], tol: float = RUN_TOLERANCE, min_steps: int = 2) -> List[dict]:
+    """Straight stretches of a duplex that repeats every two residues, such as Z-DNA (C anti, G syn), in the gaps
+    between the runs of residue-to-residue steps: along Z-DNA those screws alternate (about -135 and +131 deg)
+    and make no run, but the screws that carry each residue onto the one two on agree.  A stretch counts only if
+    at least half its residues are base-paired, it turns by at most MAX_HELIX_TWIST per residue, and its
+    residue-to-residue screws (steps) do not describe the same helix: where half of them or more have its twist
+    per step, within REPEAT_TWIST, it is an ordinary helix that merely curves or wobbles there, and its
+    residue-to-residue steps decide.  Each run gives the position of its first two-step screw ("first") and of
+    its last ("last"), and n = 2."""
+    out: List[dict] = []
+    starts = [r["first"] for r in runs] + [len(keys)]
+    for lo, hi in zip([0] + [r["last"] + 2 for r in runs], starts):   # residues lo .. hi - 1 lie between runs
+        if hi - lo < min_steps + 2:
+            continue
+        for r in straight_runs(guide_steps(atoms, res_atoms, keys[lo:hi], X, 2), tol, min_steps):
+            first, last = lo + r["first"], lo + r["last"]
+            twist = float(np.mean(r["twists"]))
+            paired = sum(k in partner for k in keys[first:last + 3])
+            inside = steps[first:last + 2]                  # residue-to-residue screws over residues first..last+2
+            same = sum(st is not None and abs(wrap180(st["twist"] - twist)) <= REPEAT_TWIST for st in inside)
+            if 2 * paired >= last - first + 3 and abs(twist) <= MAX_HELIX_TWIST and 2 * same < len(inside):
+                out.append(dict(r, first=first, last=last, n=2))
+    return out
+
+
+def _settle_repeat_boundaries(atoms, res_atoms, keys: Sequence[ResKey], X, steps, runs: Sequence[dict],
+                              tol: float = RUN_TOLERANCE, min_steps: int = 2) -> None:
+    """Where a run of residue-to-residue steps meets a two-step run (B- and Z-DNA), the step across the junction
+    can point along the one-step run, with any twist, and take the first or last residue of the Z-DNA into it.
+    Give such a residue back to the two-step run while the screw that carries it two residues on matches that
+    run, in axis and in twist.  runs are in chain order and are changed in place."""
+    for ra, rb in zip(runs, runs[1:]):
+        if ra["n"] == rb["n"]:
+            continue
+        one, two = (ra, rb) if ra["n"] == 1 else (rb, ra)
+        while one["last"] - one["first"] + 1 > min_steps:
+            if two is rb:            # one-step run first: its last residue would be the two-step run's first
+                k = two["first"] - 1
+                if one["last"] + 1 != k:
+                    break
+            else:                    # two-step run first: the one-step run's first residue would be its last
+                k = two["last"] + 1
+                if one["first"] != k + 2:
+                    break
+            st = guide_steps(atoms, res_atoms, keys[k:k + 3], X, 2)[0] if 0 <= k and k + 2 < len(keys) else None
+            if (st is None or _angle(two["u"], st["u"]) > tol
+                    or abs(st["twist"] - float(np.mean(two["twists"]))) > tol):
+                break
+            if two is rb:
+                one["u"] = one["u"] - steps[one["last"]]["u"]
+                one["twists"].pop()
+                one["last"] -= 1
+                two["first"] = k
+                two["twists"].insert(0, st["twist"])
+            else:
+                one["u"] = one["u"] - steps[one["first"]]["u"]
+                one["twists"].pop(0)
+                one["first"] += 1
+                two["last"] = k
+                two["twists"].append(st["twist"])
+            two["u"] = two["u"] + st["u"]
+
+
 def longest_chain(atoms, res_atoms, chains) -> str:
     return max(chains, key=lambda c: (sum(is_core(atoms, res_atoms, k) for k in chains[c]), -list(chains).index(c)))
 
 
 def detect_corners(atoms, res_atoms, chains, X, chain: Optional[str] = None,
-                   min_angle: float = DEFAULT_MIN_CORNER) -> dict:
-    """Corners of the guide chain: where two straight stretches of helix meet at an angle of min_angle or more.
-    Returns the chain, its residues, the positions of the last residue before each corner and the angles."""
+                   min_angle: float = DEFAULT_MIN_CORNER, partner: Optional[Dict[ResKey, ResKey]] = None) -> dict:
+    """Corners of the guide chain: where two straight stretches of helix meet at an angle of min_angle or more,
+    and, whatever the angle, where a helix that repeats every residue meets one that repeats every two (B- and
+    Z-DNA), since one side cannot hold both.  partner: the base pairs, found here if not given.  Returns the
+    chain, its residues, the positions of the last residue before each corner and the angles."""
     if chain is None:
         chain = longest_chain(atoms, res_atoms, chains)
     if chain not in chains:
         raise ValueError(f"Chain {chain or '_'} is not in the PDB (chains: {', '.join(c or '_' for c in chains)}).")
     keys = chains[chain]
     steps = guide_steps(atoms, res_atoms, keys, X)
-    runs = straight_runs(steps)
+    runs = [dict(r, n=1) for r in straight_runs(steps)]
+    if partner is None:
+        partner = find_base_pairs(atoms, res_atoms, X)
+    runs = sorted(runs + two_step_runs(atoms, res_atoms, keys, X, steps, runs, partner), key=lambda r: r["first"])
+    _settle_repeat_boundaries(atoms, res_atoms, keys, X, steps, runs)
     corners, angles = [], []
     for ra, rb in zip(runs, runs[1:]):
         ang = _angle(ra["u"], rb["u"])
-        if ang >= min_angle:
-            corners.append(ra["last"] + 1)
+        if ang >= min_angle or ra["n"] != rb["n"]:
+            corners.append(ra["last"] + ra["n"])            # the run's last residue
             angles.append(ang)
     return {"chain": chain, "keys": keys, "corners": corners, "angles": angles, "steps": steps, "runs": runs}
 
@@ -378,20 +454,24 @@ class Side:
     groups), but about the side's helical axis, with its first and last base pairs (the atoms the corners hold
     on to).  Each end base pair, with any linker residue on it (an X33 phosphate, say), is mapped as one rigid
     group, so the corners and the bonds across them stay exactly as built; Curve It's usual phosphate, sugar
-    and base groups take every other residue."""
+    and base groups take every other residue.  repeat is the number of base pairs after which the side's
+    helix repeats: 1, or 2 for Z-DNA, whose length can only change by whole repeats."""
 
     def __init__(self, number: int, span: str, atoms_all, atom_idx, X, first_idx, last_idx, n_res: int,
-                 omega: Optional[float], segments: Sequence[int], axis=None, rigid: Sequence[Sequence[int]] = ()):
+                 omega: Optional[float], segments: Sequence[int], axis=None, rigid: Sequence[Sequence[int]] = (),
+                 repeat: int = 1):
         self.number, self.span, self.n_res, self.omega = number, span, n_res, omega
+        self.repeat = int(repeat)
         self.segments = list(segments)
         self.atom_idx = np.asarray(atom_idx, dtype=int)
         self.X = np.asarray(X, dtype=float)
         if len(self.atom_idx) < 4:
             raise ValueError(f"Side {number} ({span}) has too few atoms to define a helix axis.")
         if axis is not None:
-            # the helical (screw) axis of the side's base-pair steps: a principal axis of a finite piece of helix
-            # is tilted and shifted off it (2.4 A between two 20-bp sides of a 10-bp-per-turn helix), so sides
-            # joined at a corner would meet in skew lines and no flat ring could close
+            # the helical (screw) axis of the side's base-pair steps (of every second step on Z-DNA): a principal
+            # axis of a finite piece of helix is tilted and shifted off it (2.4 A between two 20-bp sides of a
+            # 10-bp-per-turn helix), so sides joined at a corner would meet in skew lines and no flat ring could
+            # close
             self.s, self.local = axis_local_coords(self.X, *axis)
             self.axis_source = "helical"
         else:
@@ -725,13 +805,12 @@ def _bp_pairs(atoms, res_atoms, partner, k1: ResKey, k2: ResKey) -> List[Tuple[i
     return pairs
 
 
-def helix_axis(L: Layout, keys: Sequence[ResKey], coord_of, max_rmsd: float = 0.5):
-    """The helical axis of a run of guide residues: the screw that carries every base pair (guide residue and
-    partner) onto the next one, fitted over the whole run.  Returns (point on the axis, unit direction along the
-    run, twist per step in deg, rise per step in A), or None when the run is too short or not helical, in which
-    case the side keeps Curve It's principal axis."""
+def _screw_fit(L: Layout, keys: Sequence[ResKey], coord_of, n: int, max_rmsd: float):
+    """The screw that carries every base pair (guide residue and partner) of a run onto the pair n steps on,
+    fitted over the whole run: (point on the axis, unit direction along the run, twist per step in deg, rise per
+    step in A), or None when the run is too short or the screw does not fit."""
     P, Q = [], []
-    for k1, k2 in zip(keys, keys[1:]):
+    for k1, k2 in zip(keys, keys[n:]):
         for i, j in _bp_pairs(L.atoms, L.res_atoms, L.partner, k1, k2):
             P.append(coord_of(i))
             Q.append(coord_of(j))
@@ -739,34 +818,63 @@ def helix_axis(L: Layout, keys: Sequence[ResKey], coord_of, max_rmsd: float = 0.
         return None
     R, t, rmsd = kabsch(np.array(P), np.array(Q))
     sc = screw_of(R, t)
-    if sc is None or rmsd > max_rmsd or sc[2] < 0.5:
+    if sc is None or rmsd > max_rmsd or sc[2] < 0.5 * n:
         return None
     u, ang, rise = sc
     p = np.linalg.lstsq(np.eye(3) - R, t - (u @ t) * u, rcond=None)[0]
-    return p - (p @ u) * u, u, ang, rise
+    return p - (p @ u) * u, u, ang / n, rise / n
+
+
+def helix_axis(L: Layout, keys: Sequence[ResKey], coord_of, max_rmsd: float = 0.5):
+    """The helical axis of a run of guide residues: the screw that carries every base pair (guide residue and
+    partner) onto the next one, fitted over the whole run.  Z-DNA repeats every two base pairs (C anti, G syn),
+    so no one screw fits its steps (about 4 A RMSD on a BNP_NA Z-DNA side); there the screw that carries every
+    pair onto the pair two steps on gives the axis (-60.0 deg and 7.25 A, 0.001 A RMSD), and half its twist and
+    rise are the twist and rise per step.  Returns (point on the axis, unit direction along the run, twist per
+    step in deg, rise per step in A, base pairs per repeat: 1, or 2 for Z-DNA), or None when the run is too short
+    or not helical, in which case the side keeps Curve It's principal axis."""
+    for n in (1, 2):
+        fit = _screw_fit(L, keys, coord_of, n, max_rmsd)
+        if fit is not None:
+            return (*fit, n)
+    return None
 
 
 def _seam_transform(L: Layout):
     """Rigid motion that puts the first segment right after the last one as one straight helix: the helical
     step of the last segment's base pairs (or the first segment's, if the last one is too short) applied to
-    its last base pair gives where the first segment's first base pair belongs."""
+    its last base pair gives where the first segment's first base pair belongs.  Where no one step fits the
+    last segment (Z-DNA, which repeats every two base pairs), the step from each base pair to the one two on,
+    applied to its last base pair but one, gives it instead."""
     atoms, res_atoms, partner, X = L.atoms, L.res_atoms, L.partner, L.X
     first, last = L.seg_keys[0], L.seg_keys[-1]
     src = last if len(last) >= 2 else first
     if len(src) < 2:
         raise ValueError("The two sides that meet at the chain ends are too short to give the helical step "
                          "that closes the ring.")
-    w = min(6, len(src) - 1)
-    run = src[-(w + 1):] if src is last else src[:w + 1]
-    P, Q = [], []
-    for k1, k2 in zip(run, run[1:]):
-        for i, j in _bp_pairs(atoms, res_atoms, partner, k1, k2):
-            P.append(X[i])
-            Q.append(X[j])
-    if len(P) < 4:
+
+    def step(n: int):
+        """The rigid motion that carries each base pair onto the one n on, over the last (or first) six such
+        pairs of src, with the RMSD it leaves; None when too few atoms match."""
+        w = min(6, len(src) - n)
+        run = src[-(w + n):] if src is last else src[:w + n]
+        P, Q = [], []
+        for k1, k2 in zip(run, run[n:]):
+            for i, j in _bp_pairs(atoms, res_atoms, partner, k1, k2):
+                P.append(X[i])
+                Q.append(X[j])
+        return kabsch(np.array(P), np.array(Q)) if len(P) >= 4 else None
+
+    one = step(1)
+    if one is None:
         raise ValueError("Cannot measure the helical step at the chain ends.")
-    H, h, _ = kabsch(np.array(P), np.array(Q))
-    pairs = _bp_pairs(atoms, res_atoms, partner, last[-1], first[0])
+    H, h, fit = one
+    n = 1
+    if fit > STEP_RMSD_MAX and src is last and len(last) >= 3:
+        two = step(2)
+        if two is not None and two[2] <= STEP_RMSD_MAX:
+            (H, h, _), n = two, 2
+    pairs = _bp_pairs(atoms, res_atoms, partner, last[-n], first[0])
     if len(pairs) < 4:
         raise ValueError(f"The chain ends {res_label(last[-1])} and {res_label(first[0])} share too few atoms "
                          f"to be joined by an ordinary step.")
@@ -781,7 +889,7 @@ def layout(atoms, corners: str = "auto", min_angle: float = DEFAULT_MIN_CORNER) 
     partner = find_base_pairs(atoms, res_atoms, X)
     mode, value = parse_corner_spec(corners)
     if mode == "auto":
-        det = detect_corners(atoms, res_atoms, chains, X, value, min_angle)
+        det = detect_corners(atoms, res_atoms, chains, X, value, min_angle, partner)
         guide, guide_keys, corner_pos, steps = det["chain"], det["keys"], det["corners"], det["steps"]
         if not corner_pos:
             raise ValueError(f"No corners found on chain {guide or '_'}: its straight stretches all point within "
@@ -849,10 +957,17 @@ def layout(atoms, corners: str = "auto", min_angle: float = DEFAULT_MIN_CORNER) 
 
 
 def _segment_omega(L: Layout, segs: Sequence[int]) -> Optional[float]:
+    """Helix twist per step of the segments, for the length suggestions: the mean twist of the guide residues'
+    screws onto the next residue, or, on a segment that repeats every two base pairs (Z-DNA), the twist per step
+    of its two-step screw, since there the residue-to-residue screws alternate (about +131 and -135 deg)."""
     pos = {k: n for n, k in enumerate(L.guide_keys)}
     tw = []
     for s in segs:
         ks = L.seg_keys[s]
+        axis = helix_axis(L, ks, lambda i: L.X[i])
+        if axis is not None and axis[4] > 1:
+            tw.extend([axis[2]] * (len(ks) - 1))
+            continue
         for k1, k2 in zip(ks, ks[1:]):
             n1, n2 = pos[k1], pos[k2]
             if n2 == n1 + 1 and L.steps[n1] is not None:
@@ -908,7 +1023,8 @@ def build_plan(L: Layout, phases: Sequence[int], closed: bool, kappa_open: float
         n = sum(len(L.seg_keys[s]) for s in segs)
         rigid = [end_group(first_bp[segs[0]], segs[0]), end_group(last_bp[segs[-1]], segs[-1])]
         return Side(number, _span(L, segs), atoms, idx, Xside, first_bp[segs[0]], last_bp[segs[-1]], n,
-                    _segment_omega(L, segs), segs, None if axis is None else axis[:2], rigid)
+                    _segment_omega(L, segs), segs, None if axis is None else axis[:2], rigid,
+                    1 if axis is None else axis[4])
 
     if closed:
         if nseg == 1:
@@ -943,7 +1059,9 @@ def build_plan(L: Layout, phases: Sequence[int], closed: bool, kappa_open: float
 # ----------------------------------------------------------------------------- checks and output
 def suggestions(plan: Plan, misses: Sequence[dict]) -> List[dict]:
     """For every side that needs extra twist to point the corner after it: the length change (up to six
-    residues either way) that leaves the least twist, and the twist if that corner's phase were flipped."""
+    residues either way, in whole repeats: two base pairs at a time on Z-DNA, so that the side keeps the
+    conformations of its end base pairs) that leaves the least twist, and the twist if that corner's phase were
+    flipped."""
     out = []
     for m in misses:
         S = plan.sides[m["side"]]
@@ -951,7 +1069,7 @@ def suggestions(plan: Plan, misses: Sequence[dict]) -> List[dict]:
         best = None
         if S.omega is not None:
             for dn in range(-6, 7):
-                if dn == 0 or S.n_res + dn < 3:
+                if dn == 0 or dn % S.repeat or S.n_res + dn < 3:
                     continue
                 left = wrap180(need - dn * S.omega)
                 if best is None or abs(left) < abs(best[1]) - 1e-9:
@@ -1053,6 +1171,10 @@ def describe_layout(L: Layout, plan: Optional[Plan] = None) -> List[str]:
     if plan is not None:
         for S in plan.sides:
             om = f", helix twist {S.omega:+.1f} deg per step" if S.omega is not None else ""
+            if S.repeat > 1:
+                om += f", repeating every {S.repeat} base pairs"
+            if S.axis_source != "helical":
+                om += "; no helical screw fits its base pairs, so it is mapped about its principal axis"
             lines.append(f"  side {S.number}: {S.span} ({S.n_res} residues on chain {L.guide or '_'}, axis "
                          f"{S.length:.1f} A{om})")
         for c, J in enumerate(plan.junctions):
@@ -1195,8 +1317,9 @@ def run(pdb_path: str, corners: str = "auto", phases: str = "in", path_type: str
         kap, phi, tau = params[k]
         hp, tw = S.phase_twist(phi, tau)
         rad = f"{1 / kap:.3f} A" if abs(kap) > 1e-12 else "straight"
+        screw = f" (the screw that carries each base pair {S.repeat} steps on)" if S.repeat > 1 else ""
         remarks.append(f"Side {S.number} ({S.span}): arc radius {rad}; extra twist {tau:+.3f} deg between its end "
-                       f"base pairs; mapped about its {S.axis_source} axis with helix_phase={hp:.4f} deg, "
+                       f"base pairs; mapped about its {S.axis_source} axis{screw} with helix_phase={hp:.4f} deg, "
                        f"twist={tw:.4f} deg.")
     if closed:
         remarks.append(f"Closure {diag['closure']:.3f} A, {diag['closure_deg']:.3f} deg; arcs within {tilt_max:.2f} deg and corner axes within "
@@ -1241,8 +1364,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--check", action="store_true",
                    help="Only report the corners, the twist each side needs and the suggested lengths.")
     p.add_argument("--min-corner", type=float, default=DEFAULT_MIN_CORNER,
-                   help=f"auto: smallest turn between straight stretches that counts as a corner (deg). "
-                        f"Default: {DEFAULT_MIN_CORNER:g}.")
+                   help=f"auto: smallest turn between straight stretches that counts as a corner (deg); a "
+                        f"junction between B- and Z-DNA always counts. Default: {DEFAULT_MIN_CORNER:g}.")
     p.add_argument("--gui", action="store_true", help="Open the window.")
     p.add_argument("-v", "--version", action="version", version=f"Corner Curve It {VERSION}")
     return p
@@ -1284,7 +1407,8 @@ def run_gui(args=None) -> int:
                "file. For a ring, the chain ends must meet in the middle of a side, at an ordinary step, not at "
                "a corner.\n\nExample: D28_L50_D50_L50_D22_straight.pdb",
         "corners": "auto finds the corners on the longest chain: places where two straight stretches of helix "
-                   "meet at 10 degrees or more. auto:B looks on chain B instead.\n\nOr list the last residue "
+                   "meet at 10 degrees or more, and every junction between B- and Z-DNA, however small its bend. "
+                   "auto:B looks on chain B instead.\n\nOr list the last residue "
                    "before each corner, all on one chain, in the chain's order.\n\nExamples: auto; auto:B; "
                    "A28,A79,A129,A180\n\nDetect fills this in and lists the sides and their bends.",
         "phase": "One word per corner, in the order of the guide chain, or one word for all of them.\n\n"
