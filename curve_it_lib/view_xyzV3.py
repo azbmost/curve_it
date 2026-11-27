@@ -39,6 +39,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.transforms import blended_transform_factory
 from matplotlib.widgets import Button, CheckButtons
 from mpl_toolkits.mplot3d import Axes3D, proj3d  # noqa: F401  needed for 3D projection
 
@@ -377,11 +378,13 @@ def _nearest_path_location(
         return None
 
     display_pts = _project_points_to_display(ax, pts)
-    segment_lengths = []
-    for i in range(n_segments):
-        j = (i + 1) % n_points
-        segment_lengths.append(float(np.linalg.norm(pts[j] - pts[i])))
-    segment_lengths_arr = np.asarray(segment_lengths, dtype=float)
+    # Every segment at once.  This runs on each mouse move, rotating drags
+    # included, and a Python loop over segments cost about 18 ms per move on
+    # a 2400-point tight knot from the ropelength data set, enough to make
+    # the turning lag.  The first segment of least distance still wins.
+    start = np.arange(n_segments)
+    end = (start + 1) % n_points
+    segment_lengths_arr = np.linalg.norm(pts[end] - pts[start], axis=1)
     total_length = float(np.sum(segment_lengths_arr))
     if total_length <= 0.0:
         return None
@@ -389,27 +392,19 @@ def _nearest_path_location(
     cumulative = np.zeros(n_segments + 1, dtype=float)
     cumulative[1:] = np.cumsum(segment_lengths_arr)
 
-    best_distance = float("inf")
-    best_u = 0.0
-    for i in range(n_segments):
-        j = (i + 1) % n_points
-        a = display_pts[i]
-        b = display_pts[j]
-        ab = b - a
-        denom = float(np.dot(ab, ab))
-        if denom <= 1e-12:
-            alpha = 0.0
-            projected = a
-        else:
-            alpha = float(np.clip(np.dot(mouse_xy - a, ab) / denom, 0.0, 1.0))
-            projected = a + alpha * ab
-        distance = float(np.linalg.norm(mouse_xy - projected))
-        if distance < best_distance:
-            best_distance = distance
-            arc_position = cumulative[i] + alpha * segment_lengths_arr[i]
-            best_u = arc_position / total_length
+    a = display_pts[start]
+    ab = display_pts[end] - a
+    denom = np.einsum("ij,ij->i", ab, ab)
+    alpha = np.zeros(n_segments, dtype=float)
+    usable = denom > 1e-12
+    alpha[usable] = np.clip(
+        np.einsum("ij,ij->i", mouse_xy - a[usable], ab[usable]) / denom[usable], 0.0, 1.0)
+    projected = a + alpha[:, None] * ab
+    distances = np.linalg.norm(mouse_xy - projected, axis=1)
+    best = int(np.argmin(distances))
+    best_u = (cumulative[best] + alpha[best] * segment_lengths_arr[best]) / total_length
 
-    return {"distance_px": best_distance, "u": float(np.clip(best_u, 0.0, 1.0))}
+    return {"distance_px": float(distances[best]), "u": float(np.clip(best_u, 0.0, 1.0))}
 
 
 def attach_path_location_report(
@@ -463,6 +458,28 @@ def attach_path_location_report(
     cid = fig.canvas.mpl_connect("motion_notify_event", on_motion)
     fig._curve_it_path_location_report = (status_text, cid)
     return status_text
+
+
+# Matplotlib's 3D axes turn when dragged with the first mouse button and zoom
+# when dragged with the third, but nothing in the window said so, and a 3D
+# plot that is never dragged looks like a fixed picture.
+NAVIGATION_HINT = "Drag to rotate, right-drag to zoom"
+
+
+def attach_navigation_hint(fig: Any, ax: Any) -> Any:
+    """Say under a 3D view that it turns when dragged.
+
+    The line shares the path-location line's row at the bottom of the window,
+    in the same small type and a lighter grey, and ends at the right edge of
+    the 3D axes rather than of the window: the single-curve view has its
+    colour bar beyond that edge, and the bar's lowest tick label reaches down
+    into this row.  x follows the axes and y the figure, so the line stays in
+    place when tight_layout or a resized window moves the axes.  Only the 3D
+    views carry it; the flat projections do not rotate.
+    """
+    transform = blended_transform_factory(ax.transAxes, fig.transFigure)
+    return fig.text(1.0, 0.015, NAVIGATION_HINT, transform=transform,
+                    fontsize=9, color="0.45", ha="right")
 
 
 def style_tk_window(fig: Any) -> None:
@@ -578,6 +595,7 @@ def plot_curve(points: np.ndarray, closed: bool = True) -> None:
         ax,
         [{"label": "curve", "points": points, "closed": closed}],
     )
+    attach_navigation_hint(fig, ax)
 
     plt.tight_layout()
     style_tk_window(fig)
@@ -777,6 +795,7 @@ def plot_curve_components(
             )),
         })
     attach_path_location_report(fig, ax, curve_entries)
+    attach_navigation_hint(fig, ax)
 
     fig._curve_component_widgets = (check, all_button, selected_button)
     style_tk_window(fig)

@@ -146,7 +146,7 @@ from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 APP_NAME = "curve_it"
-APP_VERSION = "V3_18"
+APP_VERSION = "V3_19"
 APP_TITLE = "AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve"
 
 
@@ -2445,6 +2445,13 @@ def launch_gui() -> None:
     root = tk.Tk()
     root.title(f"{APP_NAME} {APP_VERSION} - {APP_TITLE}")
     from curve_it_lib import azbmost_ui as ui
+    try:
+        # The glyphs and purposes of the tools only Curve It has; the shared
+        # azbmost files are left as every AZBMOST module has them.
+        from curve_it_lib import curve_it_icons
+        curve_it_icons.register(ui)
+    except Exception:
+        pass
     ui.apply_theme(root, "curve_it")
     root.geometry("1440x1000")
     root.minsize(1120, 700)
@@ -2597,6 +2604,13 @@ def launch_gui() -> None:
             "Dotted and underscored spellings are NOT interchangeable. The catalogue's basic/ folder holds 585 knot and link files, the ones carrying KnotPlot's own file header, 522 of them distinct by content, and 93 names appear in both spellings. Only 63 of those 93 pairs are byte-identical; the other 30 pairs differ, and 28 of those 30 are the two MIRROR IMAGES of the same knot type, one of each handedness. Measured with this project's own writhe tool, curve_it_lib/cal_xyz_total_curvature_writheV2.py at its defaults, 8.19 gives -8.6265 and 8_19 gives +8.6265, and 7.3 gives -7.1239 against +7.0459 for 7_3. Differing pairs include 7.3/7_3, 7.4/7_4, 7.7/7_7, 8.10/8_10, 8.13/8_13, and 8.19/8_19. Two of the 30 are NOT mirror pairs: 9.20/9_20, measured by the same tool as +6.3466435 and +6.3466357, and 9.35/9_35, +7.5392091 and +7.5392188, carry the SAME handedness, so neither pair is a chiral pair. They are not one conformation stored in a different orientation either: the two files differ by content hash and their writhes differ in the fifth decimal, so each of those pairs is two slightly DIFFERENT conformations of the same handedness. Listing the catalogue collapses only the byte-identical copies, by content hash, so both members of every differing pair are kept and offered. If handedness matters, as it does in DNA topology, pick the spelling deliberately and check the sign of the writhe.\n\n"
             "The tool can also write the MIRROR IMAGE of any catalogue entry, so either handedness is available even where the catalogue ships only one. Reflection negates exactly one coordinate: one negated axis is a true mirror, while negating two is merely a rotation, so one axis is used at a time. The default axis is z, which leaves x and y untouched, so the projection seen down the z axis is identical while every crossing swaps over and under, the textbook mirror of a knot diagram. Reflection negates the writhe, the linking number, and every other chirality-sensitive invariant; mirroring 8.19 turns writhe -8.6265 into +8.6265, matching KnotPlot's own 8_19 to eight significant figures. For an AMPHICHIRAL knot such as 4.1, whose shipped conformation measures +0.1524 by the same tool and mirrors to -0.1524, both near zero, the mirror is the SAME knot type, a different conformation and not a new knot. A reflected file is written as <stem>_mirror.xyz, or <stem>_mirror_A.xyz per component when split, and its # header records that the coordinates were reflected and on which axis, so a file on disk is never ambiguous about its handedness.\n\n"
             "These are KnotPlot's shipped conformations, exported as they are. The tool never relaxes, tightens, or smooths them, so the shape it writes is the shape KnotPlot ships. That is a promise about the shape, not about every coordinate: setting a bead count resamples the curve, which moves the vertices along that same shape, and the optional reflection above negates one axis. They are correct representatives of each knot and link type, though not tight or ropelength-minimizing ones."
+        ),
+        "read_ropelengthdata": (
+            "Read ropelengthdata",
+            "Open the reader for Jason Cantarella's ropelength data set of tight knots and links.\n\n"
+            "The data set is a folder of tight, ropelength-minimised conformations: one <name>_best.vect per knot or link, and an index, ropelength_data.txt, giving each one's polygonal ropelength, ropelength bound, edges, residual and writhe. It comes from \"Knot Tightening By Constrained Gradient Descent\" (Ashton, Cantarella, Piatek, Rawdon) and \"The Shapes of Tight Composite Knots\" (Cantarella, La Pointe, Rawdon). The data set is not bundled: point the tool at the folder with Locate data folder..., which it remembers for next time, or with the ROPELENGTHDATA environment variable.\n\n"
+            "Names are the data set's own: 3_1 is the trefoil, 6_3_2 the Borromean rings, and 3_1_#_3_1_m a connected sum, the square knot, _m marking a mirrored summand. Browse data set... lists them in crossing-number order, and its prime knots and links only box hides the sums.\n\n"
+            "Each entry can be written as coordinate XYZ, Geomview VECT, fake PDB and molecular XYZ, through the same functions as Convert XYZ, and as GLB or STL rods through XYZ to 3D Model's. The data set is scaled to tube radius 0.5, so the tight rope is 1 thick; scale multiplies the coordinates, so 20 gives a rope 20 Å thick, as for B-DNA. Each entry is centred on its vertex mean unless told otherwise, closure comes from the VECT file, and no vertex is moved, resampled or smoothed. A link's components are written as A, B, C, so select one at a time with Select components...."
         ),
         "local_curvature_torsion": (
             "Local Curvature/Torsion",
@@ -4033,6 +4047,26 @@ def launch_gui() -> None:
         except Exception as e:
             messagebox.showerror("Tool launch error", f"Failed to launch KnotPlot to XYZ:\n{e}")
 
+    def launch_read_ropelengthdata_tool() -> None:
+        # The tool finds the data folder itself, and opens whether or not it
+        # does, so there is nothing to check here beyond the script.
+        script_path = resource_path(os.path.join("curve_it_lib", "read_ropelengthdata.py"))
+        if not os.path.isfile(script_path):
+            messagebox.showerror(
+                "Tool not found",
+                f"Could not find the Read ropelengthdata tool:\n{script_path}",
+            )
+            return
+        try:
+            import subprocess
+            if getattr(sys, "frozen", False):
+                command = [sys.executable, "--read-ropelengthdata-gui"]
+            else:
+                command = [sys.executable, script_path, "--gui"]
+            subprocess.Popen(command)
+        except Exception as e:
+            messagebox.showerror("Tool launch error", f"Failed to launch Read ropelengthdata:\n{e}")
+
     def launch_multicolor_split_tool() -> None:
         script_path = resource_path(os.path.join("curve_it_lib", "multicolor_split.py"))
         if not os.path.isfile(script_path):
@@ -4480,6 +4514,7 @@ def launch_gui() -> None:
     # Icons for the Other tools list, by help topic.
     tool_icons = {
         "xyz_convert": "convert_xyz", "svg2xyz": "svg2xyz", "kp2xyz": "kp2xyz",
+        "read_ropelengthdata": "read_ropelengthdata",
         "generate_helical_curve": "generate_helix", "generate_sc": "generate_sc",
         "local_curvature_torsion": "local_curvature", "plane_it": "plane_it",
         "curved_connector": "curved_connector", "xyz2model": "xyz2model",
@@ -4515,8 +4550,9 @@ def launch_gui() -> None:
     add_tool_button(0, 0, "Convert XYZ...", convert_xyz_file_dialog, "xyz_convert")
     add_tool_button(0, 1, "SVG to XYZ...", launch_svg2xyz_tool, "svg2xyz")
     add_tool_button(0, 2, "KnotPlot to XYZ...", launch_kp2xyz_tool, "kp2xyz")
-    add_tool_button(0, 3, "Generate helical curve...", launch_generate_helical_curve_tool, "generate_helical_curve")
-    add_tool_button(0, 4, "Generate SC...", launch_generate_sc_tool, "generate_sc")
+    add_tool_button(0, 3, "Read ropelengthdata...", launch_read_ropelengthdata_tool, "read_ropelengthdata")
+    add_tool_button(0, 4, "Generate helical curve...", launch_generate_helical_curve_tool, "generate_helical_curve")
+    add_tool_button(0, 5, "Generate SC...", launch_generate_sc_tool, "generate_sc")
     add_tool_button(1, 0, "Local curvature/torsion...", launch_local_curvature_torsion_tool, "local_curvature_torsion")
     add_tool_button(1, 1, "Plane It...", launch_plane_it_tool, "plane_it")
     add_tool_button(1, 2, "Curved Connector...", launch_curved_connector_tool, "curved_connector")
@@ -5125,6 +5161,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
+        "--read-ropelengthdata-gui",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "-v", "--version",
         action="version",
         version=f"{APP_NAME} {APP_VERSION}",
@@ -5160,6 +5201,14 @@ def main(argv: Optional[List[str]] = None) -> None:
             kp2xyz.run_gui()
         except BaseException as exc:
             raise SystemExit(f"Failed to launch KnotPlot to XYZ: {exc}")
+        return
+
+    if args.read_ropelengthdata_gui:
+        try:
+            from curve_it_lib import read_ropelengthdata
+            read_ropelengthdata.run_gui()
+        except BaseException as exc:
+            raise SystemExit(f"Failed to launch Read ropelengthdata: {exc}")
         return
 
     if args.convert is not None:

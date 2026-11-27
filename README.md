@@ -2,7 +2,7 @@
 
 `curve_it.py` bends a roughly straight PDB structure so its principal axis follows a user-provided 3D curve. It was originally developed for DNA/RNA helices and now also handles protein PDBs by grouping protein atoms residue-by-residue.
 
-Version: `V3_18`
+Version: `V3_19`
 GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along Any 3D Curve`
 
 ## What It Does
@@ -25,7 +25,8 @@ GUI title: `AZBMOST Package Module #3 - Curve It: Sculpt PDB Structures Along An
 - Required by **Generate SC**, **Multicolor Split** and corner mode (**Corner Curve It**); otherwise optional but recommended: `scipy` for curvature/writhe reporting and the local curvature/torsion tool
 - Optional: `matplotlib` for the GUI curve viewer, local analysis plots, the SVG to XYZ preview, and the Multicolor Split preview image
 - **SVG to XYZ** needs nothing beyond `numpy` and the standard library
-- Required by **XYZ to 3D Model** and **Multicolor Split**; not needed otherwise: `trimesh` for STL/GLB mesh output
+- Required by **XYZ to 3D Model** and **Multicolor Split**, and by **Read ropelengthdata** for its STL/GLB rods; not needed otherwise: `trimesh` for STL/GLB mesh output
+- Required by **Read ropelengthdata**; not needed otherwise: a copy of Jason Cantarella's ropelength data set, the folder of `<name>_best.vect` files with its index `ropelength_data.txt`. It is not bundled with this package. Point the tool at the folder once with **Locate data folder...**, which remembers it, or with the `ROPELENGTHDATA` environment variable or `--data`.
 - Required by **KnotPlot to XYZ**; not needed otherwise: a local KnotPlot installation. KnotPlot is third-party software under its own license and is not bundled with this package; download it from https://knotplot.com/download/. The tool finds a normal installation on its own; set the `KNOTPLOT` environment variable to the full path of the executable if yours is elsewhere.
 - Required by **Multicolor Split**; not needed otherwise: `manifold3d` for the exact mesh booleans, and a local UCSF ChimeraX installation, which the tool runs headless for `molmap` and its contour surfaces. ChimeraX is third-party software under its own license and is not bundled with this package; download it from https://www.cgl.ucsf.edu/chimerax/download.html. The tool finds a normal installation on its own; if yours is elsewhere, set the `CHIMERAX` environment variable to the full path of the executable, pass `--chimerax` with the executable or the `.app`, or fill in the tool's **ChimeraX** field, which it remembers. Parts written as atom selections in UCSF Chimera's convention also need a local UCSF Chimera 1.x, which reads them (https://www.cgl.ucsf.edu/chimera/download.html); the tool finds it the same way, through the `CHIMERA` environment variable, `--chimera`, or its **Chimera** field. Selections in ChimeraX's convention need nothing more.
 - Optional: Tkinter for GUI mode. It is included with many Python installations.
@@ -246,7 +247,7 @@ Colours are read and reported but are not geometry. No other format here can hol
 
 Curve files may contain multiple components: separated by one or more blank lines in a plain coordinate file, and one per polyline in a VECT file. Curve It labels those components `A`, `B`, `C`, and so on in file order. By default, all components are concatenated in file order and used as the curve. Use `--curve-components` in CLI mode, or **Select components...** in the GUI, to choose a subset such as `A`, `B,C`, or `A-C`.
 
-The GUI **View curve** window can show all parsed components or the currently selected components. When the mouse cursor is close to the plotted curve or points, the viewer reports the normalized path location `u` from `0` to `1`. Molecular XYZ files are treated as one component and can also be used directly as the curve input.
+The GUI **View curve** window can show all parsed components or the currently selected components. When the mouse cursor is close to the plotted curve or points, the viewer reports the normalized path location `u` from `0` to `1`. Drag inside the 3D plot to rotate it and drag with the right button to zoom, as the line under the plot says; while the toolbar's Pan or Zoom button is switched on, it takes over the drag instead. Molecular XYZ files are treated as one component and can also be used directly as the curve input.
 
 ## GUI Tools
 
@@ -353,6 +354,10 @@ Conformations are exported exactly as KnotPlot ships them, and relaxation is del
 
 `--list` prints the catalogue and `--info` shows what a run would extract without writing anything. Duplicates are dropped by comparing file contents rather than names, which reduces the 585 catalogue files to 522 distinct knots and links; `--no-dedupe` keeps all 585. Everything is extracted in one KnotPlot session rather than one session per target, so even the largest run starts KnotPlot once: those 522 entries write 59877 points in about 0.3 seconds here. Files are written to `-o/--outdir`, `kp_xyz` by default.
 
+**Browse catalogue...**, **List catalogue**, `--list` and `--all` give the catalogue in crossing-number order, not in the order of the file names, which put all 165 ten-crossing knots ahead of `3.1`. The listing opens with the unknot `0.1` and the unlinks `0.2.1` to `0.5.1`, then `2.2.1`, `3.1`, `u3.1`, `4.1`, `4.2.1`, `u4.1`, `5.1`, `5.2`, `5.2.1`, `l3.1`, and it ends with `10.165` and the torus links `10.2.1` to `18.2.1`. Within one crossing number the knots come first, by index, each underscored spelling straight after its dotted twin (`8.19`, `8_19`, `8.20`); then the composite knots, `6c.1` to `8c.5` and the connected sums such as `3.1#5.2s`, where `s` marks a mirrored summand and the crossing number is the sum of the summands'; then the links, by number of components and index; then that crossing number's lettered entries, two-component links built around the knot their name carries, by letter. A lettered entry is listed at its own crossing number, which is not always the number in its name. A `u` entry is the knot with an unknot that a plane separates from it, so `u3.1` has the trefoil's 3 crossings, and `v4.1`, two figure eights set apart the same way, has 8. An `l` entry is the knot with a flat ring that it passes through once, the knot summed with the Hopf link `2.2.1`, so `l3.1` has 5. The `n` entries are the knot summed with `4.2.1`, 4 crossings more, the `o` entries the knot summed with `5.2.1`, 5 more, and `m3.1` is two trefoils hooked together, the trefoil summed with `l3.1` (`3.1 # 2.2.1 # 3.1`), 8. These crossing numbers are exact. A split link has the crossing numbers of its parts added. Every other lettered entry is not split, since its determinant, worked out from KnotPlot's own HOMFLY table `Resources/resource/poly.txt`, is between 6 and 42 and never 0, and for a link that is not split the span of the Jones polynomial, from the same table, is a lower bound on the crossing number; for each of them it equals the fewest crossings that any projection of the shipped curve shows. The order is applied after deduplication, so the same names are listed, in the same spellings, as before.
+
+Browse catalogue... also has a **prime knots and links only** box, which narrows the list to the prime knots and links in either handedness: Rolfsen's prime knots to 10 crossings, `3.1` to `10.165`, and their underscored spellings; Rolfsen's prime links to 9 crossings, `2.2.1` to `9.4.1`; and the torus links `10.2.1` to `18.2.1`. With the byte-identical duplicates dropped that is 414 of the 522 entries, 30 of them underscored; with them kept, 468 of 585, 84 of them underscored. It works together with the text filter, and a count under the list says how many entries are shown. Of the 522 it leaves out the unknot, the four unlinks, the 36 composite knots and the 67 lettered links, none of which is prime; keeping the duplicates adds the spelling `0_1` and eight `6c_1`-style composites. The `u` entries and `v4.1` are split links. Each of the other lettered entries is the connected sum named above: a round sphere enclosing its second component meets the knot in just two points, and the arc of the knot inside the sphere has a crossing-free projection, so it is unknotted, and the whole knot lies outside the sphere with the second component inside. KnotPlot's HOMFLY table agrees, giving each the polynomial of its knot times that of the link. The box only narrows the list; **Entire catalogue** still extracts everything. Browse catalogue... keeps one window: opening it again replaces the open one, and the box keeps its setting for the rest of the session.
+
 **The dotted and underscored spellings are not two names for one knot, and the difference is chirality.** 93 names ship in both spellings, but only 63 of those pairs are byte-identical; those 63 collapse onto the dotted form KnotPlot's own `load` syntax uses. The other 30 pairs are genuinely different curves, so both spellings survive deduplication and both appear in `--list` and `--all`. 28 of the 30 are mirror images, the two chiral forms of the same knot type: measured with `curve_it_lib/cal_xyz_total_curvature_writheV2.py` at its defaults, `8.19` has writhe `-8.62647841209301` and `8_19` has `+8.62647841925399`, equal in magnitude to eight significant figures and opposite in sign. Treat `8.19` and `8_19` as opposite-handed knots rather than as a duplicate to discard, and check which one you loaded before reading any signed quantity off the curve.
 
 The two remaining pairs, `9.20`/`9_20` and `9.35`/`9_35`, share a handedness, and they are two slightly different conformations of one knot rather than one conformation stored in a different orientation. Measured with the same tool, `9.20` gives `+6.346643502580359` against `+6.346635731949251` for `9_20`, and `9.35` gives `+7.539209051573574` against `+7.539218781711285` for `9_35`. Rotating or translating a curve leaves its writhe alone, so two files that agree in sign and still disagree in value cannot be one conformation re-oriented; their contents differ as well, which is why the content hash keeps both.
@@ -376,6 +381,30 @@ python3 curve_it_lib/kp2xyz.py --all -o catalogue
 ```
 
 Closure is measured per component rather than assumed. Almost everything KnotPlot ships is a closed curve, written without repeating the first point, so load it with **Path type: closed**; the `#` header records `closed=yes` or `closed=no` for every component, and in the shipped catalogue exactly one component, component A of `n3.1s`, is a genuine open arc. A link file holds several components and Curve It concatenates all of them by default, so use one at a time with **Select components...** in the GUI or `--curve-components A` on the command line. Whenever a written file holds more than one component, the report ends with a `USING THIS FILE IN CURVE IT` block spelling out the exact command for the first three components and naming the last when the file holds more than three; a single-component knot, and every file written by `--split`, leaves nothing to choose between and gets no block.
+
+**Read ropelengthdata...** opens `curve_it_lib/read_ropelengthdata.py`, which reads tight knots and links from the ropelength data set Jason Cantarella shares and writes them in Curve It's curve formats. The data set is a folder of tight, ropelength-minimised conformations: one `<name>_best.vect` per knot or link, one `<name>_curvature.txt` each, and an index, `ropelength_data.txt`, whose header names the two papers the data come from, "Knot Tightening By Constrained Gradient Descent" by Ashton, Cantarella, Piatek and Rawdon, and "The Shapes of Tight Composite Knots" by Cantarella, La Pointe and Rawdon. Each index row gives an entry's polygonal ropelength, ropelength bound, number of edges, residual and writhe; for a link the writhe is that of the whole link, the components' own writhes plus twice their linking numbers. The copy checked here holds 943 entries: the 249 prime knots to 10 crossings, the 130 prime links to 9 crossings, and 564 connected sums.
+
+The data set is not bundled, so the tool has to be told where it is. It tries the folder picked with **Locate data folder...**, then the `ROPELENGTHDATA` environment variable, then the folder it remembered the last time one was located, in `.read_ropelengthdata_gui.json` in your home folder; `--data DIR` pins a command-line run to one folder. A folder counts as the data set when it holds at least one `<name>_best.vect`, and the folder above it works too when that holds a folder called `ropelengthdata`. Nothing about the folder is written into Curve It. `--check` reports what was found.
+
+Names are the data set's own, the file names without `_best.vect`: `3_1` is a knot (crossings, then its number in the table), `6_3_2` a link (crossings, components, number), and `3_1_#_3_1_m` a connected sum, here the square knot, `_m` marking a summand drawn as its mirror image. `_r` marks a summand with its orientation reversed and `_rm` both; they appear only on `8_17`, `9_32` and `9_33`, the knots here that are not invertible. `TreeA` and `TreeB` tell apart two ways of joining the same links into one sum. KnotPlot's dotted spelling is accepted, so `3.1` reads `3_1`. **Browse data set...**, **List data set** and `--list` give the entries in crossing-number order, a sum counting the crossings of all its summands: within one crossing number the knots come first, then the links by number of components, and within each the prime entries before the sums. The **prime knots and links only** box, and `--prime`, keep just the entries whose name holds no `_#_`.
+
+Each entry can be written in six formats, chosen with the **Formats** boxes or `--to`: coordinate XYZ, Curve It's own curve file, with a `#` header naming the entry, the papers, its index figures, the scale and the frame; Geomview VECT, which also states that every component is closed; fake PDB, one atom per vertex and one chain per component with a `LINK` record closing each chain; molecular XYZ, which holds one curve and so joins a link's components, as the report says; and GLB and STL rods. The text formats are written by the same functions as **Convert XYZ...**, through `vect_io.py` and `curve_it.py`, and the rods by **XYZ to 3D Model**'s own functions, keeping every vertex as its `--segments 0` does. `--split` writes each component of a link to its own coordinate or molecular XYZ file.
+
+No vertex is moved, resampled or smoothed, and closure comes from the VECT file rather than from a guess: every component in the data set is closed, and in `10_152`, `10_23` and `10_77` the gap from the last vertex back to the first is over two ordinary steps, wide enough for a guess from the geometry to call them open. Three things change the coordinates, and each is reported in the header. Each entry is centred on the mean of its vertices, since some sit far from the origin (the mean of `10_113`'s vertices is 877 units out); `--keep-origin` keeps the data set's coordinates. `--scale` multiplies every coordinate. The data set is scaled to tube radius 0.5, so its tight rope is 1 thick and twice a curve's length is its polygonal ropelength, `3_1` being 16.3715 long with ropelength 32.7437; the scale is therefore also the rope's thickness in the output's units, and `--scale 20` gives a rope 20 Å thick, as for B-DNA, with `3_1` 327.4 Å long. `--mirror` reflects `z` to `-z`, which negates the writhe and every linking number; the data set holds each prime knot in one handedness only, so `3_1`, whose index writhe is `-3.416633`, mirrors to `+3.416633`. Every format of one entry is written in one frame, rods included.
+
+The rods default to the tight rope itself, a diameter of 1 times the scale, at which they touch wherever the rope touches itself and a link's components touch each other; `-d 0.618` or any smaller diameter leaves the strands apart. The diameter goes into the file name, `3_1-D1.0.glb`, as XYZ to 3D Model names its files. **Component colours**, or `--palette`, colours a link's components in the Preview windows, the VECT files and the GLB rods. **Preview** writes the first six entries as VECT into a temporary folder and opens them in Curve It's 3D curve viewer, without touching the output folder.
+
+Files are named after the entry as the data set spells it, `#` included, so quote such a name in a shell. The data set's own folder is never written to, and a run that fails for some names still writes the rest and exits 1.
+
+```bash
+python3 curve_it_lib/read_ropelengthdata.py --data /path/to/ropelengthdata --check
+python3 curve_it_lib/read_ropelengthdata.py --list --prime
+python3 curve_it_lib/read_ropelengthdata.py 3_1 6_3_2 -o out
+python3 curve_it_lib/read_ropelengthdata.py '3_1_#_3_1_m' --to coordinate,vect,fake-pdb -o out
+python3 curve_it_lib/read_ropelengthdata.py 5_2_1 --to glb -d 0.618 -o out
+python3 curve_it_lib/read_ropelengthdata.py 3_1 --scale 20 --mirror -o out
+python3 curve_it_lib/read_ropelengthdata.py --all --prime -o tight
+```
 
 **Generate helical curve...** opens `curve_it_lib/generate_helix_xyzV2.py`. This tool writes a plain-coordinate XYZ file for a circular helix:
 
@@ -662,7 +691,7 @@ The scripts check for their icons at runtime and continue normally if an icon is
 
 In a one-file build there is no Python interpreter to hand a script to, so Multicolor Split's window runs each split as a child process through `curve_it --multicolor-split ...`, and Curve It forwards everything after that flag to the tool. ChimeraX stays an external program and is never bundled, and `scipy`, `trimesh`, and `manifold3d` must be importable by the Python that runs PyInstaller.
 
-Reverse Curve It also supports the one-file build, through `curve_it --reverse-curve-it ...`; the main window's launcher uses this entry point when frozen.
+Reverse Curve It also supports the one-file build, through `curve_it --reverse-curve-it ...`; the main window's launcher uses this entry point when frozen. Read ropelengthdata's window opens there through a hidden `--read-ropelengthdata-gui` flag, as KnotPlot to XYZ's does; its Preview, like KnotPlot to XYZ's, needs a Python to run the curve viewer and so works only from source.
 
 ## Helper Modules
 
@@ -677,6 +706,7 @@ Supporting scripts live in `curve_it_lib/`:
 - `curved_connectorV3_4.py`
 - `plane_itV3_8.py` (versioned Plane It implementation; use `plane_it.py` as the stable launcher)
 - `kp2xyz.py`
+- `read_ropelengthdata.py` (tight knots and links from Jason Cantarella's ropelength data set)
 - `svg2xyz.py`
 - `view_xyzV3.py`
 - `xyz2model.py`
@@ -685,6 +715,7 @@ Supporting scripts live in `curve_it_lib/`:
 - `vect_io.py` (Geomview VECT reading and writing, shared by every tool above)
 - `multicolor_split.py` (Multicolor Split; reads PDB or mmCIF rather than curve files)
 - `lab_colors.py` (the DiLiuLab figure palette, read from `assets/diliulab_colors.json` and shared by every tool that offers the palette)
+- `curve_it_icons.py` (the icons of the tools only Curve It has, added to the shared AZBMOST icon set without editing it)
 
 They can still be run directly, for example:
 
@@ -696,6 +727,7 @@ python3 curve_it_lib/cal_xyz_local_curvature_torsionV3_1.py --example-trefoil --
 python3 curve_it_lib/generate_helix_xyzV2.py -R 10 -c 2 -L 200 -o helix.xyz
 python3 curve_it_lib/generate_sc_xyzV3_9.py -L 1071 -w -3 -n 2000
 python3 curve_it_lib/kp2xyz.py 4.1 -o out
+python3 curve_it_lib/read_ropelengthdata.py 3_1 -o out
 python3 curve_it_lib/svg2xyz.py drawing.svg --info
 python3 curve_it_lib/view_xyzV3.py curve.xyz
 python3 curve_it_lib/view_xyzV3.py multi_component.txt --components A,C

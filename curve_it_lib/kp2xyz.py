@@ -53,7 +53,7 @@ Locate button override that.  Get it from https://knotplot.com/download/ .
 
     python3 kp2xyz.py                                  # GUI
     python3 kp2xyz.py --check                          # is KnotPlot there?
-    python3 kp2xyz.py --list                           # catalogue names
+    python3 kp2xyz.py --list                           # names, by crossings
     python3 kp2xyz.py 4.1 6.3.2 "torus 2 3" -o out
     python3 kp2xyz.py 6.3.2 --nbeads 300 --split -o out
     python3 kp2xyz.py --all -o catalogue
@@ -87,7 +87,7 @@ except ImportError:
     except ImportError:
         lab_colors = None  # type: ignore[assignment]
 
-__version__ = "1.1"
+__version__ = "1.2"
 
 TOOL_NAME = "KnotPlot to XYZ"
 
@@ -339,6 +339,20 @@ HELP = {
         + CHIRALITY_NOTE + "\n\n"
         "So the reduction removes duplicated files, never a knot. Turn it "
         "off to see every filename, including the byte-identical ones.\n\n"
+        "Browse catalogue... and List catalogue give the entries in "
+        "crossing-number order: 0.1 and the unlinks 0.2.1 to 0.5.1 first, "
+        "then 2.2.1, 3.1, u3.1, 4.1, 4.2.1, u4.1, 5.1, 5.2, 5.2.1, l3.1, and "
+        "so on to 10.165 and the torus links 10.2.1 to 18.2.1. Within one "
+        "crossing number the knots come first, each underscored spelling "
+        "straight after its dotted twin, then the composite knots, then the "
+        "links by number of components, then the lettered entries. A "
+        "lettered entry is a two-component link built around the knot in "
+        "its name, and it is listed at its own crossing number, which is "
+        "not always that knot's: u3.1, the trefoil with an unknot set apart, "
+        "has 3 crossings, but l3.1, the trefoil with a ring that it passes "
+        "through once, has 5. To list only the prime knots and links, tick "
+        "the box for them in Browse catalogue...; the ? beside it says what "
+        "that leaves out.\n\n"
         "If KnotPlot is found but its catalogue folder is not, single "
         "targets and generator commands still work; only the listing and "
         "Entire catalogue are unavailable.",
@@ -350,6 +364,34 @@ HELP = {
         "      2 are same-handed       9.20 +6.346644   9_20 +6.346636\n"
         "        (two conformations)   9.35 +7.539209   9_35 +7.539219\n"
         "  " + WRITHE_SOURCE),
+    "prime": (
+        "Prime knots and links only",
+        "Tick this to list only the prime knots and links, in either "
+        "handedness: Rolfsen's prime knots to 10 crossings, named "
+        "crossings.index from 3.1 to 10.165, with underscored spellings such "
+        "as the mirror image 8_19; Rolfsen's prime links to 9 crossings, "
+        "named crossings.components.index from 2.2.1 to 9.4.1; and the torus "
+        "links 10.2.1 to 18.2.1 that KnotPlot adds.\n\n"
+        "Left out, because none of them is prime: the unknot 0.1 and the "
+        "unlinks 0.2.1 to 0.5.1; the composite knots, 6c.1 to 8c.5 and "
+        "connected sums such as 3.1#5.2s, where s marks a mirrored summand; "
+        "and the lettered entries such as u3.1, l3.1 and n3.1. Each lettered "
+        "entry is a two-component link made from the knot its name carries. "
+        "In a u entry the second component is an unknot that a plane "
+        "separates from the knot, and v4.1 is two figure eights set apart "
+        "the same way, so these are split links. Every other lettered entry "
+        "is a connected sum of its knot and a link: l3.1, for example, is "
+        "the trefoil with a flat ring that it passes through once, which is "
+        "the trefoil summed with the Hopf link 2.2.1.\n\n"
+        "The box works together with the text filter above it, and the "
+        "count under the list says how many entries are shown. It only "
+        "narrows the list: Entire catalogue still extracts everything.",
+        "522 entries, byte-identical duplicates dropped\n"
+        "  414 prime    279 knots   3.1 ... 10.165, 7_3 ... 9_49\n"
+        "               135 links   2.2.1 ... 9.4.1, 10.2.1 ... 18.2.1\n"
+        "  108 others   1 unknot, 4 unlinks, 36 composite knots,\n"
+        "               67 lettered two-component links\n"
+        "585 entries, duplicates kept: 468 prime"),
     "all": (
         "Entire catalogue",
         "Extract every entry in basic/ in one go: one KnotPlot run, one .xyz "
@@ -989,13 +1031,193 @@ def component_label(index):
             return label
 
 
+# How a catalogue name reads.  The standard catalogue is named after
+# Rolfsen's table, crossings.index for a knot (7.3) and
+# crossings.components.index for a link (6.3.2), and an underscored spelling
+# follows the same scheme (7_3 is the mirror image of 7.3).  The rest of
+# basic/ is either a table name with 0 crossings or named on that pattern
+# with something added, and none of it is prime:
+#
+#   0.1, 0.2.1 ... 0.5.1   the unknot and the unlinks of 2 to 5 components
+#   6c.1 ... 8c.5          composite knots: crossings, c, an index
+#   3.1#5.2s               a connected sum; `s` marks a mirrored summand
+#   u3.1, l6c_1, n3.1s     two-component links built around the knot named
+#
+# A lettered entry is the knot its name gives plus a second component, and
+# the number in the name is the crossing number c of that knot, not always
+# of the link.  _LETTERED_CROSSINGS turns one into the other as
+# (multiplier, extra), from what the shipped files are, measured on the
+# 2025 June 2 build:
+#
+#   u (43)  the knot and an unknot that a plane separates from it    c
+#   v4.1    two figure eights that a plane separates                 4 + 4
+#   l (17)  the knot and a flat ring it passes through once, K # 2.2.1  c + 2
+#   n (3)   K # 4.2.1                                                c + 4
+#   o (2)   K # 5.2.1                                                c + 5
+#   m3.1    two trefoils hooked together, 3.1 # 2.2.1 # 3.1           3 + 2 + 3
+#
+# The crossing number of a split link is the sum of its parts'.  The other
+# 23 are not split: their determinants, |V(-1)| from KnotPlot's own HOMFLY
+# table (resource/poly.txt), run from 6 to 42 and are never 0.  For a link
+# that is not split the span of the Jones polynomial is a lower bound on the
+# crossing number, and for each of the 23 it equals the fewest crossings that
+# any projection of the shipped curve shows, which pins the crossing number
+# down.  Each is the connected sum shown, too: a round sphere around the
+# second component meets the knot in just two points, and the arc of the
+# knot inside it has a crossing-free projection, so that arc is unknotted,
+# the whole knot lies outside and the second component inside.  The HOMFLY
+# polynomial agrees, the knot's times the link's.  So none of the 67 is
+# prime.
+_LETTERED_CROSSINGS = {"u": (1, 0), "v": (2, 0), "l": (1, 2), "n": (1, 4),
+                       "o": (1, 5), "m": (2, 2)}
+
+_KNOT_NAME = re.compile(r"^(\d+)([._])(\d+)$")
+_LINK_NAME = re.compile(r"^(\d+)([._])(\d+)\2(\d+)$")
+_COMPOSITE_NAME = re.compile(r"^(\d+)c([._])(\d+)$")
+_SUM_NAME = re.compile(r"^(\d+)\.(\d+)(s?)#(\d+)\.(\d+)(s?)$")
+_LETTERED_NAME = re.compile(r"^([a-z])(\d+)(c?)([._])(\d+)(s?)$")
+
+# The dotted spelling sorts first, so 8_19 comes straight after 8.19.
+_SEPARATOR_RANK = {".": 0, "_": 1}
+
+# The kinds of entry that the prime filter keeps.
+PRIME_KINDS = ("knot", "link")
+
+
+def _parse_catalogue_name(name):
+    """(kind, crossings, rank, detail) for a catalogue name, or None.
+
+    `crossings` is the crossing number of the entry.  For a connected sum it
+    is the sum of the summands', which is exact here: every summand in the
+    catalogue is alternating, and so is their sum.  For a lettered entry it
+    comes from _LETTERED_CROSSINGS, and it is None for a letter that table
+    does not know.  `rank` orders the kinds of one crossing number, knots
+    before composite knots before links before lettered links, and `detail`
+    orders the entries of one kind.
+    """
+    match = _KNOT_NAME.match(name)
+    if match:
+        crossings = int(match.group(1))
+        return ("knot" if crossings else "unknot", crossings, 0,
+                (int(match.group(3)), _SEPARATOR_RANK[match.group(2)]))
+    match = _LINK_NAME.match(name)
+    if match:
+        crossings = int(match.group(1))
+        return ("link" if crossings else "unlink", crossings, 2,
+                (int(match.group(3)), int(match.group(4)),
+                 _SEPARATOR_RANK[match.group(2)]))
+    match = _COMPOSITE_NAME.match(name)
+    if match:
+        return ("composite", int(match.group(1)), 1,
+                (0, int(match.group(3)), _SEPARATOR_RANK[match.group(2)]))
+    match = _SUM_NAME.match(name)
+    if match:
+        c1, i1, s1, c2, i2, s2 = match.groups()
+        # The handedness flags come last, so the variants of one pair of
+        # summands stay together: 3.1#5.1, 3.1#5.1s, 3.1s#5.1, 3.1s#5.1s.
+        return ("composite", int(c1) + int(c2), 1,
+                (1, int(c1), int(i1), int(c2), int(i2), len(s1), len(s2)))
+    match = _LETTERED_NAME.match(name)
+    if match:
+        letter, knot, composite, separator, index, mirror = match.groups()
+        crossings = None
+        if letter in _LETTERED_CROSSINGS:
+            multiplier, extra = _LETTERED_CROSSINGS[letter]
+            crossings = multiplier * int(knot) + extra
+        return ("lettered", crossings, 3,
+                (letter, int(knot), len(composite), int(index), len(mirror),
+                 _SEPARATOR_RANK[separator]))
+    return None
+
+
+def catalogue_kind(name):
+    """What sort of entry a catalogue name is.
+
+    "knot" or "link" for an entry of the prime tables, "unknot" or "unlink"
+    for crossing number 0, "composite" for a composite knot, 6c.1 or a
+    connected sum such as 3.1#5.2s, "lettered" for the two-component links
+    u3.1, l3.1 and the rest, and "other" for a name in none of these forms.
+    """
+    parsed = _parse_catalogue_name(name)
+    return parsed[0] if parsed else "other"
+
+
+def catalogue_crossings(name):
+    """The crossing number of a catalogue entry, or None if it is unknown.
+
+    The first number of a table name; for a connected sum such as 3.1#6.3
+    the sum of the summands' (9); for a lettered link the link's own, so
+    u3.1 has 3 and l3.1 has 5 (see _LETTERED_CROSSINGS).
+    """
+    parsed = _parse_catalogue_name(name)
+    return parsed[1] if parsed else None
+
+
+def is_prime_entry(name):
+    """True for an entry of the prime tables, in either handedness.
+
+    Those are the knots crossings.index and the links
+    crossings.components.index with at least one crossing: Rolfsen's knots
+    to 10 crossings and links to 9, their underscored spellings such as the
+    mirror image 8_19, and the torus links 10.2.1 ... 18.2.1 that KnotPlot
+    adds.  The unknot, the unlinks, the composite knots and the lettered
+    two-component links are not prime.
+    """
+    return catalogue_kind(name) in PRIME_KINDS
+
+
+def catalogue_key(name):
+    """Sort key that puts catalogue names in crossing-number order.
+
+    By catalogue_crossings: 0.1 and the unlinks, then 2.2.1, 3.1, u3.1, 4.1,
+    4.2.1, u4.1, 5.1, 5.2, 5.2.1, l3.1, and so on to 10.165 and the torus
+    links 10.2.1 ... 18.2.1.  Within one crossing number the knots come
+    first, by index, each underscored spelling straight after its dotted
+    twin (8.19, 8_19, 8.20); then the composite knots, 6c.1 before the
+    connected sums; then the links, by number of components and index; then
+    the lettered links, by letter and then by the knot in the name.  Indices
+    compare as numbers, so 10.2 comes before 10.10 and 10.100.
+
+    A lettered link whose letter _LETTERED_CROSSINGS does not know has no
+    crossing number to go by, so it follows the rest, by the number in its
+    name, and a name in none of the catalogue's forms goes last, in natural
+    order.
+    """
+    parsed = _parse_catalogue_name(name)
+    if parsed is None:
+        # isdecimal, not isdigit: a superscript such as the one in "5²"
+        # passes isdigit but is neither split off by \d nor read by int.
+        natural = tuple((0, int(part)) if part.isdecimal() else (1, part)
+                        for part in re.split(r"(\d+)", name) if part)
+        return (2, 0, 0, natural, name)
+    kind, crossings, rank, detail = parsed
+    if crossings is None:
+        return (1, detail[1], rank, detail, name)
+    return (0, crossings, rank, detail, name)
+
+
+def filter_catalogue(names, text="", prime_only=False):
+    """The names Browse catalogue... shows, in the order they are given.
+
+    A name is kept when it contains `text`, ignoring case and any spaces
+    around the text, and, with prime_only, when it is a prime-table entry.
+    """
+    needle = text.strip().lower()
+    return [name for name in names
+            if (not needle or needle in name.lower())
+            and (not prime_only or is_prime_entry(name))]
+
+
 def catalogue_names(install, dedupe=True):
-    """Every entry in the catalogue that is really a KnotPlot knot/link file.
+    """Every entry in the catalogue that is really a KnotPlot knot/link file,
+    in crossing-number order (see catalogue_key).
 
     With dedupe on, files with identical contents collapse to the first name
-    in sort order, which for a byte-identical pair is the dotted form that
+    in byte order, which for a byte-identical pair is the dotted form that
     KnotPlot's own `load` syntax uses.  On a stock install that turns 585
-    files into 522 entries.
+    files into 522 entries.  The folder is scanned in byte order for that
+    reason, and only the names that survive are then put in crossing-number
+    order, so the order never decides which spelling is kept.
 
     That is deduplication by content, not alias removal, and the difference
     matters.  93 names exist in both the dotted and the underscored
@@ -1045,6 +1267,7 @@ def catalogue_names(install, dedupe=True):
                 continue
             seen[digest] = entry
         names.append(entry)
+    names.sort(key=catalogue_key)
     return names
 
 
@@ -1895,6 +2118,9 @@ def run_gui(initial_outdir=None, initial_palette="default"):
         "targets":   tk.StringVar(value=""),
         "all":       tk.BooleanVar(value=False),
         "dedupe":    tk.BooleanVar(value=True),
+        # Browse catalogue...'s prime box; kept here so that the choice holds
+        # every time the list is opened again in this session.
+        "prime":     tk.BooleanVar(value=False),
         "nbeads":    tk.StringVar(value=""),
         "precision": tk.StringVar(value="%d" % DEFAULT_PRECISION),
         "split":     tk.BooleanVar(value=False),
@@ -2350,19 +2576,31 @@ def run_gui(initial_outdir=None, initial_palette="default"):
                    + "\n")
         status.configure(text="listed %d entries" % len(names), foreground="#0a7")
 
+    # One list window at a time.  Two would share V["prime"] while only the
+    # one clicked re-filtered, and an older one would still hold the listing
+    # of an older dedupe setting, so opening it again replaces the old window,
+    # the way a second ? replaces the first.
+    browse_window = {"top": None}
+
     def do_browse():
         try:
             names = load_names()
         except Exception as exc:            # noqa: BLE001
             messagebox.showerror("Catalogue unavailable", str(exc))
             return
+        if browse_window["top"] is not None:
+            try:
+                browse_window["top"].destroy()
+            except Exception:               # noqa: BLE001
+                pass
         top = tk.Toplevel(root)
+        browse_window["top"] = top
         top.title("KnotPlot catalogue")
         top.transient(root)
         top.minsize(320, 460)
         frm = ttk.Frame(top, padding=(16, 14, 16, 14))
         frm.pack(fill="both", expand=True)
-        frm.rowconfigure(2, weight=1)
+        frm.rowconfigure(3, weight=1)
         frm.columnconfigure(0, weight=1)
         tk.Label(frm, justify="left", anchor="w", font="AzbSmall",
                  fg="#8a4b00", bg="#fff2e0", padx=8, pady=5, wraplength=300,
@@ -2378,21 +2616,37 @@ def run_gui(initial_outdir=None, initial_palette="default"):
         ttk.Entry(frm, textvariable=query).grid(row=1, column=0, sticky="ew")
         ttk.Label(frm, text="filter", style="Hint.TLabel").grid(row=1, column=1,
                                                                 padx=(8, 0))
+        # The prime box narrows whatever the text filter leaves.  It calls
+        # repopulate as its command rather than through a trace on
+        # V["prime"]: that variable outlives this window, and a trace on it
+        # would go on calling into a destroyed list once the window closed.
+        # The variable itself is what keeps the choice for the next window.
+        prime_row = ttk.Frame(frm)
+        prime_row.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        prime_chk = ttk.Checkbutton(
+            prime_row, text="prime knots and links only", variable=V["prime"])
+        prime_chk.pack(side="left")
+        chip(prime_row, "prime").pack(side="left", padx=(8, 0))
         box = tk.Listbox(frm, selectmode="extended", font="AzbMono",
                          height=22, activestyle="none")
-        box.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        box.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
         bsb = ttk.Scrollbar(frm, orient="vertical", command=box.yview)
-        bsb.grid(row=2, column=2, sticky="ns", pady=(8, 0))
+        bsb.grid(row=3, column=2, sticky="ns", pady=(8, 0))
         box.configure(yscrollcommand=bsb.set)
+        row = ttk.Frame(frm)
+        row.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(12, 0))
+        shown = ttk.Label(row, text="", style="Hint.TLabel")
+        shown.pack(side="left")
 
         def repopulate(*_args):
-            needle = query.get().strip().lower()
+            picked = filter_catalogue(names, query.get(), V["prime"].get())
             box.delete(0, "end")
-            for name in names:
-                if not needle or needle in name.lower():
-                    box.insert("end", name)
+            for name in picked:
+                box.insert("end", name)
+            shown.configure(text="%d of %d shown" % (len(picked), len(names)))
 
         query.trace_add("write", repopulate)
+        prime_chk.configure(command=repopulate)
         repopulate()
 
         def add_selected():
@@ -2403,8 +2657,6 @@ def run_gui(initial_outdir=None, initial_palette="default"):
             V["targets"].set((current + " " + " ".join(picked)).strip())
             top.destroy()
 
-        row = ttk.Frame(frm)
-        row.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(12, 0))
         ttk.Button(row, text="Add selected", command=add_selected,
                    style="Accent.TButton").pack(side="right")
         ttk.Button(row, text="Cancel", command=top.destroy).pack(side="right",
