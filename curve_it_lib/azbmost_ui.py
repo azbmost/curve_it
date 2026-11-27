@@ -40,7 +40,7 @@ except ImportError:
     except ImportError:
         _icons = None  # icons fall back to plain tiles
 
-UI_VERSION = "1.0.0"
+UI_VERSION = "1.1.0"
 THEME_NAME = "azbmost"
 
 # ---------------------------------------------------------------- colours
@@ -152,6 +152,7 @@ TOOL_INFO: Dict[str, Tuple[str, str]] = {
     "phenix_restraints": ("re_helix", "Turn LINK records into Phenix geometry restraints."),
     "reverse_strand": ("re_helix", "Reverse the residue order of chains without moving atoms."),
     "check_clashes": ("re_helix", "Count close heavy-atom contacts in any PDB."),
+    "heterohelix_junction": ("re_helix", "Join duplex segments of any helix form with fitted junctions."),
     # Curve_It
     "convert_xyz": ("curve_it", "Convert curves between XYZ, molecular XYZ, VECT and fake PDB."),
     "svg2xyz": ("curve_it", "Turn an SVG drawing into planar curve components."),

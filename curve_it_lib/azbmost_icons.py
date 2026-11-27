@@ -42,7 +42,7 @@ import re
 import sys
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-ICONS_VERSION = "2.0.0"
+ICONS_VERSION = "2.1.0"
 
 LAB: Dict[str, Dict[str, str]] = {
     "red": {"T100": "#e64c4c", "T80": "#eb7070", "T60": "#f09494", "T40": "#f5b7b7", "T20": "#fadbdb"},
@@ -1447,6 +1447,74 @@ def g_clashes(p, k: Inks) -> None:
         p.line([(512 + u[0] * 70, top - 34 + u[1] * 70), (512 + u[0] * 150, top - 34 + u[1] * 150)], k.a, 34)
 
 
+def _glyph_duplex(p, k: Inks, strands, rungs, width: float, rung_w: float = 22.0, back: float = 0.74,
+                  gap: float = 11.0) -> None:
+    """Strands [(x, y, depth)] of a duplex glyph: back runs in the secondary ink, broken where a front run passes
+    over them, then the rungs [(a, b)], then the front runs whole in the main ink."""
+    backs, fronts = [], []
+    for samples in strands:
+        runs = split_runs(samples)
+        # a run of no length at a strand's end (the depth starts at 0) would only draw a round cap: fold it in
+        if len(runs) > 1 and polyline_length([q[:2] for q in runs[0][1]]) < width:
+            runs = [(runs[1][0], runs[0][1] + runs[1][1][1:])] + runs[2:]
+        if len(runs) > 1 and polyline_length([q[:2] for q in runs[-1][1]]) < width:
+            runs = runs[:-2] + [(runs[-2][0], runs[-2][1] + runs[-1][1][1:])]
+        for front, run in runs:
+            (fronts if front else backs).append([(x, y) for x, y, _ in run])
+    for pts in backs:
+        cuts = []
+        for fpts in fronts:
+            for i in range(len(pts) - 1):
+                for j in range(len(fpts) - 1):
+                    hit = _seg_hit(pts[i], pts[i + 1], fpts[j], fpts[j + 1])
+                    if hit:
+                        du = (pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1])
+                        do = (fpts[j + 1][0] - fpts[j][0], fpts[j + 1][1] - fpts[j][1])
+                        cuts.append((_arclen_at(pts, i + hit[0]), _gap_half(width * back, width, gap, du, do)))
+        for piece in _gaps(pts, cuts):
+            p.line(piece, k.b, width * back)
+    for a, b in rungs:
+        p.line([a, b], k.b, rung_w)
+    for pts in fronts:
+        p.line(pts, k.a, width)
+
+
+def g_heterohelix_junction(p, k: Inks) -> None:
+    """Two duplex segments stacked on one axis: a right-handed ladder below (smooth strands, front runs slope "/"),
+    a left-handed zig-zag one above (straight runs, front runs slope "\\"), joined by two links, each marked by a
+    dot."""
+    cx, r, r_up, w = 512, 152, 140, 46
+    lo_bot, lo_top, up_bot, up_top = 818, 600, 424, 206
+    jy = (lo_top + up_bot) / 2
+    n = 96
+
+    def lower(sign):  # one right-handed turn; the strands sit at the sides at both ends
+        out = []
+        for i in range(n + 1):
+            t = 2 * math.pi * i / n
+            out.append((cx + sign * r * math.cos(t), lo_bot + (lo_top - lo_bot) * i / n, -sign * math.sin(t)))
+        return out
+
+    def upper(sign):  # one left-handed turn of straight runs between corners at the sides
+        out = []
+        for i in range(n + 1):
+            u = 2.0 * i / n
+            tri = 1 - 2 * abs(((u + 1) % 2) - 1)  # cos(pi u), straightened
+            out.append((cx - sign * r_up * tri, up_bot + (up_top - up_bot) * i / n, -sign * math.sin(math.pi * u)))
+        return out
+
+    rungs = []
+    for f in (0.15, 0.85):
+        t = 2 * math.pi * f
+        y = lo_bot + (lo_top - lo_bot) * f
+        rungs.append(((cx + r * math.cos(t), y), (cx - r * math.cos(t), y)))
+    _glyph_duplex(p, k, [lower(1), lower(-1), upper(1), upper(-1)], rungs, w)
+    for side in (-1, 1):
+        xl, xu = cx + side * r, cx + side * r_up
+        p.line([(xl, lo_top), ((xl + xu) / 2, jy), (xu, up_bot)], k.a, w * 0.6)
+        p.circle((xl + xu) / 2, jy, 46, fill=k.c, outline=k.a, width=16)
+
+
 def g_convert_xyz(p, k: Inks) -> None:
     r = 262
     p.line(arc_points(512, 512, r, r, 160, 20, 40), k.a, 46, arrow="last", arrowshape=(90, 90, 30))
@@ -1599,6 +1667,7 @@ TOOLS: Dict[str, Tuple[Callable, str]] = {
     "phenix_restraints": (g_restraints, "yellow"),
     "reverse_strand": (g_reverse_strand, "mint"),
     "check_clashes": (g_clashes, "red"),
+    "heterohelix_junction": (g_heterohelix_junction, "orange"),
     # Curve_It
     "convert_xyz": (g_convert_xyz, "blue"),
     "svg2xyz": (g_svg2xyz, "orange"),
